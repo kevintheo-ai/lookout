@@ -7,11 +7,13 @@ for exactly that.
 It sits in the menu bar, lines up the terminal windows of your Claude Code, Codex, Grok and Kimi sessions in
 Warp or Ghostty, and shows which session is working, which one is done and which one is waiting for you.
 
-![Lookout's Focus layout: the active session in the middle, a session waiting for an answer and a finished one on the left, two busy sessions and one watching session on the right](docs/focus-layout.png)
+![Lookout in action: a finished session gets a mint frame and glides to the left, a session with a question box gets an amber frame and goes first, one click brings it to the middle, and a session that only waits for its CI run turns grey](docs/lookout-demo.gif)
 
-*Illustration of the Focus layout with demo sessions.*
+*Animation with demo sessions. It follows Lookout's real rules, just faster.*
 
 ## What it does
+
+![Lookout's Focus layout as a still picture: the active session in the middle, a session waiting for an answer and a finished one on the left, two busy sessions and one watching session on the right](docs/focus-layout.png)
 
 - **Frames:** when a session is done, its window gets a soft mint frame. When it can't go on without you,
   because it needs your approval or wants you to pick an answer in a question box, the frame is amber. If the AI
