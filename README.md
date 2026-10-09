@@ -73,7 +73,7 @@ and the log file are in German too.
 - macOS 26 or later (I use it on macOS 27)
 - [Warp](https://www.warp.dev) (the stable version, not Warp Preview) or [Ghostty](https://ghostty.org). I use
   Warp every day; Ghostty works too, but it got less real use.
-- Claude Code (tested with 2.1.291) and/or the Codex, Grok or Kimi command line tools
+- Claude Code (tested with 2.1.295) and/or the Codex, Grok or Kimi command line tools
 - Xcode Command Line Tools (`xcode-select --install`), for `swiftc`
 
 Lookout reads Claude Code's status from its files. For background agents and as a fallback it also runs
@@ -138,6 +138,7 @@ Lookout (it reads the file once at start), for example:
 | `glowColor` | `"#5ECFA0"` | frame color for "done" (mint) |
 | `glowColorWaiting` | `"#E8B25C"` | frame color for "waiting for you" (amber) |
 | `labels` | `true` | whether labels show at first start; after that, your choice in the menu is used |
+| `leadNames` | `[]` | own names (`claude --name …` or `/rename`) of sessions that lead other sessions, written exactly the same; an automatic topic title does not count (see "Watching" below) |
 
 The menu remembers your choice of screen, layout, grid, control room screens, excluded windows and labels.
 Pause and the side of the strip (*More > Strip on the right/left*) start fresh after a restart.
@@ -168,8 +169,9 @@ I want you to know exactly what it touches:
 Lookout is strict here: a grey session that actually needed your answer is worse than one "done" too many. So
 a Claude Code session shows grey **WATCHING** instead of **DONE** only when its answer is done and
 
-- a background command of the session rests (no real CPU or network use for 90 seconds) and is not a server
-  (a server listens on a port; a resting server alone means "done"), or
+- Claude Code reports that only background commands are left (status `shell`), a background command of the
+  session rests (no real CPU or network use for 90 seconds) and is not a server (a server listens on a port; a
+  resting server alone means "done"), or
 - it only waits for another running Claude session that talks to it, or for a timer it set itself, and its
   last answer says explicitly that nothing is needed from you,
 
@@ -194,6 +196,10 @@ A few details:
   conversation with the other session.
 - A prompt the session was started with (`claude "…"`, for example a handover from another session) does not
   count as your message, even if you started it that way yourself.
+- A session named in `leadNames` (one that runs other sessions and reports on their windows) with a resting
+  background command that is not a server turns "done" only when its answer contains a "?" or your own unseen
+  message started the turn.
+  Its reports ("two windows wait for you", "the handover is complete") are about other windows, not this one.
 
 When in doubt, Lookout shows "done". Still, on my 1,204 test cases a few sessions that asked for something turned
 grey, so it's not perfect.
@@ -202,7 +208,8 @@ grey, so it's not perfect.
 
 - Status files and transcript entries are **internal formats of Claude Code**. If the status files change,
   Lookout falls back to `claude agents`, which means one extra query at every status check. If the transcript
-  entries change, "watching" no longer appears and labels lose the step and the answer.
+  entries change, "watching" no longer appears and labels lose the step and the answer. Older Claude Code versions
+  that report background commands as `busy` instead of `shell` show such sessions as working.
 - Codex, Grok and Kimi get less: no "watching", no step or answer on the label, and the session name is the
   folder name. A new Codex, Grok or Kimi session shows up after its first turn. Lookout reads their logs only
   in the default folders. I have seen "waiting for an approval" in real use with Grok. For Codex and Kimi I

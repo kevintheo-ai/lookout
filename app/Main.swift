@@ -138,7 +138,7 @@ final class LookoutController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Codex-/Grok-/Kimi-Logs zu laufenden Prozessen — ebenso NUR im workQueue-Block.
     private let logFinder = LogSessionFinder()
     /// Hintergrund-Befehle fertiger Claude-Antworten (Plan 1e) — ebenso NUR im workQueue-Block.
-    private let background = BackgroundWatch()
+    private lazy var background = BackgroundWatch(leads: Set(cfg.leadNames))
     /// Claude-Status aus den Status-Dateien, `claude agents` nur alle 5 Min. (2026-09-27) — ebenso NUR im workQueue-Block.
     private lazy var claudeStatus = ClaudeStatus(dirs: cfg.claudeConfigDirs)
     /// Wartet nur auf andere Session oder Wecker -> ueberwacht (Kevin 2026-09-27) — ebenso NUR im workQueue-Block.

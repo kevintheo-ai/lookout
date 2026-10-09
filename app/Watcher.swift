@@ -31,12 +31,16 @@ struct Session {
     /// einen eigenen Wecker (`Standby`) — braucht Kevin nicht (Kevin 2026-09-27: "er überwacht jetzt nur die Sessions").
     /// `ready` bleibt dabei aus.
     var watching = false
+    /// Claude meldet `shell`: Zug vorbei, nur noch Hintergrund-Befehle laufen. `busy` heisst dagegen immer, dass das
+    /// Modell arbeitet (CLI 2.1.294/2.1.295, gemessen 2026-10-09) — auch wenn das Transkript noch das Ende des letzten
+    /// Zuges zeigt, weil eine Nachricht einer anderen Session oder ein Wecker den neuen Zug ohne Prompt-Zeile begann.
+    let backgroundOnly: Bool
 
     init(id: String, engine: Engine, pid: pid_t?, name: String, cwd: String,
-         ready: Bool, waiting: Bool = false, alive: Bool, startedAt: Date? = nil) {
+         ready: Bool, waiting: Bool = false, alive: Bool, startedAt: Date? = nil, backgroundOnly: Bool = false) {
         self.id = id; self.engine = engine; self.pid = pid; self.name = name
         self.cwd = cwd; self.ready = ready; self.waiting = waiting; self.alive = alive
-        self.startedAt = startedAt
+        self.startedAt = startedAt; self.backgroundOnly = backgroundOnly
     }
 }
 
@@ -82,6 +86,7 @@ func parseAgent(_ obj: [String: Any]) -> Session? {
     let kind = obj["kind"] as? String ?? ""
     let ready: Bool
     let waiting: Bool
+    let status = obj["status"] as? String ?? ""
     if kind == "background" {
         // "blocked" = der Agent haengt an einer Freigabe/Rueckfrage -> Kevin ist dran.
         waiting = (obj["state"] as? String) == "blocked"
@@ -91,7 +96,6 @@ func parseAgent(_ obj: [String: Any]) -> Session? {
         // Sessions melden dafuer einen EIGENEN Status `waiting` — vorher nie beobachtet,
         // weil in den Stichproben zufaellig nie eine Frage offen war. `idle` = Zug
         // beendet, `waiting` = wartet auf Kevins Antwort. Beides heisst: arbeitet nicht.
-        let status = obj["status"] as? String ?? ""
         waiting = status == "waiting"
         ready = status == "idle" || waiting
     }
@@ -107,7 +111,8 @@ func parseAgent(_ obj: [String: Any]) -> Session? {
                    ready: ready,
                    waiting: waiting,
                    alive: true,
-                   startedAt: (obj["startedAt"] as? Double).map { Date(timeIntervalSince1970: $0 / 1000) })
+                   startedAt: (obj["startedAt"] as? Double).map { Date(timeIntervalSince1970: $0 / 1000) },
+                   backgroundOnly: kind != "background" && status == "shell")
 }
 
 /// Status-Dateien eines Config-Dirs: `<dir>/sessions/<pid>.json`, eine je laufender Session, von Claude selbst geschrieben
@@ -739,9 +744,11 @@ final class Standby {
 
 // ---------- Fertig trotz Hintergrund-Befehl (Plan 1e, Kevins Regel 2026-09-26 abends) ----------
 //
-// `claude agents` meldet `busy`, solange irgendein Hintergrund-Befehl der Session laeuft ("1 shell still running") —
-// auch wenn die Antwort laengst fertig ist. Kevin: arbeitet der Befehl, laeuft die Session; ist es nur ein Beobachter
-// oder etwas Ruhendes, ist sie fertig. Live 26.09.: eine Session rechnete im Hintergrund einen Bild-Neusatz (laeuft,
+// Claude meldet `shell`, solange nach der fertigen Antwort noch ein Hintergrund-Befehl der Session laeuft (bis CLI 2.1.283
+// hiess das `busy`; seit 2026-10-09 zaehlt nur `shell`, Kevin — `busy` + altes Zug-Ende im Transkript zeigte den Team
+// Lead FERTIG, waehrend er eine Nachricht einer anderen Session bearbeitete). Kevin: arbeitet der Befehl, laeuft die
+// Session; ist es nur ein Beobachter oder etwas Ruhendes, ist sie fertig. Live 26.09.: eine Session rechnete im
+// Hintergrund einen Bild-Neusatz (laeuft,
 // richtig), eine alte hatte nur einen ruhenden Node-Prozess (0 % Rechenzeit, richtig waere fertig).
 // Kevin 2026-09-27 (Lead-Session): wartet die Session auf ihren eigenen Aufpasser (CI-Lauf, Worker), braucht sie Kevin
 // nicht — "ueberwacht" statt fertig. Unterschied: ein Server lauscht auf einem Port, ein Aufpasser nicht.
@@ -833,7 +840,7 @@ func nettopUsage() -> [pid_t: UInt64]? {
     return parseNettop(text)
 }
 
-/// Messreihen je Claude-Prozess, nur solange seine Antwort fertig ist und `claude agents` trotzdem `busy` meldet.
+/// Messreihen je Claude-Prozess, nur solange seine Antwort fertig ist und Claude `shell` meldet (Hintergrund laeuft).
 /// NUR auf `workQueue` benutzen (Zustand ohne Sperre).
 final class BackgroundWatch {
     private var samples: [pid_t: [UsageSample]] = [:]
@@ -846,16 +853,20 @@ final class BackgroundWatch {
     private var quiet: [String: (name: String, watching: Bool)] = [:]
     /// Ruhende Sessions, deren Antwort Kevin braucht (fertig statt ueberwacht) — nur fuer den Grund in der Log-Zeile.
     private var forKevin: Set<String> = []
+    /// Namen von Sessions, die andere Sessions fuehren (`leadNames` in der Konfiguration, genau so geschrieben).
+    private let leads: Set<String>
 
     init(netUsage: @escaping () -> [pid_t: UInt64]? = nettopUsage,
          listening: @escaping ([pid_t]) -> Set<pid_t>? = listeningPids,
+         leads: Set<String> = [],
          report: @escaping (String) -> Void = { log($0) }) {
         self.netUsage = netUsage
         self.listening = listening
+        self.leads = leads
         self.report = report
     }
 
-    /// `busy` + fertige Antwort + Hintergrund ruht seit `window` -> ueberwacht, solange ein Aufpasser laeuft; nur ruhende
+    /// `shell` + fertige Antwort + Hintergrund ruht seit `window` -> ueberwacht, solange ein Aufpasser laeuft; nur ruhende
     /// Server -> fertig. Alles andere bleibt, wie es gemeldet ist — auch eine Session ohne Hintergrund-Shell: dann haelt
     /// etwas anderes sie busy (etwa ein Hintergrund-Agent), und Lookout raet nicht. Nur Claude; Codex, Grok und Kimi
     /// melden ihr Zug-Ende selbst. `seen`: Session-ID -> wann Kevin ihr Fenster zuletzt vor sich hatte (`answerSeen`).
@@ -889,7 +900,8 @@ final class BackgroundWatch {
                         seen: [String: Date]) -> [Session] {
         forKevin = []
         var watched: [pid_t: [Set<pid_t>]] = [:]
-        for s in sessions where s.engine == .claude && !s.ready && s.digest?.turnEnded == true {
+        // Zug-Ende im Transkript dazu: geurteilt wird ueber die fertige Antwort, nicht ueber einen Zwischenstand.
+        for s in sessions where s.engine == .claude && s.backgroundOnly && s.digest?.turnEnded == true {
             guard let pid = s.pid else { continue }
             let tasks = backgroundTasks(of: pid, rows: rows)
             if !tasks.isEmpty { watched[pid] = tasks }
@@ -969,6 +981,11 @@ final class BackgroundWatch {
         if d.kevinTurn == true && !answerSeen(d, seenAt: seen[s.id]) {
             return !(promisesReport(text) && asksNothing(text))
         }
+        // Kevin 2026-10-09: eine Lead-Session berichtet ueber ANDERE Fenster ("two windows wait for you", "the handover is
+        // complete") — die Wortliste hielt das fuer Anliegen (6 Tage eines Team Leads: 211 von 523 Zug-Enden ohne Kevins
+        // Nachricht FERTIG, 2 davon mit "?"). Bei ihr zaehlt nur eine Frage. Name aus der Status-Datei oder der im Menue
+        // (eigener Name im Transkript, `/rename`) — review quick 2026-10-09, Codex + GLM.
+        if leads.contains(s.name) || d.name.map(leads.contains) == true { return text.contains("?") }
         return !(asksNothing(text) || opensWithNothingNeeded(text))
     }
 }

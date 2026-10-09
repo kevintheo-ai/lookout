@@ -50,6 +50,9 @@ struct AppConfig {
     /// Claude-Konfigurationen, deren Sessions Lookout zeigt (je eine fuer `CLAUDE_CONFIG_DIR`); fehlende werden
     /// uebersprungen.
     var claudeConfigDirs = [NSHomeDirectory() + "/.claude"]
+    /// Eigene Namen (`--name`, `/rename`; kein Auto-Titel) von Sessions, die andere Sessions fuehren: mit ruhendem
+    /// Aufpasser macht sie nur eine Frage fertig, nicht ihr Bericht ueber andere Fenster (Kevin 2026-10-09).
+    var leadNames: [String] = []
 }
 
 /// Hex -> NSColor. Unlesbares faellt auf Mint zurueck, nie auf Rot.
@@ -91,6 +94,8 @@ func parseConfig(_ obj: [String: Any]) -> AppConfig {
         .map { ($0.trimmingCharacters(in: .whitespaces) as NSString).standardizingPath }
         .filter { $0.hasPrefix("/") }
     if !dirs.isEmpty { c.claudeConfigDirs = dirs }
+    c.leadNames = (obj["leadNames"] as? [Any] ?? []).compactMap { $0 as? String }
+        .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     return c
 }
 

@@ -50,6 +50,11 @@ func testParseAgentsJson() {
     let idle = s[2]
     assert(idle.pid == 45880)
     assert(idle.ready, "status=idle ist ready")
+
+    // Kevin 2026-10-09: `shell` = Zug vorbei, nur Hintergrund-Befehle laufen; `busy` = das Modell arbeitet.
+    let shell = parseAgent(["sessionId": "s", "pid": 7, "kind": "interactive", "status": "shell"])
+    assert(shell?.backgroundOnly == true && shell?.ready == false, "shell: nicht fertig, nur Hintergrund")
+    assert(!busy.backgroundOnly && !idle.backgroundOnly && !background.backgroundOnly, "sonst nie nur Hintergrund")
 }
 
 func testParseAgentsJsonRobust() {
@@ -1928,7 +1933,8 @@ func testBackgroundActivity() {
     var said: [String] = []
     let server: Set<pid_t> = [542]
     let watch = BackgroundWatch(netUsage: { netNow }, listening: { _ in server }, report: { said.append($0) })
-    var busy = Session(id: "claude:b", engine: .claude, pid: 530, name: "lookout-b", cwd: "", ready: false, alive: true)
+    var busy = Session(id: "claude:b", engine: .claude, pid: 530, name: "lookout-b", cwd: "", ready: false, alive: true,
+                       backgroundOnly: true)
     busy.digest = Digest(text: "Waiting for the workers. Nothing needed from you.", last: .text, turnEnded: true)
     func tick(_ dt: TimeInterval, _ s: Session, rows r: [PsRow] = rows) -> Session {
         watch.adjust([s], rows: r, now: t0.addingTimeInterval(dt), window: 90)[0]
@@ -2003,6 +2009,17 @@ func testBackgroundActivity() {
         let s = tick(dt, busy, rows: ohneShell)
         assert(!s.ready && !s.watching, "ohne Hintergrund-Befehl: wie gemeldet")
     }
+    // Kevin 2026-10-09 (Team Lead 12:18:46): eine Nachricht einer anderen Session beginnt einen Zug ohne Prompt-Zeile; das
+    // Transkript zeigt bis zur ersten Antwort noch das alte Zug-Ende. Claude meldet aber sofort `busy`: arbeitet.
+    var leadLog: [String] = []
+    let leadWatch = BackgroundWatch(netUsage: { [:] }, listening: { _ in [] }, report: { leadLog.append($0) })
+    for dt in [0.0, 96] { _ = leadWatch.adjust([busy], rows: rows, now: t0.addingTimeInterval(dt), window: 90) }
+    var geweckt = Session(id: busy.id, engine: .claude, pid: 530, name: "lookout-b", cwd: "", ready: false, alive: true)
+    geweckt.digest = busy.digest
+    let arbeitet = leadWatch.adjust([geweckt], rows: rows, now: t0.addingTimeInterval(99), window: 90)[0]
+    assert(!arbeitet.ready && !arbeitet.watching, "busy trotz altem Zug-Ende im Transkript: arbeitet")
+    assert(leadLog == ["Hintergrund ruht seit 90 s: lookout-b gilt als überwacht (Aufpasser läuft)",
+                       "Hintergrund arbeitet wieder: lookout-b"], "bekam \(leadLog)")
     let frage = Session(id: "claude:q", engine: .claude, pid: 530, name: "q", cwd: "", ready: true, waiting: true, alive: true)
     assert(watch.adjust([frage], rows: rows, now: t0, window: 90)[0].waiting, "eine Frage bleibt Frage")
     let codex = Session(id: "codex:c", engine: .codex, pid: 530, name: "c", cwd: "", ready: false, alive: true)
@@ -2018,7 +2035,8 @@ func testWatcherNeedsKevin() {
     var said: [String] = []
     let watch = BackgroundWatch(netUsage: { [:] }, listening: { _ in [542] }, report: { said.append($0) })
     func session(_ text: String, kevin: Bool = false) -> Session {
-        var s = Session(id: "claude:q", engine: .claude, pid: 530, name: "lookout-q", cwd: "", ready: false, alive: true)
+        var s = Session(id: "claude:q", engine: .claude, pid: 530, name: "lookout-q", cwd: "", ready: false, alive: true,
+                        backgroundOnly: true)
         s.digest = Digest(text: text, last: .text, turnEnded: true, kevinTurn: kevin)
         return s
     }
@@ -2111,6 +2129,40 @@ func testWatcherNeedsKevin() {
            "Antwort auf Kevins Nachricht ohne Zusage: weiter fertig")
 }
 
+/// Kevin 2026-10-09 (Team Lead, 6 Tage: 211 von 523 Zug-Enden ohne seine Nachricht FERTIG, obwohl er nur wartete): eine
+/// Lead-Session (`leadNames`) berichtet ueber andere Fenster. Mit ruhendem Aufpasser macht sie nur eine Frage oder Kevins
+/// eigene, ungesehene Nachricht fertig.
+func testLeadReportsOnOtherWindows() {
+    let rows = backgroundFixture.split(separator: "\n").compactMap(parsePsLine)
+    let t0 = Date(timeIntervalSince1970: 80_000)
+    let watch = BackgroundWatch(netUsage: { [:] }, listening: { _ in [542] }, leads: ["Beta · Lead"], report: { _ in })
+    func session(_ text: String, name: String = "Beta · Lead", kevin: Bool = false) -> Session {
+        var s = Session(id: "claude:\(name)", engine: .claude, pid: 530, name: name, cwd: "", ready: false, alive: true,
+                        backgroundOnly: true)
+        s.digest = Digest(text: text, last: .text, turnEnded: true, kevinTurn: kevin)
+        return s
+    }
+    var dt = 0.0
+    func judged(_ s: Session) -> Session {
+        dt += 3
+        return watch.adjust([s], rows: rows, now: t0.addingTimeInterval(dt), window: 90)[0]
+    }
+    let andere = "Kevin, two windows wait for you: #8's look at its page and #12's merge. One watcher runs. I wait."
+    for t in [0.0, 96] { _ = watch.adjust([session(andere)], rows: rows, now: t0.addingTimeInterval(t), window: 90) }
+    dt = 96
+    assert(judged(session(andere)).watching, "Lead: Bericht über andere Fenster ist überwacht")
+    assert(judged(session("Kevin, #8's handover is complete: the new window runs since 22:13.")).watching,
+           "Lead: 'complete' über eine andere Karte ist überwacht")
+    assert(judged(session("Kevin, #8 waits on the case page. Shall I hold #12 until then?")).ready, "Lead mit Frage: fertig")
+    assert(judged(session("Kevin, noted: the order stays.", kevin: true)).ready, "Kevins eigene Nachricht: fertig")
+    assert(judged(session(andere, name: "Beta · Worker")).ready, "andere Session: Wortliste wie bisher")
+    assert(judged(session(andere, name: "beta · lead")).ready, "Name muss genau stimmen")
+    // review quick 2026-10-09 (Codex + GLM): das Menue zeigt den eigenen Namen aus dem Transkript, nicht den der Status-Datei.
+    var umbenannt = session(andere, name: "beta-lead")
+    umbenannt.digest?.name = "Beta · Lead"
+    assert(judged(umbenannt).watching, "Name wie im Menue (Transkript) zählt auch")
+}
+
 /// Kevin 2026-10-04 (Screenshot 22:38): die Antwort auf Kevins eigene Nachricht ist fertig, bis er das Fenster nach
 /// ihr einmal vor sich hatte — danach gilt sie wie eine Antwort, die nicht er ausgeloest hat (ueberwacht, wenn sie nichts
 /// von ihm will).
@@ -2121,7 +2173,8 @@ func testWatcherAnswerSeen() {
     var said: [String] = []
     let watch = BackgroundWatch(netUsage: { [:] }, listening: { _ in [542] }, report: { said.append($0) })
     func session(_ text: String, answerAt: Date? = answered) -> Session {
-        var s = Session(id: "claude:s", engine: .claude, pid: 530, name: "lookout-s", cwd: "", ready: false, alive: true)
+        var s = Session(id: "claude:s", engine: .claude, pid: 530, name: "lookout-s", cwd: "", ready: false, alive: true,
+                        backgroundOnly: true)
         s.digest = Digest(text: text, last: .text, answerAt: answerAt, turnEnded: true, kevinTurn: true)
         return s
     }
@@ -2873,6 +2926,8 @@ func testParseConfig() {
     assert(parseConfig(["claudeConfigDirs": ["", " ~/.claude-work "]]).claudeConfigDirs == [home + "/.claude-work"],
            "Leerzeichen am Rand weg, Leeres faellt raus")
     assert(parseConfig(["pollSec": 0, "stackSide": "oben"]).pollSec == 3, "ungueltig: Standard")
+    assert(d.leadNames.isEmpty && parseConfig(["leadNames": [" Beta · Lead ", "", 7]]).leadNames == ["Beta · Lead"],
+           "Lead-Namen: Rand weg, Leeres und Unlesbares fallen raus")
     // GP 14: der Schluessel hat Vorrang vor der Mac-Sprache.
     assert(prefersGerman(language: "de", preferred: ["en-US"]) && !prefersGerman(language: "en", preferred: ["de-CH"]))
     assert(prefersGerman(language: nil, preferred: ["de-CH", "en"]) && !prefersGerman(language: nil, preferred: ["en-US", "de"]))
@@ -3199,6 +3254,7 @@ enum LayoutTestMain {
         test("testBackgroundActivity", testBackgroundActivity)
         test("testListeningPids", testListeningPids)
         test("testWatcherNeedsKevin", testWatcherNeedsKevin)
+        test("testLeadReportsOnOtherWindows", testLeadReportsOnOtherWindows)
         test("testWatcherAnswerSeen", testWatcherAnswerSeen)
         test("testSessionInFront", testSessionInFront)
         test("testOpensWithNothingNeeded", testOpensWithNothingNeeded)
