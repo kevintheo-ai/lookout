@@ -1396,6 +1396,18 @@ func testTranscriptReader() {
     assert(reader.digest(sessionId: "sid-1")?.title == "Zweites Thema", "gewachsene Datei wird neu gelesen")
     reader.forget(except: [])
     assert(reader.digest(sessionId: "sid-1")?.title == "Zweites Thema", "nach dem Vergessen neu gesucht")
+
+    // review quick 2026-10-10 (GLM): die Nachricht der anderen Session faellt nach einem langen Zug aus dem Ausschnitt.
+    let small = TranscriptReader(configDirs: [root], tailBytes: 400)
+    let peer = #"{"type":"user","isMeta":true,"origin":{"kind":"peer","from":"uds:/tmp/cc-socks/55848.sock","verifiedPeerPid":55848,"name":"Lead"},"message":{"content":"go"}}"#
+    let w = FileHandle(forWritingAtPath: path)!
+    w.seekToEndOfFile()
+    w.write(Data((peer + "\n").utf8))
+    assert(small.digest(sessionId: "sid-1")?.peerPid == 55848, "Nachricht im Ausschnitt")
+    w.write(Data((String(repeating: #"{"type":"progress"}"# + "\n", count: 40)).utf8))
+    try? w.close()
+    let later = small.digest(sessionId: "sid-1")
+    assert(later?.peerPid == 55848 && later?.peerName == "Lead", "aus dem Ausschnitt gefallen: gemerkt")
 }
 
 func testAdvanceSince() {
@@ -1879,6 +1891,12 @@ func testTurnEnded() {
     assert(!digestTranscript([ende, antwort].joined(separator: "\n")).turnEnded, "eine spaetere Antwort hebt es auf")
     let meta = #"{"type":"user","isMeta":true,"message":{"content":"<system-reminder>"}}"#
     assert(digestTranscript([antwort, ende, meta].joined(separator: "\n")).turnEnded, "System-Einblendung ist kein Prompt")
+    // Kevin 2026-10-10 (23:27, zwei wartende Fenster nach /compact FERTIG): die Zusammenfassung ist kein Prompt.
+    let peer = #"{"type":"user","isMeta":true,"origin":{"kind":"peer","from":"uds:/tmp/cc-socks/55848.sock","verifiedPeerPid":55848,"name":"Lead"},"message":{"content":"go"}}"#
+    let grenze = #"{"type":"system","subtype":"compact_boundary","isMeta":false}"#
+    let summary = #"{"type":"user","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"content":"This session is being continued from a previous conversation that ran out of context."}}"#
+    let d = digestTranscript([peer, antwort, ende, grenze, summary].joined(separator: "\n"))
+    assert(d.turnEnded && d.kevinTurn == false && d.peerPid == 55848, "Verdichtung aendert nichts am Zug")
 }
 
 /// Live 2026-09-26: eine Session mit `zsh → fnm → node` im Hintergrund (0 % Rechenzeit), daneben die MCP-Server als
@@ -2457,6 +2475,22 @@ func testDigestPeerAndWakeups() {
     let toAgent = #"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"s2","name":"SendMessage","input":{"to":"a1b2c304ddff2ae50","message":"go"}}]}}"#
     let agentOk = #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"s2","content":"ok"}]},"toolUseResult":{"success":true,"message":"delivered to a1b2c304ddff2ae50"}}"#
     assert(digestTranscript(lines(kevin, toAgent, agentOk)).peerName == nil, "Nachricht an einen eigenen Subagenten")
+    // Kevin 2026-10-10 (Screenshot 23:33): an eine Socket-Adresse geschrieben, die Antwort nennt keinen Namen.
+    let toSock = #"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"s3","name":"SendMessage","input":{"to":"uds:/tmp/cc-socks/55848.sock","message":"holding"}}]}}"#
+    let sockOk = ##"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"s3","content":"ok"}]},"toolUseResult":{"success":true,"message":"“holding” → uds:/tmp/cc-socks/55848.sock; in that session's inbox, not yet read by its Claude"}}"##
+    d = digestTranscript(lines(kevin, send, sent, toSock, sockOk))
+    assert(d.peerPid == 55848 && d.peerName == nil, "an eine Socket-Adresse: pid aus dem Pfad")
+    let sockFail = #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"s3","content":"error"}]},"toolUseResult":{"success":false,"message":"no such socket"}}"#
+    assert(digestTranscript(lines(kevin, toSock, sockFail)).peerPid == nil, "Zustellung gescheitert")
+    // review quick 2026-10-10 (Codex): abgelehnter Aufruf ohne toolUseResult; Antwort an dieselbe Session behaelt den Namen.
+    let sockDenied = #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"s3","is_error":true,"content":"Tool execution was denied"}]}}"#
+    assert(digestTranscript(lines(kevin, toSock, sockDenied)).peerPid == nil, "Aufruf abgelehnt")
+    let toOther = #"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"s4","name":"SendMessage","input":{"to":"uds:/tmp/service/33134.sock","message":"x"}}]}}"#
+    let otherOk = #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"s4","content":"ok"}]},"toolUseResult":{"success":true,"message":"sent"}}"#
+    assert(digestTranscript(lines(kevin, toOther, otherOk)).peerPid == nil, "fremder Socket ist keine Session")
+    let fromLead = #"{"type":"user","isMeta":true,"origin":{"kind":"peer","from":"uds:/tmp/cc-socks/55848.sock","verifiedPeerPid":55848,"name":"Lead"},"message":{"content":"go"}}"#
+    d = digestTranscript(lines(fromLead, toSock, sockOk))
+    assert(d.peerPid == 55848 && d.peerName == "Lead", "Antwort an dieselbe Session: Name bleibt")
 
     // Wecker (ScheduleWakeup): gestellt, gestoppt, ausgeloest.
     let wake = #"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"w1","name":"ScheduleWakeup","input":{"delaySeconds":1200}}]}}"#
@@ -2640,6 +2674,30 @@ func testNothingNeeded() {
     assert(!saysNothingNeeded("I have nothing more to ask\nthe team lead; the release waits."), "Dritter nach Umbruch")
     assert(!opensWithNothingNeeded("I have nothing to ask you. Please approve the deployment."), "keine Frage != keine Bitte")
     assert(!saysNothingNeeded("I have nothing to ask you. Please approve the deployment."), "Bitte am ganzen Text")
+
+    // Kevin 2026-10-10 (Screenshot 23:33): wartet die Session selbst und sagt der erste Satz "nichts noetig", zaehlen
+    // Bitten im Rest nicht (Bericht ueber ein anderes Fenster); "?", offene Frage, Schliessen sperren weiter.
+    let rulesPage = "Nothing needed from you, Kevin. Nothing runs now. I hold until the team lead's go for the test step "
+        + "tomorrow.\n\n- **To know:** my turn comes after the rule editor's. The editor waits on your answer to its spec "
+        + "question in the morning."
+    assert(!saysNothingNeeded(rulesPage) && waitsWithNothingNeeded(rulesPage), "anderes Fenster wartet auf Kevin")
+    assert(!waitsWithNothingNeeded("Nothing needed from you. The editor waits on your answer."), "ohne eigenes Warten")
+    assert(!waitsWithNothingNeeded("Nothing needed from you. I hold until the lead's go. Should I merge #12?"), "Fragezeichen")
+    assert(!waitsWithNothingNeeded("Nothing needed from you. I wait for the lead. My question above stands."), "offene Frage")
+    assert(!waitsWithNothingNeeded("Nothing needed from you. I wait for the lead. You can close this window."), "schliessen")
+    assert(!waitsWithNothingNeeded("I have nothing to ask you. I wait for the lead. Please approve the release."),
+           "keine Frage ist kein erster Satz")
+    assert(!waitsWithNothingNeeded("Nothing needed from you. I wait for the lead. Please approve the deployment now."),
+           "please sperrt weiter (review quick, GLM)")
+    assert(!waitsWithNothingNeeded("Nichts von dir nötig. Ich warte auf die Lead-Session. Bitte gib den PR frei."), "bitte")
+    assert(!waitsWithNothingNeeded("Nothing needed from you. I wait for the lead. The report for you is complete."),
+           "Fertig-Meldung an Kevin (review quick, Codex)")
+    assert(!waitsWithNothingNeeded("Nothing needed from you on testing. I wait for the lead. I need your approval for the "
+                                   + "deployment now."), "I need your")
+    assert(!waitsWithNothingNeeded("Nothing needed from you. I wait for the lead. The final report is complete. It is ready "
+                                   + "for you to review."), "ready for you")
+    assert(!waitsWithNothingNeeded("Nothing needed from you. I hold until you approve the release.\n- The editor waits on "
+                                   + "your answer."), "Warten auf Kevin ist kein eigenes Warten")
     assert(!saysNothingNeeded("Nothing needed from you. The four tickets I hold are resolved, the queue is finished."), "Besitz")
     assert(!saysNothingNeeded("Nothing needed from you. The queue is finished. I'm waiting for nothing else tonight."),
            "waiting for nothing")
@@ -2677,6 +2735,15 @@ func testStandby() {
     // review quick 2026-09-27 (GLM): pid wiedervergeben — nur eine laufende Claude-Session zaehlt, nicht irgendein Prozess.
     assert(s.adjust([worker("b2", peerName: nil)], now: now)[0].ready, "pid ohne Claude-Session dazu: fertig")
     assert(s.adjust([worker("c", peerPid: nil), lead], now: now)[0].watching, "nur Name (SendMessage), Session läuft")
+    // review quick 2026-10-10 (Codex): eine Session, die erst nach der Nachricht startete, traegt nur die alte pid.
+    var reborn = worker("c2", peerName: nil)
+    reborn.digest?.peerAt = now.addingTimeInterval(-3600)
+    let newcomer = Session(id: "claude:new", engine: .claude, pid: 33134, name: "Gamma · Other", cwd: "/v", ready: false,
+                           alive: true, startedAt: now.addingTimeInterval(-600))
+    assert(s.adjust([reborn, newcomer], now: now)[0].ready, "wiedervergebene pid: fertig")
+    var same = worker("c3", peerName: nil)
+    same.digest?.peerAt = now.addingTimeInterval(-60)
+    assert(s.adjust([same, newcomer], now: now)[0].watching, "pid schon vor der Nachricht gestartet: dieselbe Session")
     assert(s.adjust([worker("d", peerPid: nil)], now: now)[0].ready, "nur Name, keine solche Session: fertig")
     let soon: [String: Date?] = ["loop": now.addingTimeInterval(600)]
     assert(s.adjust([worker("e", peerPid: nil, peerName: nil, wakeups: soon)], now: now)[0].watching, "Wecker steht aus")

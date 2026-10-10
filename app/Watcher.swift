@@ -188,6 +188,9 @@ struct Digest: Equatable {
     /// beendet das Gespraech seit R11 nicht mehr (Kevin 2026-10-05).
     var peerPid: pid_t?
     var peerName: String?
+    /// Wann die andere Session zuletzt per pid belegt wurde: eine Session, die erst danach startete, traegt nur ihre
+    /// wiedervergebene pid (`Standby`, review quick 2026-10-10, Codex).
+    var peerAt: Date?
     /// Selbst gestellte Wecker, die noch ausstehen: "loop" (`ScheduleWakeup`) bzw. Cron-ID (`CronCreate`) -> Zeitpunkt,
     /// nil = wiederkehrend.
     var wakeups: [String: Date?] = [:]
@@ -233,9 +236,11 @@ func stepLabel(tool: String, input: [String: Any]) -> String {
     }
 }
 
-/// Kevins Prompt — nicht ein Werkzeug-Ergebnis und keine System-Einblendung (`isMeta`).
+/// Kevins Prompt — nicht ein Werkzeug-Ergebnis, keine System-Einblendung (`isMeta`) und nicht die Zusammenfassung nach
+/// einer Verdichtung (`isCompactSummary`, Kevin 2026-10-10: zwei wartende Fenster standen nach /compact FERTIG).
 private func isPrompt(_ obj: [String: Any]) -> Bool {
-    guard obj["isMeta"] as? Bool != true, let msg = obj["message"] as? [String: Any] else { return false }
+    guard obj["isMeta"] as? Bool != true, obj["isCompactSummary"] as? Bool != true,
+          let msg = obj["message"] as? [String: Any] else { return false }
     if msg["content"] is String { return true }
     guard let blocks = msg["content"] as? [[String: Any]] else { return false }
     return blocks.contains { $0["type"] as? String == "text" }
@@ -365,6 +370,13 @@ final class TranscriptReader {
             d.kevinPrompt = gap ? nil : seen.digest.kevinPrompt
             d.kevinPromptAt = gap ? nil : seen.digest.kevinPromptAt
         }
+        if d.peerPid == nil, d.peerName == nil, let seen = cache[sessionId]?.digest {
+            // Nach einem langen Zug faellt die Nachricht der anderen Session aus dem Ausschnitt: die zuletzt gesehene
+            // behalten — ob sie noch laeuft, prueft `Standby` (review quick 2026-10-10, GLM; so fiel "#8 Rules page" um).
+            d.peerPid = seen.peerPid
+            d.peerName = seen.peerName
+            d.peerAt = seen.peerAt
+        }
         if d.name == nil || d.title == nil {
             // Nach einem langen Zug fehlen Name und Auto-Titel im Ausschnitt (`lastTitles`): die zuletzt
             // gesehenen behalten, beim ersten Lesen einmal rueckwaerts suchen.
@@ -409,6 +421,8 @@ final class TranscriptReader {
 // bei jedem laeuft (Kevin: "nicht jeder kann ein lokales LLM laufen lassen").
 
 private let WAKE_TOOLS: Set<String> = ["ScheduleWakeup", "CronCreate", "CronDelete", "SendMessage"]
+/// Nur Claudes eigene Session-Sockets ("uds:/tmp/cc-socks/<pid>.sock"), keine beliebigen (review quick, Codex).
+private let SOCKET_PID = try! NSRegularExpression(pattern: #"/cc-socks/(\d+)\.sock$"#)
 
 /// Weck-Quellen aus einem `user`-Eintrag: die Nachricht einer anderen Session beginnt ein Gespraech mit ihr; Ergebnisse von
 /// Wecker- und SendMessage-Aufrufen stellen oder loeschen Wecker bzw. nennen die andere Session. Kevins Prompt beendet das
@@ -430,6 +444,7 @@ private func noteWakeSources(_ obj: [String: Any], results: [[String: Any]],
     if kind == "peer", (origin?["from"] as? String)?.hasPrefix("uds:") == true, origin?["handback"] as? Bool != true {
         d.peerPid = (origin?["verifiedPeerPid"] as? Int).map { pid_t($0) }
         d.peerName = origin?["name"] as? String
+        d.peerAt = transcriptDate(obj)
         d.kevinTurn = false
     }
     let outcome = obj["toolUseResult"] as? [String: Any] ?? [:]
@@ -455,6 +470,19 @@ private func noteWakeSources(_ obj: [String: Any], results: [[String: Any]],
         case "CronDelete":
             if let cid = outcome["id"] as? String ?? call.input["id"] as? String { d.wakeups.removeValue(forKey: cid) }
         case "SendMessage":
+            // An eine Socket-Adresse ("uds:/tmp/cc-socks/<pid>.sock") ist es immer eine andere Session; deren Antwort nennt
+            // dann keinen Namen und nicht "another Claude session" (Kevin 2026-10-10, Screenshot 23:33: "#8 Rules page
+            // build" schrieb dem Team Lead so und stand FERTIG). Nur nachweislich zugestellt (`success` true, kein
+            // `is_error`); die pid prueft `Standby` gegen die laufenden Sessions und ihren Start (review quick, Codex).
+            if let to = call.input["to"] as? String, to.hasPrefix("uds:"), outcome["success"] as? Bool == true,
+               r["is_error"] as? Bool != true,
+               let m = SOCKET_PID.firstMatch(in: to, range: NSRange(to.startIndex..., in: to)),
+               let range = Range(m.range(at: 1), in: to), let pid = pid_t(to[range]) {
+                if pid != d.peerPid { d.peerName = nil }   // Antwort an dieselbe Session behaelt ihren Namen
+                d.peerPid = pid
+                d.peerAt = transcriptDate(obj)
+                continue
+            }
             // Nur an eine andere laufende Session ("another Claude session on this machine"), nicht an einen Subagenten.
             let said = outcome["message"] as? String ?? r["content"] as? String ?? ""
             guard said.contains("another Claude session"), let to = call.input["to"] as? String else { continue }
@@ -645,11 +673,16 @@ private func has(_ r: NSRegularExpression, _ text: String) -> Bool {
 /// Fertig-Meldung? `holding`: die Session wartet selbst, dann zaehlen Fortschrittswoerter nur noch in Saetzen an Kevin
 /// ("When you're done testing, merge PR #12", review quick 2026-10-10, Codex) oder vor einem weiteren Satzteil.
 func asksNothing(_ text: String, holding: Bool = false) -> Bool {
+    !text.contains("?") && !reportsDone(text, holding: holding) && !has(ASKS_KEVIN, text) && !has(OPEN_QUESTION, text)
+}
+
+/// Fertig-Meldung im Text: Schliessen/Uebergabe immer, Fortschrittswoerter mit `holding` wie bei `asksNothing`.
+private func reportsDone(_ text: String, holding: Bool) -> Bool {
     var rest = withoutProgressNotes(text)
     // Schliessen/Uebergabe vor dem Ausblenden pruefen: "is closed out" verloere sonst sein "is closed" (review quick, Codex).
-    guard !text.contains("?"), !has(CLOSE_WORDS, rest) else { return false }
+    if has(CLOSE_WORDS, rest) { return true }
     if holding { rest = blankBySentence(PROGRESS_DONE_PLAIN, in: rest, unless: mentionsKevin(), span: SENTENCE_ACROSS_LINES) }
-    return !has(PROGRESS_DONE, rest) && !has(ASKS_KEVIN, text) && !has(OPEN_QUESTION, text)
+    return has(PROGRESS_DONE, rest)
 }
 
 /// Sagt die Session in einem Satz ohne Bezug auf Kevin, dass sie selbst wartet — und in keinem, dass sie auf ihn wartet?
@@ -701,6 +734,23 @@ func opensWithNothingNeeded(_ text: String) -> Bool {
     let first = String(t[..<(end?.lowerBound ?? t.endIndex)])
     return has(NOTHING_NEEDED, first) && saysNothingNeeded(first)
 }
+
+/// Braucht eine Session, die nur auf eine andere Session oder einen Wecker wartet, nichts von Kevin (`Standby`)? Der ganze
+/// Text sagt "nichts noetig" (`saysNothingNeeded`) — oder der erste Satz sagt es und die Session sagt selbst, dass sie
+/// wartet (`holdsItself`): dann zaehlen Bitten im Rest nicht, wie beim Aufpasser. Weiter sperren: ein "?", eine offene
+/// fruehere Frage, eine Fertig-Meldung wie in R13 (`reportsDone` mit Warten: "The report for you is complete") und eine
+/// direkte Bitte (`DIRECT_ASK`: "please/bitte", "I need your …", "ready for you", "for you to review" — review quick, GLM +
+/// Codex). Kevin 2026-10-10 (Screenshot 23:33): "#8 Rules page build" ("Nothing needed … I hold until the team lead's go
+/// … The editor waits on your answer") stand FERTIG — Bericht ueber ein ANDERES Fenster. Entwicklungszahl: 14 von 3.022
+/// Zug-Enden seit 05.10. werden zusaetzlich grau (Wortlisten-Fehlgriffe "click/except", Hinweise "closing box waits for
+/// you in the morning", Berichte ueber andere Fenster). Der Preis der Regel vom 05.10. (17 Bitten versteckt) galt ohne
+/// eigenes Warten.
+func waitsWithNothingNeeded(_ text: String) -> Bool {
+    saysNothingNeeded(text)
+        || (opensWithNothingNeeded(text) && holdsItself(text) && !reportsDone(text, holding: true) && !has(DIRECT_ASK, text))
+}
+private let DIRECT_ASK = caseless(#"\bplease\b|\bbitte\b|\bI need (you|your)\b|\bich brauche (dich|dein\w*)\b|"#
+    + #"ready for you|for you to (merge|review|test|look|decide|approve|check)"#)
 
 /// Satzende: "." oder "!" (auch mit schliessendem Markdown, Anfuehrungszeichen, Guillemets), dann Leerraum, dann — nach
 /// beliebigen Zeichen, die weder Buchstabe noch Ziffer sind (Markdown, Backticks, Klammern, "#") — ein Grossbuchstabe oder
@@ -762,19 +812,25 @@ final class Standby {
     func adjust(_ sessions: [Session], now: Date, seen: [String: Date] = [:]) -> [Session] {
         // Die andere Session lebt, wenn sie unter den laufenden Claude-Sessions steht (Status-Dateien, liegengebliebene
         // mit wiedervergebener pid filtert `readSessionFiles`) — nicht schon, wenn irgendein Prozess die pid traegt
-        // (review quick 2026-09-27, GLM). Ohne pid (eigener SendMessage) zaehlt der Name.
+        // (review quick 2026-09-27, GLM). Ohne pid (eigener SendMessage) zaehlt der Name. Startete die Session mit der pid
+        // erst nach der Nachricht, ist es nicht die andere Session (wiedervergebene pid, review quick 2026-10-10, Codex).
         let live = sessions.filter { $0.engine == .claude && $0.pid != nil }
-        let pids = Set(live.compactMap(\.pid))
+        let started = Dictionary(live.map { ($0.pid!, $0.startedAt) }, uniquingKeysWith: { a, _ in a })
+        let peerAlive = { (pid: pid_t, at: Date?) -> Bool in
+            guard let start = started[pid] else { return false }
+            guard let start, let at else { return true }
+            return start <= at.addingTimeInterval(2)
+        }
         let names = Set(live.map(\.name))
         var out = sessions
         var nowQuiet: [String: String] = [:]
         for i in out.indices {
             let s = out[i]
             guard s.engine == .claude, s.ready, !s.waiting, !s.watching, let d = s.digest, d.turnEnded, d.question == nil,
-                  d.kevinTurn != true || answerSeen(d, seenAt: seen[s.id]), let text = d.text, saysNothingNeeded(text)
+                  d.kevinTurn != true || answerSeen(d, seenAt: seen[s.id]), let text = d.text, waitsWithNothingNeeded(text)
             else { continue }
             // Nachfolger mit gleichem Namen (neue Lead-Session) zaehlt auch, wenn die gepruefte pid schon beendet ist.
-            let peer = (d.peerPid.map(pids.contains) ?? false) || (d.peerName.map(names.contains) ?? false)
+            let peer = (d.peerPid.map { peerAlive($0, d.peerAt) } ?? false) || (d.peerName.map(names.contains) ?? false)
             let wake = d.wakeups.values.contains { $0.map { now < $0.addingTimeInterval(Self.wakeGrace) } ?? true }
             guard peer || wake else { continue }
             out[i].ready = false

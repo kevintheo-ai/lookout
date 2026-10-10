@@ -201,6 +201,10 @@ A few details:
   not a "finished" message, unless they stand in a sentence that mentions you ("When you're done testing,
   merge PR #12") or a comma, semicolon or dash follows them ("The summary is finished — reply by noon").
   "Close this window" or "handed over" still are.
+- If such a waiting session's first sentence says explicitly that nothing is needed from you and it says
+  itself that it waits, requests further down no longer count: they are often reports on other windows ("the
+  editor waits on your answer"). A "?", an earlier question still open, a "finished" message, "please" or
+  "close this window" still turn it "done".
 - A prompt the session was started with (`claude "…"`, for example a handover from another session) does not
   count as your message, even if you started it that way yourself.
 - A session named in `leadNames` (one that runs other sessions and reports on their windows) with a resting
