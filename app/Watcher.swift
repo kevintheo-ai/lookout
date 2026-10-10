@@ -504,10 +504,36 @@ private func caseless(_ pattern: String) -> NSRegularExpression {
 // an neuen Faellen steht aus.
 private let NOTHING_NEEDED = caseless(#"nothing (is |more )?needed|no action (is )?needed|nothing for you|"#
     + #"nichts (zu tun )?für dich|für dich (gerade )?nichts|nichts von dir|noch nichts zu entscheiden"#)
-private let DONE_WORDS = caseless(#"close this window|can close|kannst (das|dieses) fenster|schlie(ß|ss)en|stood down|"#
-    + #"nothing (is )?left|handed over|übergeben|erledigt|\bfinished\b|\bdone\b|abgeschlossen|"#
-    + #"until you (close|end)|for you to (end|close)|stays open|leave (this|the) (session|window) open|closed out|"#
-    + #"\b(is|are) (now )?(done|closed|merged|finished|complete|completed)\b"#)
+/// "Keine Frage an dich" seit Kevin 2026-10-10 (Screenshot 22:50: "I have nothing to ask you, Kevin … I wait for the team
+/// lead" stand FERTIG; 2 von 3.016 Zug-Enden seit 05.10.) — nicht an Dritte ("nothing to ask the lead", auch ueber den
+/// Zeilenumbruch; review quick, Codex + GLM). Schwaecher als "nichts noetig" (keine Frage heisst nicht keine Bitte): gilt
+/// nur am ganzen Text (`saysNothingNeeded`), nicht als erster Satz beim Aufpasser (`opensWithNothingNeeded`).
+private let NOTHING_TO_ASK = caseless(#"nothing (more |else )?to ask( you)?(?!\s+\w)|nichts (mehr )?zu fragen"#)
+/// Fertig-Meldung, Teil 1: Kevin kann das Fenster schliessen oder es ist uebergeben — sperrt immer.
+private let CLOSE_WORDS = caseless(#"close this window|can close|kannst (das|dieses) fenster|schlie(ß|ss)en|stood down|"#
+    + #"nothing (is )?left|handed over|übergeben|"#
+    + #"until you (close|end)|for you to (end|close)|stays open|leave (this|the) (session|window) open|closed out"#)
+/// Fertig-Meldung, Teil 2: Fortschrittswoerter — sperren nicht, wenn die Session selbst sagt, dass sie wartet (`holdsItself`).
+private let PROGRESS_DONE_PATTERN = #"erledigt|\bfinished\b|\bdone\b|abgeschlossen|"#
+    + #"\b(is|are) (now )?(done|closed|merged|finished|complete|completed)\b"#
+private let PROGRESS_DONE = caseless(PROGRESS_DONE_PATTERN)
+/// Nur diese blendet das Warten aus: ohne folgenden Satzteil — "The summary is finished — reply with any corrections"
+/// kann einen Auftrag einleiten (review quick 2026-10-10 Runde 2, GLM). Anders als `DONE_LATER` nicht nach Doppelpunkt:
+/// in 48 echten "nichts noetig"-Antworten seit 05.10. stand danach nie ein Auftrag, sondern "**Done:**"-Listen und
+/// Erklaerungen ("The review loop is closed: four rounds …").
+private let PROGRESS_DONE_PLAIN = caseless("(" + PROGRESS_DONE_PATTERN + #")(?!\s*[,;—–]|\s+-\s)"#)
+/// Die Session wartet selbst ("I hold until #258's run", "I'm waiting for the lead", "ich warte auf …"). "hold" nur mit
+/// "until" im Satz ("The tickets I hold are resolved" ist Besitz), nicht verneint, auch nicht mit Fuellwort dazwischen ("I
+/// wait no longer", "waiting for nothing", "ich warte jetzt nicht mehr") — review quick 2026-10-10, Codex + GLM.
+private let HOLDS = caseless(#"\bI(['’]m| am|['’]ll| will)? (now |still )?(wait|waiting|(hold|holding)(?=[^.!?]*\b(until|till)\b))\b"#
+    + #"(?!\s+(\w+\s+)?((for|on)\s+)?(not|no longer|nothing)\b)|\b(ich warte|warte ich)\b(?!\s+(\w+\s+)?(auf\s+)?(nicht|nichts)\b)"#)
+/// Kevin im Satz, auch "dir/dich" (review quick 2026-10-10, GLM: "Ich warte auf Rückmeldung von dir") und sein Vorname
+/// (`greetingName`: "I hold until Kevin reviews the PR"), dieser nur gross geschrieben ("Will" ist nicht "I will wait").
+private let MENTIONS_KEVIN_PATTERN = #"you|your|du|dein\w*|dich|dir"#
+private func mentionsKevin() -> NSRegularExpression {
+    let name = greetingName.isEmpty ? "" : "|(?-i:" + NSRegularExpression.escapedPattern(for: greetingName) + ")"
+    return caseless(#"\b("# + MENTIONS_KEVIN_PATTERN + name + #")\b"#)
+}
 private let ASKS_KEVIN = caseless(#"your (call|go|answer|decision|pick|merge|word)|for you to (merge|review|test|look|decide)|"#
     + #"ready for you|waits? (only )?for your|need(s)? (your|from you)|deine (entscheidung|antwort|freigabe|wahl)|"#
     + #"brauche ich|soll ich|willst du|möchtest du|beyond the|"#
@@ -564,10 +590,15 @@ private let ADDRESSES_KEVIN = caseless(#"\b(you|your|du|dein\w*)\b"#)
 
 private let SENTENCE_SPAN = try! NSRegularExpression(pattern: #"[^.!?\n]+"#)
 
+/// Satz ueber Zeilenumbrueche hinweg ("I hold until\nyou approve …"); ein Punkt ohne folgenden Leerraum ("README.md",
+/// "v1.2") trennt nicht (review quick 2026-10-10, Codex).
+private let SENTENCE_ACROSS_LINES = try! NSRegularExpression(pattern: #"(?:[^.!?]|[.!?](?=\S))+"#)
+
 /// Wie `blank`, aber Satz fuer Satz: Saetze mit einem `unless`-Treffer bleiben, wie sie sind.
-private func blankBySentence(_ r: NSRegularExpression, in text: String, unless: NSRegularExpression) -> String {
+private func blankBySentence(_ r: NSRegularExpression, in text: String, unless: NSRegularExpression,
+                             span: NSRegularExpression = SENTENCE_SPAN) -> String {
     let s = NSMutableString(string: text)
-    for m in SENTENCE_SPAN.matches(in: text, range: NSRange(location: 0, length: s.length)).reversed() {
+    for m in span.matches(in: text, range: NSRange(location: 0, length: s.length)).reversed() {
         let sentence = s.substring(with: m.range)
         if !has(unless, sentence) { s.replaceCharacters(in: m.range, with: blank(r, in: sentence)) }
     }
@@ -611,15 +642,34 @@ private func has(_ r: NSRegularExpression, _ text: String) -> Bool {
 }
 
 /// Will die Antwort nichts von Kevin — keine Frage, keine Bitte an ihn, keine noch offene fruehere Frage, keine
-/// Fertig-Meldung?
-func asksNothing(_ text: String) -> Bool {
-    !text.contains("?") && !has(DONE_WORDS, withoutProgressNotes(text)) && !has(ASKS_KEVIN, text)
-        && !has(OPEN_QUESTION, text)
+/// Fertig-Meldung? `holding`: die Session wartet selbst, dann zaehlen Fortschrittswoerter nur noch in Saetzen an Kevin
+/// ("When you're done testing, merge PR #12", review quick 2026-10-10, Codex) oder vor einem weiteren Satzteil.
+func asksNothing(_ text: String, holding: Bool = false) -> Bool {
+    var rest = withoutProgressNotes(text)
+    // Schliessen/Uebergabe vor dem Ausblenden pruefen: "is closed out" verloere sonst sein "is closed" (review quick, Codex).
+    guard !text.contains("?"), !has(CLOSE_WORDS, rest) else { return false }
+    if holding { rest = blankBySentence(PROGRESS_DONE_PLAIN, in: rest, unless: mentionsKevin(), span: SENTENCE_ACROSS_LINES) }
+    return !has(PROGRESS_DONE, rest) && !has(ASKS_KEVIN, text) && !has(OPEN_QUESTION, text)
+}
+
+/// Sagt die Session in einem Satz ohne Bezug auf Kevin, dass sie selbst wartet — und in keinem, dass sie auf ihn wartet?
+/// "I hold until you merge" und "I hold until Kevin reviews" zaehlen nicht und sperren auch neben "I wait for the lead"
+/// (review quick 2026-10-10, Codex).
+func holdsItself(_ text: String) -> Bool {
+    let ns = text as NSString
+    let kevin = mentionsKevin()
+    let holds = SENTENCE_ACROSS_LINES.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        .map { ns.substring(with: $0.range) }.filter { has(HOLDS, $0) }
+    return !holds.isEmpty && !holds.contains { has(kevin, $0) }
 }
 
 /// Sagt die Antwort ausdruecklich, dass Kevin nichts tun muss — ohne Frage, ohne Bitte an ihn, ohne Fertig-Meldung?
+/// Kevin 2026-10-10 (Screenshot 22:50: "Nothing needed … Main is merged into my branch … I hold until card #258's run"
+/// stand FERTIG): sagt sie selbst, dass sie wartet, sperren Fortschrittswoerter wie "is merged" nicht mehr — Bitten, Fragen
+/// und "Fenster schliessen/uebergeben" weiter. Seit 05.10. 12 von 3.016 Zug-Enden, dem Augenschein nach alle Warte-Zustaende
+/// (Entwicklungszahl, Nachmessung ab 12.10.).
 func saysNothingNeeded(_ text: String) -> Bool {
-    has(NOTHING_NEEDED, text) && asksNothing(text)
+    (has(NOTHING_NEEDED, text) || has(NOTHING_TO_ASK, text)) && asksNothing(text, holding: holdsItself(text))
 }
 
 /// Endet die Antwort mit der Zusage, sich von selbst zu melden ("Ich melde mich, sobald v3 durch ist", "I'll report
@@ -648,7 +698,8 @@ func opensWithNothingNeeded(_ text: String) -> Bool {
     guard !text.contains("?"), !has(OPEN_QUESTION, text) else { return false }
     let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
     let end = SENTENCE_END.firstMatch(in: t, range: NSRange(t.startIndex..., in: t)).flatMap { Range($0.range, in: t) }
-    return saysNothingNeeded(String(t[..<(end?.lowerBound ?? t.endIndex)]))
+    let first = String(t[..<(end?.lowerBound ?? t.endIndex)])
+    return has(NOTHING_NEEDED, first) && saysNothingNeeded(first)
 }
 
 /// Satzende: "." oder "!" (auch mit schliessendem Markdown, Anfuehrungszeichen, Guillemets), dann Leerraum, dann — nach

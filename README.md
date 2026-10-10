@@ -194,6 +194,13 @@ A few details:
 - For a session that waits for another session or a timer, the same applies once you have seen the answer,
   but the answer still has to say explicitly that nothing is needed from you; your message does not end its
   conversation with the other session.
+- For a session that waits for another session or a timer, "I have nothing to ask you" counts as "nothing
+  needed" too (not as the first sentence with a resting background command: no question is not the same as no
+  request). If the session also says in a sentence that does not mention you (nor your first name) that it
+  waits ("I hold until the other run", "I wait for the lead"), progress words such as "is merged" or "done" are
+  not a "finished" message, unless they stand in a sentence that mentions you ("When you're done testing,
+  merge PR #12") or a comma, semicolon or dash follows them ("The summary is finished — reply by noon").
+  "Close this window" or "handed over" still are.
 - A prompt the session was started with (`claude "…"`, for example a handover from another session) does not
   count as your message, even if you started it that way yourself.
 - A session named in `leadNames` (one that runs other sessions and reports on their windows) with a resting

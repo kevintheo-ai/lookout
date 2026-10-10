@@ -2579,6 +2579,73 @@ func testNothingNeeded() {
            "deutsch")
     assert(!asksNothing("Kevin, nothing new needs you. #12 runs its browser part. My question on the plan stands."),
            "Aufpasser: Frage steht")
+
+    // Kevin 2026-10-10 (Screenshots 22:50, zwei Fenster warteten auf den Team Lead und standen FERTIG): "nichts zu fragen"
+    // heisst "nichts noetig"; sagt die Session selbst, dass sie wartet, sperren Fortschrittswoerter wie "is merged" nicht.
+    assert(saysNothingNeeded("I have nothing to ask you, Kevin. Nothing of mine runs. I wait for the team lead to start "
+                             + "the next window.\n\n- **To know:** the two faults Codex found are still fixed in this pull request."),
+           "nichts zu fragen")
+    assert(saysNothingNeeded("Ich habe nichts zu fragen. Die Lead-Session meldet sich."), "nichts zu fragen, deutsch")
+    assert(!saysNothingNeeded("I have nothing to ask you. Should I merge #12?"), "nichts zu fragen, aber Frage")
+    assert(saysNothingNeeded("Nothing needed from you, Kevin. Main, with the case, is merged into my branch, and my checks "
+                             + "are green. Nothing runs now; I hold until card #258's signed run, about 01:00."), "wartet selbst")
+    assert(saysNothingNeeded("Nichts von dir nötig. #12 ist gemergt und abgeschlossen. Ich warte auf die Lead-Session."),
+           "wartet selbst, deutsch")
+    assert(!saysNothingNeeded("Nothing needed from you. PR #12 is merged."), "ohne Warten bleibt die Fertig-Meldung")
+    assert(!saysNothingNeeded("Nothing needed from you. PR #12 is merged. I hold until you merge #13."), "Warten auf Kevin")
+    assert(!saysNothingNeeded("Nothing needed from you. PR #12 is merged. I wait for your go."), "Warten auf Kevins Go")
+    assert(!saysNothingNeeded("Nothing needed from you. Card #98 is done. I wait for the lead to close this window."),
+           "Fenster schliessen sperrt weiter")
+    assert(!saysNothingNeeded("Nothing needed from you. The card is handed over; I wait for the lead."), "Übergabe sperrt weiter")
+    assert(!asksNothing("PR #12 is merged. I hold until the lead's go."), "Aufpasser ohne 'nichts nötig': wie bisher")
+    // review quick 2026-10-10 (GLM): Warten auf Kevin per "dir/dich" oder Vorname ist kein eigenes Warten; verneint auch nicht.
+    assert(!saysNothingNeeded("Nichts von dir nötig. Der Bericht ist abgeschlossen. Ich warte auf Rückmeldung von dir."),
+           "wartet auf dich (dir)")
+    let saved = greetingName
+    defer { greetingName = saved }
+    greetingName = "Will"
+    assert(!saysNothingNeeded("Nothing needed from you. The audit is complete. I hold until Will reviews the PR."), "Vorname")
+    assert(saysNothingNeeded("Nothing needed from you. The audit is complete. I hold until Willow's run."), "nur ganzes Wort")
+    assert(!saysNothingNeeded("Nichts von dir nötig. Ich warte nicht mehr, alles erledigt."), "verneint, deutsch")
+    assert(!saysNothingNeeded("Nothing needed from you. All done; I wait no longer."), "verneint, englisch")
+    // review quick 2026-10-10 (Codex): Satz ueber den Zeilenumbruch, Bitte an Kevin in einem anderen Satz.
+    assert(!saysNothingNeeded("Nichts von dir nötig. Die Aufgabe ist abgeschlossen. Ich warte nicht mehr auf die Lead-Session."),
+           "verneint, mit Ziel")
+    assert(!saysNothingNeeded("Nothing needed from you on testing. PR #12 is merged. I hold until\nyou approve the release."),
+           "Zeilenumbruch im Warte-Satz")
+    assert(!saysNothingNeeded("Nothing needed from you. I wait for the lead. When you're done testing, merge PR #12."),
+           "Bedingung an Kevin in einem anderen Satz")
+    // review quick 2026-10-10 Runde 2 (GLM): Satzteil nach dem Fertig-Wort, Vorname im Fertig-Satz, Besitz, "for nothing".
+    assert(!saysNothingNeeded("Nothing needed from you. I wait for the lead's green light. The summary is finished — reply "
+                              + "with any corrections by noon."), "Auftrag nach Gedankenstrich")
+    assert(!saysNothingNeeded("Nothing more to ask. I wait for the nightly build. Card #9 is finished — approval whenever suits."),
+           "nichts zu fragen, Auftrag nach Gedankenstrich")
+    assert(!saysNothingNeeded("Nothing needed from you. I wait for the timer. I hold until Will reviews the PR; the review "
+                              + "is done after that."), "Vorname im Fertig-Satz")
+    assert(saysNothingNeeded("Nothing needed from you. I wait for the lead's line.\n\n- **Done:** all five updates are "
+                             + "committed.\n- The review loop is closed: four rounds."), "Doppelpunkt: Liste, kein Auftrag")
+    // review quick 2026-10-10 Runde 2 (Codex).
+    assert(!saysNothingNeeded("Nothing needed from you. The card is closed out. I wait for the team lead."), "closed out")
+    assert(!saysNothingNeeded("Nothing needed from you on testing. I wait for the lead. When the CI run is done, merge PR #12."),
+           "Bedingung + Auftrag bleibt")
+    assert(!saysNothingNeeded("Nothing needed from you on testing. PR #12 is merged. I wait for the team lead. I hold until "
+                              + "you approve the release."), "zweiter Warte-Satz auf Kevin sperrt")
+    assert(!saysNothingNeeded("Nothing needed from you on testing. PR #12 is merged. I hold until README.md is approved by you."),
+           "Punkt im Dateinamen")
+    assert(!saysNothingNeeded("Nichts von dir nötig. Die Aufgabe ist abgeschlossen. Ich warte jetzt nicht mehr auf die "
+                              + "Lead-Session."), "Fuellwort vor der Verneinung")
+    assert(!saysNothingNeeded("I have nothing to ask the lead. The release waits."), "nichts zu fragen an Dritte")
+    assert(saysNothingNeeded("Nothing needed from you. PR #12 is merged. I will wait for the lead."), "'will' ist nicht Will")
+    // Kontrollrunde (GLM): Dritter nach dem Zeilenumbruch; "keine Frage" oeffnet nicht den ersten Satz beim Aufpasser.
+    assert(!saysNothingNeeded("I have nothing more to ask\nthe team lead; the release waits."), "Dritter nach Umbruch")
+    assert(!opensWithNothingNeeded("I have nothing to ask you. Please approve the deployment."), "keine Frage != keine Bitte")
+    assert(!saysNothingNeeded("I have nothing to ask you. Please approve the deployment."), "Bitte am ganzen Text")
+    assert(!saysNothingNeeded("Nothing needed from you. The four tickets I hold are resolved, the queue is finished."), "Besitz")
+    assert(!saysNothingNeeded("Nothing needed from you. The queue is finished. I'm waiting for nothing else tonight."),
+           "waiting for nothing")
+    assert(!saysNothingNeeded("Nichts von dir nötig. Die Liste ist abgeschlossen. Ich warte auf nichts mehr."), "auf nichts")
+    assert(saysNothingNeeded("Nothing needed from you. PR #12 is merged. I hold my report until the lead's check arrives."),
+           "hold … until")
 }
 
 func testStandby() {
