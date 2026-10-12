@@ -549,7 +549,7 @@ final class LookoutController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func focusName(_ idx: Int) -> String {
         let w = windows[idx]
         let s = w.visibleSession ?? w.sessions.first
-        return String((s?.digest?.name ?? s?.digest?.title ?? s?.name ?? w.title).prefix(60))
+        return String((s?.digest?.name ?? s?.name ?? w.title).prefix(60))
     }
 
     /// Eine Zeile je Aenderung — App-Aktivierung meldet denselben Fokus oft doppelt.
@@ -954,7 +954,7 @@ final class LookoutController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let list = submenu()
             for s in orphans.shown.prefix(8) {
                 list.addItem(disabledItem(
-                    "\(s.waiting ? "?" : (s.ready ? "●" : "○")) \(s.engine.rawValue): \(s.digest?.title ?? s.name)"))
+                    "\(s.waiting ? "?" : (s.ready ? "●" : "○")) \(s.engine.rawValue): \(s.digest?.name ?? s.name)"))
             }
             if orphans.staleAgents > 0 {
                 list.addItem(disabledItem("\(orphans.staleAgents) " + tr("alte Hintergrund-Agenten (> 24 h) — aufräumen mit „claude agents“",

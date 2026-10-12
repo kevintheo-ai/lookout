@@ -21,9 +21,11 @@ Warp or Ghostty, and shows which session is working, which one is done and which
   the answer, so open the window to see the question.
   The window you're working in never gets a frame; you're looking at it anyway.
 - **Labels:** every other AI window gets a small dark label with the status and how long it has been in it, the
-  session name and, for Claude Code, the current step or the first sentence of the answer or question. You see
-  it without clicking into the window. For Codex, Grok and Kimi the label is shorter: status, time and window
-  title.
+  session name and, for Claude Code once a turn is over, the question, the session's own status line (see below)
+  or the first sentence of the answer. While a session works, the label stays calm: no step-by-step updates. The
+  name is the session's own name (`/rename`, `claude --name`, or set by a hook); Claude's automatic topic title
+  changes as the session goes on, so Lookout never shows it and shows the folder instead. You see it all without
+  clicking into the window. For Codex, Grok and Kimi the label is shorter: status, time and window title.
 - **Four states:** `? WAITING FOR YOU`, `✓ DONE`, `● WORKING` and `◌ WATCHING` (Claude Code only, see below).
 - **Layouts:** three layouts for all AI windows on one screen, switched with Ctrl+Opt+1, 2 and 3.
   - **Focus:** the window you click goes to the middle. The others line up by who needs you first: waiting, then

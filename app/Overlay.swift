@@ -519,9 +519,12 @@ func labelContent(for w: TermWindow, since entry: SinceEntry?, now: Date) -> Lab
         return secs < 60 ? durationText(secs) : tr("seit ", "for ") + durationText(secs)
     }
     // v4: der eigene Name ("Projekt · Aufgabe", Namens-Hook) traegt das Projekt schon — ohne Ordner dahinter.
+    // Kevin 2026-10-12 ("immer klar sehen, welche Session welche ist"): nie Claudes Auto-Titel — der aendert sich laufend
+    // ("Ja mach das · ClaudeCode"). Ohne eigenen Namen steht bei Claude nur der Ordner, bis der Hook benennt.
     var parts: [String] = []
     let folder = d?.name == nil ? ((s?.cwd ?? "") as NSString).lastPathComponent : ""
-    for p in [d?.name ?? d?.title ?? titleGlyph(w.title).text, folder] where !p.isEmpty && !parts.contains(p) {
+    let own = d?.name ?? (s?.engine == .claude ? "" : titleGlyph(w.title).text)
+    for p in [own, folder] where !p.isEmpty && !parts.contains(p) {
         parts.append(p)
     }
     let detail: String?
@@ -533,8 +536,9 @@ func labelContent(for w: TermWindow, since entry: SinceEntry?, now: Date) -> Lab
     case .ready, .watching:
         detail = d?.line?.reason ?? d?.text.map { firstSentence($0) }
     case .running:
-        // Kein "denkt nach" im Wechsel mit dem Schritt — das flackerte im 6-s-Takt.
-        detail = d?.last == .text ? d?.text.map { firstSentence($0) } : d?.step.map { tr("jetzt: ", "now: ") + $0 }
+        // Ruhig (Kevin 2026-10-12, Wahl "Ruhig"): beim Arbeiten kein Schritt mehr, der alle paar Sekunden wechselt —
+        // Status und Dauer oben reichen; was herauskam, steht am Zugende da.
+        detail = nil
     }
     let fallback = w.sessions.first?.engine.rawValue ?? w.app
     return LabelContent(tone: tone, duration: duration,

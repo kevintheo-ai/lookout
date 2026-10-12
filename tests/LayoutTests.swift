@@ -1465,28 +1465,28 @@ func testLabelContent() {
     let now = Date(timeIntervalSince1970: 20_000)
     var s = Session(id: "claude:e5", engine: .claude, pid: 1, name: "beta-e5",
                     cwd: "/Users/test/Projects/Beta/.claude/worktrees/shop+feature-pr1", ready: false, alive: true)
-    s.digest = Digest(title: "Build queue cards", step: "Tests der Karten laufen lassen",
+    s.digest = Digest(name: "Build queue cards", step: "Tests der Karten laufen lassen",
                       text: "Kevin, Zwischenstand: die Hälfte steht.", last: .tool)
     let laeuft = labelContent(for: tabWindow([s], title: "◐ Build queue cards"),
                               since: SinceEntry(tone: .running, since: now.addingTimeInterval(-22 * 60)), now: now)
-    // Kevin 2026-09-26 (Schild B): Klartext-Status, Zeit immer mit "seit" — liest sich wie ein Satz
-    assert(laeuft.lines == ["● ARBEITET  seit 22 Min.", "Build queue cards · shop+feature-pr1",
-                            "jetzt: Tests der Karten laufen lassen"], "bekam \(laeuft.lines)")
+    // Kevin 2026-09-26 (Schild B): Klartext-Status, Zeit immer mit "seit" — liest sich wie ein Satz. Kevin 2026-10-12
+    // ("Ruhig"): beim Arbeiten keine dritte Zeile, die mit jedem Schritt wechselt.
+    assert(laeuft.lines == ["● ARBEITET  seit 22 Min.", "Build queue cards"], "bekam \(laeuft.lines)")
     let zeile = sessionLine(tabWindow([s], title: "◐ Build queue cards"),
                             since: [s.id: SinceEntry(tone: .running, since: now.addingTimeInterval(-22 * 60))], now: now)
-    assert(zeile.title == "● Build queue cards · shop+feature-pr1 — seit 22 Min.",
+    assert(zeile.title == "● Build queue cards — seit 22 Min.",
            "Menü- und Listenzeile mit derselben Zeitangabe — bekam \(zeile.title)")
     s.digest?.last = .text
-    assert(labelContent(for: tabWindow([s], title: "◐ Build queue cards"), since: nil, now: now).detail
-           == "Zwischenstand: die Hälfte steht.", "schreibt gerade Text: dessen erster Satz")
+    assert(labelContent(for: tabWindow([s], title: "◐ Build queue cards"), since: nil, now: now).detail == nil,
+           "schreibt gerade Text: auch dann ruhig")
 
     var f = Session(id: "claude:14", engine: .claude, pid: 2, name: "alpha-14",
                     cwd: "/Users/test/Projects/Alpha", ready: true, alive: true)
-    f.digest = Digest(title: "Rechnungen prüfen",
+    f.digest = Digest(name: "Rechnungen prüfen",
                       text: "Kevin, die Übersichtsseite ist jetzt in deinem Browser offen. Mehr folgt.", last: .text)
     let fertig = labelContent(for: tabWindow([f], title: "✳ Rechnungen prüfen"),
                               since: SinceEntry(tone: .ready, since: now.addingTimeInterval(-6 * 60)), now: now)
-    assert(fertig.lines == ["✓ FERTIG  seit 6 Min.", "Rechnungen prüfen · Alpha",
+    assert(fertig.lines == ["✓ FERTIG  seit 6 Min.", "Rechnungen prüfen",
                             "Die Übersichtsseite ist jetzt in deinem Browser offen."], "bekam \(fertig.lines)")
 
     var q = Session(id: "claude:f8", engine: .claude, pid: 3, name: "gamma-f8",
@@ -1494,8 +1494,9 @@ func testLabelContent() {
     q.digest = Digest(title: "Handoff spawn 2026-09-21", step: "Frage: in Euro buchen?", question: "in Euro buchen?")
     let frage = labelContent(for: tabWindow([q], title: "✳ Handoff spawn 2026-09-21"),
                              since: SinceEntry(tone: .waiting, since: now.addingTimeInterval(-30)), now: now)
-    // "wartet auf dich" statt "Frage an dich": deckt auch die Freigabe eines Schritts ab (unten)
-    assert(frage.lines == ["? WARTET AUF DICH  gerade eben", "Handoff spawn 2026-09-21 · Gamma",
+    // "wartet auf dich" statt "Frage an dich": deckt auch die Freigabe eines Schritts ab (unten). Ohne eigenen Namen nie
+    // Claudes Auto-Titel, nur der Ordner (Kevin 2026-10-12: der Titel wechselt laufend, "Ja mach das · ClaudeCode").
+    assert(frage.lines == ["? WARTET AUF DICH  gerade eben", "Gamma",
                            "„in Euro buchen?“"], "bekam \(frage.lines)")
     q.digest = Digest(title: "Handoff spawn 2026-09-21", step: "Entwurf anlegen")
     assert(labelContent(for: tabWindow([q], title: "✳ Handoff spawn 2026-09-21"), since: nil, now: now).detail
@@ -3227,17 +3228,16 @@ func testEnglishTexts() {
     let now = Date(timeIntervalSince1970: 20_000)
     var s = Session(id: "claude:e1", engine: .claude, pid: 1, name: "alpha-e1", cwd: "/Users/test/Projects/Alpha",
                     ready: false, alive: true)
-    s.digest = Digest(title: "Build queue cards", step: "Run the card tests", last: .tool)
+    s.digest = Digest(name: "Build queue cards", step: "Run the card tests", last: .tool)
     let w = tabWindow([s], title: "◐ Build queue cards")
     let seit = SinceEntry(tone: .running, since: now.addingTimeInterval(-22 * 60))
-    assert(labelContent(for: w, since: seit, now: now).lines
-           == ["● WORKING  for 22 min", "Build queue cards · Alpha", "now: Run the card tests"])
-    assert(sessionLine(w, since: [s.id: seit], now: now).title == "● Build queue cards · Alpha — for 22 min")
+    assert(labelContent(for: w, since: seit, now: now).lines == ["● WORKING  for 22 min", "Build queue cards"])
+    assert(sessionLine(w, since: [s.id: seit], now: now).title == "● Build queue cards — for 22 min")
     var q = Session(id: "claude:q1", engine: .claude, pid: 2, name: "q1", cwd: "", ready: true, waiting: true, alive: true)
-    q.digest = Digest(title: "Release notes", step: "Question: Ship it?", question: "Ship it?")
+    q.digest = Digest(name: "Release notes", step: "Question: Ship it?", question: "Ship it?")
     let frage = labelContent(for: tabWindow([q], title: "✳ Release notes"), since: nil, now: now)
     assert(frage.lines == ["? WAITING FOR YOU", "Release notes", "“Ship it?”"], "bekam \(frage.lines)")
-    q.digest = Digest(title: "Release notes", step: "Upload the build")
+    q.digest = Digest(name: "Release notes", step: "Upload the build")
     assert(labelContent(for: tabWindow([q], title: "✳ Release notes"), since: nil, now: now).detail
            == "Approval: Upload the build")
     var alt = q
