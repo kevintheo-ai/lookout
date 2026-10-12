@@ -536,9 +536,9 @@ func labelContent(for w: TermWindow, since entry: SinceEntry?, now: Date) -> Lab
     case .ready, .watching:
         detail = d?.line?.reason ?? d?.text.map { firstSentence($0) }
     case .running:
-        // Ruhig (Kevin 2026-10-12, Wahl "Ruhig"): beim Arbeiten kein Schritt mehr, der alle paar Sekunden wechselt —
-        // Status und Dauer oben reichen; was herauskam, steht am Zugende da.
-        detail = nil
+        // Kein "denkt nach" im Wechsel mit dem Schritt — das flackerte im 6-s-Takt. Kevin 2026-10-12 abends: Schritt-Zeile
+        // wieder an ("Ruhig" vom Mittag zurueckgenommen — ohne sie sah man nicht mehr, was die Session tut).
+        detail = d?.last == .text ? d?.text.map { firstSentence($0) } : d?.step.map { tr("jetzt: ", "now: ") + $0 }
     }
     let fallback = w.sessions.first?.engine.rawValue ?? w.app
     return LabelContent(tone: tone, duration: duration,

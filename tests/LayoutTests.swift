@@ -1470,15 +1470,16 @@ func testLabelContent() {
     let laeuft = labelContent(for: tabWindow([s], title: "◐ Build queue cards"),
                               since: SinceEntry(tone: .running, since: now.addingTimeInterval(-22 * 60)), now: now)
     // Kevin 2026-09-26 (Schild B): Klartext-Status, Zeit immer mit "seit" — liest sich wie ein Satz. Kevin 2026-10-12
-    // ("Ruhig"): beim Arbeiten keine dritte Zeile, die mit jedem Schritt wechselt.
-    assert(laeuft.lines == ["● ARBEITET  seit 22 Min.", "Build queue cards"], "bekam \(laeuft.lines)")
+    // abends: die Schritt-Zeile beim Arbeiten ist wieder da ("Ruhig" vom Mittag zurueckgenommen).
+    assert(laeuft.lines == ["● ARBEITET  seit 22 Min.", "Build queue cards", "jetzt: Tests der Karten laufen lassen"],
+           "bekam \(laeuft.lines)")
     let zeile = sessionLine(tabWindow([s], title: "◐ Build queue cards"),
                             since: [s.id: SinceEntry(tone: .running, since: now.addingTimeInterval(-22 * 60))], now: now)
     assert(zeile.title == "● Build queue cards — seit 22 Min.",
            "Menü- und Listenzeile mit derselben Zeitangabe — bekam \(zeile.title)")
     s.digest?.last = .text
-    assert(labelContent(for: tabWindow([s], title: "◐ Build queue cards"), since: nil, now: now).detail == nil,
-           "schreibt gerade Text: auch dann ruhig")
+    assert(labelContent(for: tabWindow([s], title: "◐ Build queue cards"), since: nil, now: now).detail
+           == "Zwischenstand: die Hälfte steht.", "schreibt gerade Text: dessen erster Satz")
 
     var f = Session(id: "claude:14", engine: .claude, pid: 2, name: "alpha-14",
                     cwd: "/Users/test/Projects/Alpha", ready: true, alive: true)
@@ -3244,7 +3245,8 @@ func testEnglishTexts() {
     s.digest = Digest(name: "Build queue cards", step: "Run the card tests", last: .tool)
     let w = tabWindow([s], title: "◐ Build queue cards")
     let seit = SinceEntry(tone: .running, since: now.addingTimeInterval(-22 * 60))
-    assert(labelContent(for: w, since: seit, now: now).lines == ["● WORKING  for 22 min", "Build queue cards"])
+    assert(labelContent(for: w, since: seit, now: now).lines
+           == ["● WORKING  for 22 min", "Build queue cards", "now: Run the card tests"])
     assert(sessionLine(w, since: [s.id: seit], now: now).title == "● Build queue cards — for 22 min")
     var q = Session(id: "claude:q1", engine: .claude, pid: 2, name: "q1", cwd: "", ready: true, waiting: true, alive: true)
     q.digest = Digest(name: "Release notes", step: "Question: Ship it?", question: "Ship it?")
