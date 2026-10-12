@@ -2828,6 +2828,11 @@ func testLookoutLine() {
     let peerMsg = entry(["type": "user", "message": ["content": "go"], "origin": ["kind": "peer"]])
     assert(digestTranscript([answer, ended, fire].joined(separator: "\n")).line != nil, "Wecker: Zeile bleibt")
     assert(digestTranscript([answer, ended, peerMsg, ended].joined(separator: "\n")).line != nil, "andere Session: bleibt")
+    let talk = [entry(["type": "user", "message": ["content": "q"], "origin": ["kind": "peer", "from": "uds:/tmp/cc-socks/1.sock",
+                                                                                   "name": "Beta · A"]]),
+                entry(["type": "user", "message": ["content": "q"], "origin": ["kind": "peer", "from": "uds:/tmp/cc-socks/2.sock",
+                                                                                   "name": "Beta · B"]])]
+    assert(digestTranscript(talk.joined(separator: "\n")).partners == ["Beta · A", "Beta · B"], "alle Partnerinnen")
     let midTurn = entry(["type": "attachment", "attachment": ["commandMode": "prompt", "origin": ["kind": "human"]]])
     assert(digestTranscript([answer, midTurn].joined(separator: "\n")).line == nil,
            "Kevins Nachricht mitten im Zug: alte Zeile weg (review quick, Codex)")
@@ -2853,6 +2858,14 @@ func testLookoutLine() {
                     now: now)[0].ready, "'fertig' schlägt 'nothing needed'")
     assert(s.adjust([session("◌ Lookout: braucht nichts (CI)", peer: false)], now: now)[0].ready,
            "ohne Weck-Quelle: fertig — nichts weckt sie von selbst")
+    // Kevin 2026-10-12 (Screenshot 16:08, "Key account"): die letzte Gespraechspartnerin ist beendet, eine andere laeuft
+    var hub = session("◌ Lookout: braucht nichts (naechste Frage eines Workers)", peer: false)
+    hub.digest?.partners = ["Beta · #294 beendet", "Beta · Lead"]
+    assert(s.adjust([hub, lead], now: now)[0].watching, "Sammel-Session: irgendeine laufende Partnerin weckt")
+    assert(s.adjust([hub], now: now)[0].ready, "keine Partnerin laeuft mehr: fertig")
+    var wortHub = session("Nothing needed from you. I wait.", peer: false)
+    wortHub.digest?.partners = ["Beta · Lead"]
+    assert(s.adjust([wortHub, lead], now: now)[0].ready, "ohne Lookout-Zeile bleibt es bei der letzten Partnerin (gemessene Regel)")
     assert(s.adjust([session("Nothing needed from you. I wait for the lead's go."), lead], now: now)[0].watching,
            "ohne Zeile: Wortliste wie bisher")
 

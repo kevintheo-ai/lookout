@@ -192,6 +192,10 @@ struct Digest: Equatable {
     /// Wann die andere Session zuletzt per pid belegt wurde: eine Session, die erst danach startete, traegt nur ihre
     /// wiedervergebene pid (`Standby`, review quick 2026-10-10, Codex).
     var peerAt: Date?
+    /// Alle Sessions, mit denen diese im gelesenen Ausschnitt sprach (Namen aus Nachrichten an sie und `SendMessage`). Eine
+    /// Sammel-Session ("Key account") wartet auf die naechste Frage IRGENDEINER davon, nicht nur der letzten (Kevin
+    /// 2026-10-12, Screenshot 16:08: die letzte war beendet, Team Lead und #237 liefen noch — Fenster stand FERTIG).
+    var partners: Set<String> = []
     /// Selbst gestellte Wecker, die noch ausstehen: "loop" (`ScheduleWakeup`) bzw. Cron-ID (`CronCreate`) -> Zeitpunkt,
     /// nil = wiederkehrend.
     var wakeups: [String: Date?] = [:]
@@ -454,6 +458,7 @@ final class TranscriptReader {
             d.kevinPrompt = gap ? nil : seen.digest.kevinPrompt
             d.kevinPromptAt = gap ? nil : seen.digest.kevinPromptAt
         }
+        d.partners.formUnion(cache[sessionId]?.digest.partners ?? [])   // aelteres faellt aus dem Ausschnitt
         if d.peerPid == nil, d.peerName == nil, let seen = cache[sessionId]?.digest {
             // Nach einem langen Zug faellt die Nachricht der anderen Session aus dem Ausschnitt: die zuletzt gesehene
             // behalten — ob sie noch laeuft, prueft `Standby` (review quick 2026-10-10, GLM; so fiel "#8 Rules page" um).
@@ -530,6 +535,7 @@ private func noteWakeSources(_ obj: [String: Any], results: [[String: Any]],
         d.peerName = origin?["name"] as? String
         d.peerAt = transcriptDate(obj)
         d.kevinTurn = false
+        if let name = d.peerName { d.partners.insert(name) }
     }
     let outcome = obj["toolUseResult"] as? [String: Any] ?? [:]
     for r in results where r["type"] as? String == "tool_result" {
@@ -573,6 +579,7 @@ private func noteWakeSources(_ obj: [String: Any], results: [[String: Any]],
             let name = to.replacingOccurrences(of: #"\s*\[[^\]]*\]$"#, with: "", options: .regularExpression)
             if name != d.peerName { d.peerPid = nil }
             d.peerName = name
+            d.partners.insert(name)
         default:
             break
         }
@@ -917,6 +924,7 @@ final class Standby {
             else { continue }
             // Nachfolger mit gleichem Namen (neue Lead-Session) zaehlt auch, wenn die gepruefte pid schon beendet ist.
             let peer = (d.peerPid.map { peerAlive($0, d.peerAt) } ?? false) || (d.peerName.map(names.contains) ?? false)
+                || (d.line?.status == .nothing && !d.partners.isDisjoint(with: names))
             let wake = d.wakeups.values.contains { $0.map { now < $0.addingTimeInterval(Self.wakeGrace) } ?? true }
             guard peer || wake else { continue }
             out[i].ready = false
