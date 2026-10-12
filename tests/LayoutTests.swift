@@ -2789,6 +2789,121 @@ func testStandby() {
     assert(said.count == 2, "hin und zurück: je eine Zeile, bekam \(said)")
 }
 
+/// Kevin 2026-10-12: die Session sagt am Zugende selbst, ob sie Kevin braucht ("◌ / ? / ✓ Lookout: …") — das geht der
+/// Wortliste vor; fehlt die Zeile, bleibt alles wie bisher.
+func testLookoutLine() {
+    // Lesen
+    assert(lookoutLine("Erledigt.\n\n✓ Lookout: fertig (Karte #121)") == LookoutLine(status: .done, reason: "Karte #121"))
+    assert(lookoutLine("x\n? Lookout: Bitte (Merge #126)\n\n") == LookoutLine(status: .ask, reason: "Merge #126"),
+           "Leerzeilen danach")
+    assert(lookoutLine("◌ Lookout: braucht nichts (wartet auf CI)")?.status == .nothing)
+    assert(lookoutLine("**? Lookout: Bitte (Passwort eingeben)**")?.reason == "Passwort eingeben", "Markdown drumherum")
+    assert(lookoutLine("`✓ Lookout: done (shipped)`")?.status == .done, "Backticks, englisch")
+    assert(lookoutLine("\u{2713}\u{FE0E} Lookout: fertig")?.status == .done, "Haken mit Text-Auswahlzeichen")
+    assert(lookoutLine("? Lookout: Bitte Freigabe für den Merge von PR #42 geben")?.reason
+           == "Freigabe für den Merge von PR #42 geben", "ohne Klammer: Text ohne Statuswort (Probe 12.10.)")
+    assert(lookoutLine("✓ Lookout: fertig")?.reason == "fertig", "nur das Statuswort: bleibt stehen")
+    assert(lookoutLine("✓ Lookout: fertig ()")?.reason == "fertig", "leere Klammer")
+    assert(lookoutLine("? Lookout: Bitte (a) oder (b)")?.reason == "(a) oder (b)", "zwei Klammern (review quick, GLM)")
+    assert(lookoutLine("? Lookout: Bitte (Merge #126 (PR-3))")?.reason == "Merge #126 (PR-3)", "Klammer in der Klammer")
+    assert(lookoutLine("? Lookout: (Passwort)")?.reason == "Passwort", "ohne Statuswort")
+    assert(lookoutLine("◌ Lookout:") == nil && lookoutLine("? Lookout:   ") == nil, "leer: keine Zeile (review quick, Muse)")
+    assert(lookoutLine("? Lookout: Bitte (Merge #126).")?.reason == "Merge #126", "Punkt am Ende (review quick, Grok)")
+    assert(lookoutLine("? Lookout: Bitte (Merge #126)\nNoch ein Satz danach.") == nil, "nur die letzte Zeile zählt")
+    assert(lookoutLine("Soll ich mergen?") == nil && lookoutLine("") == nil, "ohne Zeile: nichts")
+    assert(lookoutLine("? Lookouts: x") == nil && lookoutLine("! Lookout: x") == nil, "nur die drei Zeichen")
+
+    // Transkript: die Zeile gilt nur fuer den Zug, in dem sie steht.
+    func entry(_ o: [String: Any]) -> String {
+        String(data: try! JSONSerialization.data(withJSONObject: o), encoding: .utf8)!
+    }
+    let answer = entry(["type": "assistant", "message": ["content": [["type": "text", "text": "Fertig.\n✓ Lookout: fertig (X)"]]]])
+    let ended = entry(["type": "system", "subtype": "turn_duration"])
+    let prompt = entry(["type": "user", "message": ["content": "weiter"]])
+    let fire = entry(["type": "system", "subtype": "scheduled_task_fire"])
+    assert(digestTranscript([answer, ended].joined(separator: "\n")).line?.reason == "X")
+    assert(digestTranscript([answer, ended, prompt].joined(separator: "\n")).line == nil, "neue Nachricht: alte Zeile weg")
+    // Nach einer anderen Session oder einem Wecker ohne neuen Text bleibt die letzte Selbstauskunft (review quick, Grok).
+    let peerMsg = entry(["type": "user", "message": ["content": "go"], "origin": ["kind": "peer"]])
+    assert(digestTranscript([answer, ended, fire].joined(separator: "\n")).line != nil, "Wecker: Zeile bleibt")
+    assert(digestTranscript([answer, ended, peerMsg, ended].joined(separator: "\n")).line != nil, "andere Session: bleibt")
+    let midTurn = entry(["type": "attachment", "attachment": ["commandMode": "prompt", "origin": ["kind": "human"]]])
+    assert(digestTranscript([answer, midTurn].joined(separator: "\n")).line == nil,
+           "Kevins Nachricht mitten im Zug: alte Zeile weg (review quick, Codex)")
+    assert(digestTranscript([answer, ended, prompt, answer].joined(separator: "\n")).line != nil, "neue Antwort: neue Zeile")
+
+    // Andere Session oder Wecker (`Standby`)
+    let now = Date(timeIntervalSince1970: 1_790_503_000)
+    func session(_ text: String, ready: Bool = true, background: Bool = false, ended: Bool = true, kevin: Bool = false,
+                 peer: Bool = true) -> Session {
+        var s = Session(id: "claude:w", engine: .claude, pid: 88855, name: "Beta · Worker", cwd: "/x",
+                        ready: ready, alive: true, backgroundOnly: background)
+        s.digest = Digest(text: text, last: .text, turnEnded: ended, kevinTurn: kevin, peerPid: peer ? 33134 : nil)
+        return s
+    }
+    let lead = Session(id: "claude:lead", engine: .claude, pid: 33134, name: "Beta · Lead", cwd: "/u", ready: false,
+                       alive: true)
+    var said: [String] = []
+    let s = Standby(report: { said.append($0) })
+    let grau = s.adjust([session("Merged. Soll ich?\n◌ Lookout: braucht nichts (Lead prüft)", kevin: true), lead], now: now)
+    assert(grau[0].watching && !grau[0].ready, "'braucht nichts' schlägt Fragezeichen und Kevins Nachricht")
+    assert(said.first?.contains("(Lookout-Zeile)") == true, "Log nennt den Grund, bekam \(said)")
+    assert(s.adjust([session("Nothing needed from you. I wait for the lead.\n✓ Lookout: fertig (Karte #12)"), lead],
+                    now: now)[0].ready, "'fertig' schlägt 'nothing needed'")
+    assert(s.adjust([session("◌ Lookout: braucht nichts (CI)", peer: false)], now: now)[0].ready,
+           "ohne Weck-Quelle: fertig — nichts weckt sie von selbst")
+    assert(s.adjust([session("Nothing needed from you. I wait for the lead's go."), lead], now: now)[0].watching,
+           "ohne Zeile: Wortliste wie bisher")
+
+    // Eigener Aufpasser (`BackgroundWatch`)
+    let rows = backgroundFixture.split(separator: "\n").compactMap(parsePsLine)
+    let t0 = Date(timeIntervalSince1970: 60_000)
+    let watch = BackgroundWatch(netUsage: { [:] }, listening: { _ in [542] }, report: { _ in })
+    func bg(_ text: String, kevin: Bool = false) -> Session {
+        var s = Session(id: "claude:q", engine: .claude, pid: 530, name: "lookout-q", cwd: "", ready: false, alive: true,
+                        backgroundOnly: true)
+        s.digest = Digest(text: text, last: .text, turnEnded: true, kevinTurn: kevin)
+        return s
+    }
+    let leise = bg("Soll ich danach mergen? Erst CI.\n◌ Lookout: braucht nichts (CI läuft)", kevin: true)
+    for dt in [0.0, 96] { _ = watch.adjust([leise], rows: rows, now: t0.addingTimeInterval(dt), window: 90) }
+    assert(watch.adjust([leise], rows: rows, now: t0.addingTimeInterval(99), window: 90)[0].watching,
+           "Aufpasser + 'braucht nichts': überwacht")
+    assert(watch.adjust([bg("Waiting for CI. Nothing needed from you.\n✓ Lookout: fertig (PR offen)")], rows: rows,
+                        now: t0.addingTimeInterval(102), window: 90)[0].ready, "'fertig' schlägt 'nothing needed'")
+
+    // Bitte: wartet auf dich
+    let bitte = applyLookoutLines([session("Bereit.\n? Lookout: Bitte (Merge #126)")])[0]
+    assert(bitte.waiting && bitte.ready && !bitte.watching, "Bitte: wartet auf dich")
+    assert(applyLookoutLines([session("? Lookout: Bitte (Test)", ready: false, background: true)])[0].waiting,
+           "auch wenn nur noch ein Hintergrund-Befehl läuft")
+    var grauBitte = session("? Lookout: Bitte (Test)", ready: false)
+    grauBitte.watching = true
+    let vorn = applyLookoutLines([grauBitte])[0]
+    assert(vorn.waiting && !vorn.watching, "überwacht wird zu wartet auf dich")
+    let arbeitet = applyLookoutLines([session("? Lookout: Bitte (x)", ready: false)])[0]
+    assert(!arbeitet.waiting && !arbeitet.ready, "busy: das Modell arbeitet")
+    assert(!applyLookoutLines([session("? Lookout: Bitte (x)", ended: false)])[0].waiting, "ohne Zug-Ende nicht")
+    assert(!applyLookoutLines([session("✓ Lookout: fertig (x)")])[0].waiting, "fertig bleibt fertig")
+    var alt = session("? Lookout: Bitte (x)")
+    alt.digest?.textCurrent = false
+    assert(!applyLookoutLines([alt])[0].waiting, "Zeile aus einem früheren Zug")
+    let codex = Session(id: "codex:c", engine: .codex, pid: 1, name: "c", cwd: "", ready: true, alive: true)
+    assert(!applyLookoutLines([codex])[0].waiting, "nur Claude")
+
+    // Schild: die Zeile sagt, worum es geht
+    var f = Session(id: "claude:l", engine: .claude, pid: 2, name: "alpha-l", cwd: "/Users/test/Projects/Alpha",
+                    ready: true, alive: true)
+    f.digest = Digest(title: "Rechnungen", text: "Kevin, alles gebucht. Mehr folgt.\n✓ Lookout: fertig (12 Rechnungen)",
+                      last: .text)
+    assert(labelContent(for: tabWindow([f], title: "✳ Rechnungen"), since: nil, now: now).detail == "12 Rechnungen")
+    let wartet = applyLookoutLines([session("Bereit.\n? Lookout: Bitte (Merge #126)")])[0]
+    var w = wartet
+    w.digest?.step = "deploy"
+    assert(labelContent(for: tabWindow([w], title: "✳ Shop"), since: nil, now: now).detail == "Merge #126",
+           "Bitte statt 'Freigabe: <Schritt>'")
+}
+
 // ---------- Plan 1b: Menueleisten-Symbol ----------
 
 /// Kevin 26.09. im Praxistest: "?", "!" und Zahlen neben dem Symbol irritieren — nur das Symbol. Wie viele und welche,
@@ -3397,6 +3512,7 @@ enum LayoutTestMain {
         test("testDigestPeerAndWakeups", testDigestPeerAndWakeups)
         test("testNothingNeeded", testNothingNeeded)
         test("testStandby", testStandby)
+        test("testLookoutLine", testLookoutLine)
         test("testStatusBadge", testStatusBadge)
         test("testRailSplit", testRailSplit)
         test("testMacBookFocus1ThreeColumns", testMacBookFocus1ThreeColumns)

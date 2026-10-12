@@ -215,6 +215,30 @@ A few details:
 When in doubt, Lookout shows "done". Still, on my 1,204 test cases a few sessions that asked for something turned
 grey, so it's not perfect.
 
+## The session's own status line
+
+A Claude Code session knows better than any word list whether it needs you. If its answer ends with one of these
+lines, Lookout takes that instead of the rules above:
+
+```
+◌ Lookout: nothing needed (what it waits for)
+? Lookout: request (what you should do)
+✓ Lookout: done (the result in a few words)
+```
+
+- `?` shows **WAITING FOR YOU**, like an open question, also when only background commands are left.
+- `◌` shows **WATCHING** only if something will wake the session on its own (a resting background command,
+  another session it talks to, a timer); without that it stays **DONE**, because nothing would continue it.
+- `✓` shows **DONE**, even if the answer says "nothing needed".
+- Only the last non-empty line counts, and only for the turn it was written in. The sign decides, not the words, so
+  any language works. The text in brackets goes on the label.
+
+To have your sessions write the line, give interactive sessions an instruction such as: "End every reply that ends
+your turn with exactly one final line for Lookout: `◌ Lookout: nothing needed (…)` only when I have nothing to do
+and something else wakes you, `? Lookout: request (…)` when I should do anything, otherwise `✓ Lookout: done (…)`."
+I add it with a `SessionStart` and `UserPromptSubmit` hook (`additionalContext`) that skips background runs
+(`claude -p`), because scripts read their output. A line in `CLAUDE.md` would reach those runs too.
+
 ## Limits
 
 - Status files and transcript entries are **internal formats of Claude Code**. If the status files change,
@@ -242,7 +266,8 @@ grey, so it's not perfect.
 Lookout ist eine kleine Menüleisten-App, die ich mir für meinen eigenen Schreibtisch habe bauen lassen: Sie ordnet
 die Terminalfenster deiner KI-Sessions (Claude Code, Codex, Grok, Kimi in Warp oder Ghostty) und zeigt ruhig, wer
 arbeitet, wer fertig ist und wer auf dich wartet. Fertig ist mintgrün umrahmt, bernsteinfarben heisst: die Session
-braucht deine Freigabe oder deine Auswahl in einem Fragefenster. Installation wie oben (`git clone`, `./build.sh`,
+braucht deine Freigabe oder deine Auswahl in einem Fragefenster. Endet eine Antwort mit einer Lookout-Zeile
+(`◌` / `?` / `✓ Lookout: …`, siehe oben), gilt, was die Session selbst sagt. Installation wie oben (`git clone`, `./build.sh`,
 Bedienungshilfen freigeben). Die Sprache folgt dem Mac; fest auf Deutsch mit `{"language": "de"}` in
 `~/.config/lookout.json`. Die Schilder zeigen Text aus deinen Sessions: vor dem Bildschirmteilen unter
 *Mehr > Schilder anzeigen* ausschalten.

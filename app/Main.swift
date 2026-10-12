@@ -363,6 +363,8 @@ final class LookoutController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 raw = watch.adjust(raw, rows: rows, now: Date(), window: TimeInterval(threshold), seen: seen)
                 // Fertig, wartet aber nur auf eine andere Session oder einen eigenen Wecker und sagt "nichts noetig".
                 raw = waits.adjust(raw, now: Date(), seen: seen)
+                // Zuletzt: bittet die Session in ihrer Lookout-Zeile um etwas, wartet sie auf Kevin (Kevin 2026-10-12).
+                raw = applyLookoutLines(raw)
             }
             let live = attachProcesses(raw, procs)
 

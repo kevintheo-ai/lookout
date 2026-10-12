@@ -21,7 +21,8 @@ struct Session {
     var ready: Bool         // arbeitet gerade NICHT — Zug beendet oder wartet auf Kevin
     /// Die Session hat eine FRAGE gestellt und kommt ohne Antwort nicht weiter.
     /// Kevin 2026-09-18: "das hat prio 1" — steht in Fokus 2 links ganz oben.
-    let waiting: Bool
+    /// Auch: ihre Lookout-Zeile bittet Kevin um etwas (`applyLookoutLines`).
+    var waiting: Bool
     let alive: Bool
     /// Start (nur aus `claude agents --json`) — trennt frische von wochenalten Hintergrund-Agenten.
     let startedAt: Date?
@@ -194,6 +195,82 @@ struct Digest: Equatable {
     /// Selbst gestellte Wecker, die noch ausstehen: "loop" (`ScheduleWakeup`) bzw. Cron-ID (`CronCreate`) -> Zeitpunkt,
     /// nil = wiederkehrend.
     var wakeups: [String: Date?] = [:]
+    /// Seit dem letzten Antworttext kam keine Nachricht von Kevin (Prompt oder Anhang mitten im Zug).
+    var textCurrent = true
+    /// Was die Session am Ende ihrer letzten Antwort selbst ueber sich sagt (`lookoutLine`). Nicht mehr nach Kevins naechster
+    /// Nachricht: sonst stuende die alte Zeile auf dem Schild, etwa ueber einer Freigabe-Frage.
+    var line: LookoutLine? { textCurrent ? text.flatMap(lookoutLine) : nil }
+}
+
+// ---------- Lookout-Zeile: die Session sagt selbst, ob sie Kevin braucht (Kevin 2026-10-12) ----------
+//
+// Kevin: "vielleicht wuerde es helfen, wenn claude immer etwas am Ende sagt, aehnlich wie unser Canary, so dass Lookout
+// immer weiss, was Claude gerade macht." Ein Hook spielt jeder interaktiven Session die Anweisung ein, jede Antwort mit
+// einer Zeile zu beenden: "◌ Lookout: …" (braucht nichts, etwas anderes weckt sie), "? Lookout: …" (Kevin soll etwas
+// tun), "✓ Lookout: …" (fertig). Die Session kennt ihren Stand besser als jede Wortliste von aussen. Fehlt die Zeile,
+// entscheidet Lookout wie bisher. Gemessen vorher (11.10.): der beste Modell-Richter von aussen versteckte im Pruefsatz
+// noch 10 von 172 Bitten und Fertig-Meldungen.
+
+enum LineStatus: Equatable { case nothing, ask, done }
+
+struct LookoutLine: Equatable {
+    let status: LineStatus
+    /// Kurz, wofuer: der Klammerinhalt ("Merge #126"), sonst der Text ohne Statuswort — fuer das Schild.
+    let reason: String
+}
+
+/// Die letzte nicht leere Zeile, wenn sie eine Lookout-Zeile ist. Markdown drumherum (`**`, Backticks) zaehlt nicht; das
+/// Zeichen entscheidet, nicht die Sprache (Sessions schreiben auch englisch). Ein Text-Auswahlzeichen hinter dem Haken (✓︎) auch nicht.
+func lookoutLine(_ text: String) -> LookoutLine? {
+    guard let last = text.split(whereSeparator: \.isNewline)
+        .last(where: { !$0.allSatisfy(\.isWhitespace) }) else { return nil }
+    let line = last.trimmingCharacters(in: CharacterSet(charactersIn: "`*_").union(.whitespaces))
+    let marks: [Unicode.Scalar: LineStatus] = ["\u{25CC}": .nothing, "?": .ask, "\u{2713}": .done, "\u{2714}": .done]
+    guard let mark = line.unicodeScalars.first, let status = marks[mark] else { return nil }
+    let rest = line.dropFirst().trimmingCharacters(in: .whitespaces)
+    guard rest.hasPrefix("Lookout:") else { return nil }
+    let said = rest.dropFirst("Lookout:".count).trimmingCharacters(in: .whitespaces)
+    // Nichts danach (abgeschnitten?): keine Zeile, Lookout entscheidet wie bisher (review quick, Muse).
+    guard !said.isEmpty else { return nil }
+    // Erst das Statuswort ab, dann eine Klammer, die genau den ganzen Rest umfasst ("(a) oder (b)" bleibt, wie es ist —
+    // review quick, GLM). Bleibt nichts uebrig, steht das Statuswort.
+    var tail = said
+    if let w = LINE_WORD.firstMatch(in: said, range: NSRange(said.startIndex..., in: said)),
+       let r = Range(w.range, in: said) {
+        tail = String(said[r.upperBound...])
+    }
+    tail = tail.trimmingCharacters(in: CharacterSet(charactersIn: ".! "))   // "(Merge #126)." (review quick, Grok)
+    if tail.hasPrefix("("), closesAtEnd(tail) {
+        tail = String(tail.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
+    }
+    return LookoutLine(status: status,
+                       reason: tail.isEmpty ? said.trimmingCharacters(in: CharacterSet(charactersIn: " ()")) : tail)
+}
+
+/// Schliesst die Klammer am Anfang erst mit dem letzten Zeichen?
+private func closesAtEnd(_ s: String) -> Bool {
+    var depth = 0
+    for (i, c) in s.enumerated() {
+        if c == "(" { depth += 1 } else if c == ")" { depth -= 1 }
+        if depth == 0 { return i == s.count - 1 }
+    }
+    return false
+}
+/// Statuswort am Anfang ohne Klammer ("Bitte Freigabe für den Merge …", gesehen in der Probe 12.10.).
+private let LINE_WORD = caseless(#"^(braucht nichts|bitte|fertig|nothing needed|request|done)\b[\s:,.–-]*"#)
+
+/// Bittet die Lookout-Zeile am Zugende um etwas, steht das Fenster als "wartet auf dich" vorn — auch wenn nur noch ein
+/// Hintergrund-Befehl laeuft. `busy` (das Modell arbeitet) bleibt, wie gemeldet; eine offene Rueckfrage auch.
+func applyLookoutLines(_ sessions: [Session]) -> [Session] {
+    sessions.map { s in
+        guard s.engine == .claude, !s.waiting, s.ready || s.backgroundOnly || s.watching, let d = s.digest, d.turnEnded,
+              d.line?.status == .ask else { return s }
+        var out = s
+        out.waiting = true
+        out.ready = true
+        out.watching = false
+        return out
+    }
 }
 
 private let isoFractional: ISO8601DateFormatter = {
@@ -282,6 +359,11 @@ func digestTranscript(_ text: String) -> Digest {
             if isPrompt(obj) {
                 d.promptAt = transcriptDate(obj) ?? d.promptAt
                 d.turnEnded = false
+                // Nur Kevins eigene Nachricht entwertet die Zeile: endet ein Zug nach einer Nachricht einer anderen Session
+                // oder einem Wecker ohne neuen Text, ist die letzte Selbstauskunft weiter die beste — die Wortliste liest
+                // dann ja auch den alten Text (review quick, Grok).
+                let kind = (obj["origin"] as? [String: Any])?["kind"] as? String
+                if kind == nil || kind == "human" { d.textCurrent = false }
             }
             noteWakeSources(obj, results: results, pending: &pending, into: &d)
         case "system":
@@ -300,6 +382,7 @@ func digestTranscript(_ text: String) -> Digest {
                 d.kevinTurn = true
                 d.kevinPrompt = nil                // mitten im Zug ist immer getippt, nie ein Start-Prompt
                 d.kevinPromptAt = nil
+                d.textCurrent = false              // die Zeile davor beantwortet seine neue Nachricht nicht (review quick, Codex)
             }
         case "assistant":
             d.answerAt = transcriptDate(obj) ?? d.answerAt
@@ -311,6 +394,7 @@ func digestTranscript(_ text: String) -> Digest {
                     guard let t = b["text"] as? String,
                           !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                     d.text = t
+                    d.textCurrent = true
                     d.last = .text
                 case "tool_use":
                     let name = b["name"] as? String ?? ""
@@ -826,8 +910,10 @@ final class Standby {
         var nowQuiet: [String: String] = [:]
         for i in out.indices {
             let s = out[i]
+            // Die Lookout-Zeile geht der Wortliste vor (Kevin 2026-10-12): "braucht nichts" gilt, auch auf Kevins Nachricht.
             guard s.engine == .claude, s.ready, !s.waiting, !s.watching, let d = s.digest, d.turnEnded, d.question == nil,
-                  d.kevinTurn != true || answerSeen(d, seenAt: seen[s.id]), let text = d.text, waitsWithNothingNeeded(text)
+                  d.line.map({ $0.status == .nothing })
+                    ?? ((d.kevinTurn != true || answerSeen(d, seenAt: seen[s.id])) && d.text.map(waitsWithNothingNeeded) == true)
             else { continue }
             // Nachfolger mit gleichem Namen (neue Lead-Session) zaehlt auch, wenn die gepruefte pid schon beendet ist.
             let peer = (d.peerPid.map { peerAlive($0, d.peerAt) } ?? false) || (d.peerName.map(names.contains) ?? false)
@@ -837,7 +923,7 @@ final class Standby {
             out[i].watching = true
             nowQuiet[s.id] = s.name
             if quiet[s.id] == nil {
-                let why = d.kevinTurn == true ? " (Antwort gesehen)" : ""
+                let why = d.line != nil ? " (Lookout-Zeile)" : d.kevinTurn == true ? " (Antwort gesehen)" : ""
                 report("Wartet nur noch auf \(peer ? "eine andere Session" : "einen Wecker"), nichts nötig\(why): \(s.name) gilt als überwacht")
             }
         }
@@ -1084,6 +1170,8 @@ final class BackgroundWatch {
     /// genuegt eine Zusage, sich zu melden, ohne Frage, Bitte, Fertig-Meldung (Kevin 2026-10-03). Hatte Kevin das Fenster
     /// nach der Antwort schon vor sich, zaehlt seine Nachricht nicht mehr (Kevin 2026-10-04).
     private func answerForKevin(_ s: Session, seen: [String: Date]) -> Bool {
+        // Die Lookout-Zeile geht der Wortliste vor (Kevin 2026-10-12).
+        if let line = s.digest?.line { return line.status != .nothing }
         guard let d = s.digest, let text = d.text else { return true }
         if d.kevinTurn == true && !answerSeen(d, seenAt: seen[s.id]) {
             return !(promisesReport(text) && asksNothing(text))

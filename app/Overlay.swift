@@ -526,11 +526,12 @@ func labelContent(for w: TermWindow, since entry: SinceEntry?, now: Date) -> Lab
     }
     let detail: String?
     switch tone {
+    // Lookout-Zeile (Kevin 2026-10-12): was die Session selbst ueber ihren Stand sagt, steht vor dem ersten Satz.
     case .waiting:
-        detail = d?.question.map { tr("„\($0)“", "“\($0)”") } ?? d?.step.map { tr("Freigabe: ", "Approval: ") + $0 }
-            ?? d?.text.map { firstSentence($0) }
+        detail = d?.question.map { tr("„\($0)“", "“\($0)”") } ?? d?.line?.reason
+            ?? d?.step.map { tr("Freigabe: ", "Approval: ") + $0 } ?? d?.text.map { firstSentence($0) }
     case .ready, .watching:
-        detail = d?.text.map { firstSentence($0) }
+        detail = d?.line?.reason ?? d?.text.map { firstSentence($0) }
     case .running:
         // Kein "denkt nach" im Wechsel mit dem Schritt — das flackerte im 6-s-Takt.
         detail = d?.last == .text ? d?.text.map { firstSentence($0) } : d?.step.map { tr("jetzt: ", "now: ") + $0 }
