@@ -203,8 +203,20 @@ struct Digest: Equatable {
     var textCurrent = true
     /// Was die Session am Ende ihrer letzten Antwort selbst ueber sich sagt (`lookoutLine`). Nicht mehr nach Kevins naechster
     /// Nachricht: sonst stuende die alte Zeile auf dem Schild, etwa ueber einer Freigabe-Frage.
-    var line: LookoutLine? { textCurrent ? text.flatMap(lookoutLine) : nil }
+    /// Eine Bitte, die Kevin nur in ein anderes Fenster schickt (`otherWindowNames`, ohne "hier"), zaehlt wie "braucht
+    /// nichts": Ultivor-Sessions schrieben trotz Anweisung "? … in the key account" (Kevin 2026-10-13, Nachmessung: 32 von
+    /// 291 "?"-Zeilen, 28 davon brauchten ihn hier nicht). Im genannten Fenster selbst bleibt sie eine Bitte.
+    var line: LookoutLine? {
+        guard textCurrent, let l = text.flatMap(lookoutLine) else { return nil }
+        let named = { (s: String) in otherWindowNames.contains { s.range(of: $0, options: .caseInsensitive) != nil } }
+        guard l.status == .ask, named(l.reason), !has(HERE, l.reason), !named(name ?? "") else { return l }
+        return LookoutLine(status: .nothing, reason: l.reason)
+    }
 }
+
+/// Aus `AppConfig.otherWindowNames`, beim Start gesetzt (wie `uiGerman`).
+var otherWindowNames: [String] = []
+private let HERE = caseless(#"\b(here|hier)\b|this window|diese[mn]? Fenster"#)
 
 // ---------- Lookout-Zeile: die Session sagt selbst, ob sie Kevin braucht (Kevin 2026-10-12) ----------
 //

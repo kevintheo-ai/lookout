@@ -53,6 +53,9 @@ struct AppConfig {
     /// Eigene Namen (`--name`, `/rename`; kein Auto-Titel) von Sessions, die andere Sessions fuehren: mit ruhendem
     /// Aufpasser macht sie nur eine Frage fertig, nicht ihr Bericht ueber andere Fenster (Kevin 2026-10-09).
     var leadNames: [String] = []
+    /// Namensteile von Fenstern, in denen Kevin Fragen ANDERER Sessions beantwortet: eine "?"-Lookout-Zeile, die ihn nur
+    /// dorthin schickt, holt dieses Fenster nicht nach vorn (Kevin 2026-10-13, `Digest.line`).
+    var otherWindowNames: [String] = []
 }
 
 /// Hex -> NSColor. Unlesbares faellt auf Mint zurueck, nie auf Rot.
@@ -95,6 +98,8 @@ func parseConfig(_ obj: [String: Any]) -> AppConfig {
         .filter { $0.hasPrefix("/") }
     if !dirs.isEmpty { c.claudeConfigDirs = dirs }
     c.leadNames = (obj["leadNames"] as? [Any] ?? []).compactMap { $0 as? String }
+        .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    c.otherWindowNames = (obj["otherWindowNames"] as? [Any] ?? []).compactMap { $0 as? String }
         .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     return c
 }

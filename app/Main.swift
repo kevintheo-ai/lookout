@@ -223,6 +223,7 @@ final class LookoutController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_: Notification) {
         uiGerman = prefersGerman(language: cfg.language, preferred: Locale.preferredLanguages)
         greetingName = firstName(NSFullUserName())
+        otherWindowNames = cfg.otherWindowNames
         let saved = UserDefaults.standard
         // `parse` statt `init(rawValue:)`: ein gespeicherter Stapel (bis v2) wird zu Fokus.
         mode = LayoutMode.parse(saved.string(forKey: DEFAULTS_MODE) ?? cfg.layout)

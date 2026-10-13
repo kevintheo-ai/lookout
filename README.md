@@ -141,6 +141,7 @@ Lookout (it reads the file once at start), for example:
 | `glowColorWaiting` | `"#E8B25C"` | frame color for "waiting for you" (amber) |
 | `labels` | `true` | whether labels show at first start; after that, your choice in the menu is used |
 | `leadNames` | `[]` | own names (`claude --name …` or `/rename`) of sessions that lead other sessions, written exactly the same; an automatic topic title does not count (see "Watching" below) |
+| `otherWindowNames` | `[]` | parts of window names where you answer for other sessions (for example `"front desk"`, any case); a `?` status line that only sends you there does not bring this window forward (see "The session's own status line") |
 
 The menu remembers your choice of screen, layout, grid, control room screens, excluded windows and labels.
 Pause and the side of the strip (*More > Strip on the right/left*) start fresh after a restart.
@@ -228,7 +229,9 @@ lines, Lookout takes that instead of the rules above:
 ✓ Lookout: done (the result in a few words)
 ```
 
-- `?` shows **WAITING FOR YOU**, like an open question, also when only background commands are left.
+- `?` shows **WAITING FOR YOU**, like an open question, also when only background commands are left. If the
+  text in brackets only sends you to a window named in `otherWindowNames` ("approve the plan in the front desk",
+  without "here" or "this window"), it counts as `◌`: you answer there, not here. In that window itself it stays `?`.
 - `◌` shows **WATCHING** only if something will wake the session on its own (a resting background command,
   another session it talks to, a timer); without that it stays **DONE**, because nothing would continue it.
 - `✓` shows **DONE**, even if the answer says "nothing needed".

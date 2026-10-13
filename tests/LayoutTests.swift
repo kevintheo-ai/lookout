@@ -2815,6 +2815,22 @@ func testLookoutLine() {
     assert(lookoutLine("Soll ich mergen?") == nil && lookoutLine("") == nil, "ohne Zeile: nichts")
     assert(lookoutLine("? Lookouts: x") == nil && lookoutLine("! Lookout: x") == nil, "nur die drei Zeichen")
 
+    // Bitte fuer ein anderes Fenster (`otherWindowNames`, Kevin 2026-10-13: 32 von 291 "?" schickten ihn in ein anderes
+    // Fenster und holten dieses nach vorn): zaehlt wie "braucht nichts", der Grund bleibt fuer das Schild.
+    otherWindowNames = ["front desk"]
+    func line(_ text: String, name: String? = nil) -> LookoutLine? { Digest(name: name, text: text).line }
+    assert(line("? Lookout: request (approve the plan in the Front Desk)")
+           == LookoutLine(status: .nothing, reason: "approve the plan in the Front Desk"), "anderes Fenster")
+    assert(line("? Lookout: request (approve the plan, here or in the front desk)")?.status == .ask, "auch hier")
+    assert(line("? Lookout: Bitte (hier freigeben, Info an Front Desk)")?.status == .ask, "hier")
+    assert(line("? Lookout: request (type it in this window; the front desk knows)")?.status == .ask, "this window")
+    assert(line("? Lookout: request (approve the plan in the front desk)", name: "Beta · Front desk")?.status == .ask,
+           "das genannte Fenster selbst")
+    assert(line("? Lookout: request (merge #12)")?.status == .ask, "ohne Namen")
+    assert(line("✓ Lookout: done (the front desk has it)")?.status == .done, "nur ? wird umgedeutet")
+    otherWindowNames = []
+    assert(line("? Lookout: request (approve the plan in the front desk)")?.status == .ask, "ohne Konfiguration")
+
     // Transkript: die Zeile gilt nur fuer den Zug, in dem sie steht.
     func entry(_ o: [String: Any]) -> String {
         String(data: try! JSONSerialization.data(withJSONObject: o), encoding: .utf8)!
@@ -3192,6 +3208,9 @@ func testParseConfig() {
     assert(parseConfig(["pollSec": 0, "stackSide": "oben"]).pollSec == 3, "ungueltig: Standard")
     assert(d.leadNames.isEmpty && parseConfig(["leadNames": [" Beta · Lead ", "", 7]]).leadNames == ["Beta · Lead"],
            "Lead-Namen: Rand weg, Leeres und Unlesbares fallen raus")
+    assert(d.otherWindowNames.isEmpty
+           && parseConfig(["otherWindowNames": [" front desk ", "", 7]]).otherWindowNames == ["front desk"],
+           "andere Fenster: Rand weg, Leeres und Unlesbares fallen raus")
     // GP 14: der Schluessel hat Vorrang vor der Mac-Sprache.
     assert(prefersGerman(language: "de", preferred: ["en-US"]) && !prefersGerman(language: "en", preferred: ["de-CH"]))
     assert(prefersGerman(language: nil, preferred: ["de-CH", "en"]) && !prefersGerman(language: nil, preferred: ["en-US", "de"]))
