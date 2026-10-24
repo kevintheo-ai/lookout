@@ -1614,6 +1614,15 @@ func testTitleMatchesWindows() {
     var ordner = Session(id: "claude:o", engine: .claude, pid: 15, name: "o", cwd: "", ready: true, alive: true)
     ordner.digest = Digest(title: "Alpha")
     assert(titleMatches(sessions: [ordner], windows: wins, procs: procs([ordner])).isEmpty, "Titel ohne Zeichen beweist nichts")
+    // Kevin 2026-10-24: ein fester Tab-Titel (Warp-Startvorlage) zeigt nie ein Claude-Zeichen und schluckt den Ping-Marker.
+    // Notweg: der eigene Name der Session als GANZER Titel (der Auto-Titel nicht, siehe `ordner`); Zeichen-Treffer gehen vor.
+    var fest = Session(id: "claude:f", engine: .claude, pid: 18, name: "f", cwd: "", ready: false, alive: true)
+    fest.digest = Digest(title: "Auto F", name: "Shop · #12 Knopf bauen")
+    let festWins = wins + [tabWindow([], title: "Shop · #12 Knopf bauen"), tabWindow([], title: "Lookout · Fenster-Übersicht")]
+    let mf = titleMatches(sessions: [a, b, codex, fest], windows: festWins, procs: procs([a, b, codex, fest]))
+    assert(mf == [11: 0, 12: 1, 18: 4], "fester Titel = eigener Name -> zugeordnet, Zeichen-Treffer geht vor, bekam \(mf)")
+    let festDoppelt = [tabWindow([], title: "Shop · #12 Knopf bauen"), tabWindow([], title: "Shop · #12 Knopf bauen")]
+    assert(titleMatches(sessions: [fest], windows: festDoppelt, procs: procs([fest])).isEmpty, "zwei feste Titel gleich -> Ping")
     // review quick v4: eindeutig ist ein Titel nur, wenn JEDE Claude-Session im Terminal bekannt ist. Eine frische
     // (noch nicht abgefragt oder noch ohne Transkript) trägt womöglich schon denselben Startnamen — sonst hinge eine
     // Hintergrund-Session dauerhaft am falschen Fenster (der Ping läuft für zugeordnete nie wieder).

@@ -133,7 +133,8 @@ func titleTexts(_ s: Session) -> Set<String> {
 /// Fenster am Namen erkennen (v4, Kevin 2026-09-21: ein neues Fenster kam erst spaet in die Mitte).
 /// Arbeitende Sessions uebermalen den Ping-Marker mit ihrem Kreisel-Titel ("ohne Marker", viermal in
 /// Folge im Log) — ihr Titel verraet sie aber selbst. Nur eindeutige Paare: eine Claude-Session mit
-/// bekanntem Namen/Auto-Titel und genau ein Fenster mit Claude-Zeichen, dessen Titeltext dazu passt.
+/// bekanntem Namen/Auto-Titel und genau ein Fenster mit Claude-Zeichen, dessen Titeltext dazu passt
+/// (ohne Treffer: Notweg fester Tab-Titel, im Code unten).
 /// Rueckgabe: Session-pid -> Fensterindex. Mehrdeutiges bleibt dem Ping.
 func titleMatches(sessions: [Session], windows: [TermWindow], procs all: [EngineProc]) -> [pid_t: Int] {
     // Nur Prozesse unter Warp/Ghostty und ihre Sessions (Plan R2-8): eine Session in einem fremden Terminal steht nie in
@@ -153,9 +154,18 @@ func titleMatches(sessions: [Session], windows: [TermWindow], procs all: [Engine
         let texts = titleTexts(s)
         // Traegt eine zweite Session denselben Namen, beweist der Titel nichts.
         guard !candidates.contains(where: { $0.id != s.id && !titleTexts($0).isDisjoint(with: texts) }) else { continue }
-        let hits = windows.indices.filter { i in
+        var hits = windows.indices.filter { i in
             let (glyph, text) = titleGlyph(windows[i].title)
             return glyph != .none && texts.contains(text)
+        }
+        // Notweg (Kevin 2026-10-24): ein fest gesetzter Tab-Titel (Warp-Startvorlage mit `title:`) zeigt nie ein
+        // Claude-Zeichen und schluckt den Ping-Marker. Dann zaehlt der eigene Name als GANZER Titel — der Auto-Titel
+        // nicht, der gleicht zu leicht einem Ordnernamen (Codex).
+        if hits.isEmpty, let name = s.digest?.name?.trimmingCharacters(in: .whitespaces), !name.isEmpty {
+            hits = windows.indices.filter { i in
+                let (glyph, text) = titleGlyph(windows[i].title)
+                return glyph == .none && text == name
+            }
         }
         if hits.count == 1, let pid = s.pid { out[pid] = hits[0] }
     }
