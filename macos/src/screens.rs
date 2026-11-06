@@ -11,7 +11,9 @@ use lookout_core::model::ScreenInfo;
 /// Every screen in `NSScreen.screens` order: visible frame (without menu bar and Dock, Cocoa), built-in
 /// (`CGDisplayIsBuiltin` of `NSScreenNumber`), id = display UUID string (`CGDisplayCreateUUIDFromDisplayID`, survives
 /// unplugging), else "display-<number>" (review quick 2026-10-01, GLM), else "" without a number; name =
-/// `localizedName`; laptop = `sys::is_laptop()` (read once). Raw: the caller applies core `unique_screen_ids`.
+/// `localizedName`; laptop = internal battery (IOKit `IOPSCopyPowerSourcesInfo` / `IOPSCopyPowerSourcesList` /
+/// `IOPSGetPowerSourceDescription`, type "InternalBattery"; read once; unknown = true, the built-in screen is then called
+/// MacBook as before, else iMac). Raw: the caller applies core `unique_screen_ids`.
 pub fn infos(mtm: MainThreadMarker) -> Vec<ScreenInfo> {
     let _ = mtm;
     todo!()

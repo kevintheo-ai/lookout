@@ -9,9 +9,13 @@ use lookout_core::model::{EngineProc, Pid, PsRow, Time};
 
 /// Every process (`sysctl(CTL_KERN, KERN_PROC, KERN_PROC_ALL)`): pid, ppid, controlling terminal as "ttysNNN" (like
 /// `ps -o tty=`) or "??" without one, CPU time user + system in seconds (`proc_pidinfo(PROC_PIDTASKINFO)`, 0 when not
-/// readable), `comm` = the executable's path from `proc_pidpath`, never a command line (core `engine_of` takes its last
-/// path part); not readable (another user's process) -> the short name `p_comm`. `None` = the list could not be read:
-/// the caller keeps the last one (review 2026-09-25 finding 10: an empty list dropped every window match).
+/// readable). `comm` exactly like `ps -o comm=`: the executable path AS STARTED, i.e. the exec path at the head of
+/// `sysctl KERN_PROCARGS2` (a symlink stays unresolved), never the arguments. NOT `proc_pidpath`: it resolves symlinks,
+/// and Claude runs as `~/.local/bin/claude` -> `~/.local/share/claude/versions/2.1.319`, whose last path part is no
+/// engine name (core `engine_of`; measured 2026-11-06: ps comm `/Users/kevin/.local/bin/claude`, proc_pidpath
+/// `.../versions/2.1.319`). Not readable (another user's process) -> the short name `kp_proc.p_comm`. `None` = the list
+/// could not be read: the caller keeps the last one (review 2026-09-25 finding 10: an empty list dropped every window
+/// match).
 pub fn ps_rows() -> Option<Vec<PsRow>> {
     todo!()
 }
@@ -75,12 +79,6 @@ pub fn nettop_usage() -> Option<BTreeMap<Pid, u64>> {
 /// by core `parse_lsof_pids`. No pids = empty set without a call. `None` = the call failed.
 pub fn listening_pids(pids: &[Pid]) -> Option<BTreeSet<Pid>> {
     let _ = pids;
-    todo!()
-}
-
-/// A laptop (internal battery, IOKit `IOPSCopyPowerSourcesInfo`): then the built-in screen is called MacBook, else iMac.
-/// Unknown: true (MacBook, as before).
-pub fn is_laptop() -> bool {
     todo!()
 }
 

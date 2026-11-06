@@ -20,6 +20,11 @@ name = "appkit"
 path = "tests/appkit.rs"
 harness = false
 
+[[test]]
+name = "appkit_parts"
+path = "tests/appkit_parts.rs"
+harness = false
+
 [dependencies]
 lookout-core = { path = "../core" }
 
