@@ -1361,16 +1361,19 @@ impl App {
         if !self.peek {
             return;
         }
-        let parked = self.parked_indices();
-        let candidates = layout_candidates(&self.windows, &self.excluded);
-        let tile = self
-            .lot_indices()
-            .into_iter()
-            .filter(|i| !parked.contains(i) && candidates.contains(i))
-            .find(|&i| {
-                let r = self.windows[i].frame;
-                p.x >= r.min_x() && p.x < r.max_x() && p.y >= r.min_y() && p.y < r.max_y()
-            });
+        // The planned tiles, not the windows' frames: during the ride onto the tiles the frames are still the old
+        // ones, and parked windows share the middle's frame (a click there picked some worker).
+        let arr = &self.arrangement;
+        let tile = arr
+            .lot
+            .iter()
+            .filter(|i| !arr.parked.contains(i))
+            .find(|i| {
+                arr.frames.get(i).is_some_and(|r| {
+                    p.x >= r.min_x() && p.x < r.max_x() && p.y >= r.min_y() && p.y < r.max_y()
+                })
+            })
+            .and_then(|&i| self.current_index(i));
         match tile {
             Some(i) => self.end_peek(PeekEnd::Into(self.windows[i].id)),
             None => {
