@@ -682,7 +682,8 @@ pub fn tail_string(path: &str, bytes: u64) -> Option<String> {
     let end = f.seek(SeekFrom::End(0)).ok()?;
     let _ = f.seek(SeekFrom::Start(end.saturating_sub(bytes)));
     let mut data = Vec::new();
-    f.read_to_end(&mut data).ok()?;
+    // At most `bytes`, even if the session appends while this reads (review quick 2026-11-06, Codex).
+    f.take(bytes).read_to_end(&mut data).ok()?;
     (!data.is_empty()).then(|| String::from_utf8_lossy(&data).into_owned())
 }
 

@@ -4258,3 +4258,19 @@ fn timestamps_like_iso8601_date_formatter() {
         assert_eq!(t(bad), None, "{bad}");
     }
 }
+
+/// review quick 2026-11-06 (Codex), measured before the fix in a release build: a line of n blanks in an answer made the
+/// heading pattern try every split of its three `[ \t]*` (cubic): n = 500 took 1.1 s, 1,000 took 8.5 s, 2,000 took 68 s
+/// per evaluation, every 6 s. The regex engine now gives up a start position after a step budget.
+#[test]
+fn long_blank_lines_do_not_stall_the_word_lists() {
+    let text = format!("nothing needed\n{}x", " ".repeat(2_000));
+    let start = std::time::Instant::now();
+    let _ = super::words::without_progress_notes(&text);
+    let _ = super::words::asks_nothing(&text, false);
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "took {:?}",
+        start.elapsed()
+    );
+}

@@ -9,17 +9,30 @@
 //! as ICU gives up when its backtracking stack runs full (review quick 2026-11-06, Muse: 1,000 rounds of " noch"
 //! aborted the process). Real answers repeat a group a few times at most.
 //!
+//! Every match attempt at one start position gets a budget of `MAX_STEPS` node visits; when it runs out, that start
+//! position does not match. Overlapping quantifiers otherwise backtrack cubically (review quick 2026-11-06, Codex: a
+//! line of 2,000 blanks kept the heading pattern busy for 68 s). Real matches need a few hundred steps.
+//!
 //! ponytail: character properties come from Rust's `char` methods plus hand-picked ranges (combining marks, format
 //! characters), not ICU's tables. Case-insensitive matching folds single characters; ICU folds fully ("strasse"
 //! finds "Straße", measured), which the patterns do not need: they spell out "(ß|ss)". Checked against
 //! NSRegularExpression on 41,533 real answer texts, all 27 patterns, identical matches (2026-11-06). Upgrade path: a
 //! regex crate with lookaround, if a dependency becomes acceptable here.
 
+use std::cell::Cell;
 use std::ops::Range;
 
 /// Most rounds a quantifier over a group takes (see the module comment). 256 rounds use about half a megabyte of stack
 /// in a debug build, well inside a thread's 2 MiB.
 const MAX_GROUP_ROUNDS: usize = 256;
+
+/// Node visits one match attempt at one start position may take (see the module comment).
+const MAX_STEPS: u32 = 1_000_000;
+
+thread_local! {
+    /// Steps left for the running match attempt.
+    static STEPS: Cell<u32> = const { Cell::new(MAX_STEPS) };
+}
 
 #[derive(Debug)]
 pub struct Regex {
@@ -98,6 +111,7 @@ impl Regex {
     pub fn find_at(&self, text: &[char], from: usize) -> Option<Range<usize>> {
         (from..=text.len()).find_map(|start| {
             let mut end = None;
+            STEPS.with(|s| s.set(MAX_STEPS));
             self.node
                 .at(text, start, &mut |e| {
                     end = Some(e);
@@ -376,6 +390,14 @@ enum Escaped {
 impl Node {
     /// Does the node match at `i`, with a continuation `k` for what follows (`k` gets the end and decides)?
     fn at(&self, t: &[char], i: usize, k: &mut dyn FnMut(usize) -> bool) -> bool {
+        let spent = STEPS.with(|s| {
+            let left = s.get();
+            s.set(left.saturating_sub(1));
+            left == 0
+        });
+        if spent {
+            return false;
+        }
         match self {
             Node::Char(c, caseless) => {
                 t.get(i).is_some_and(|&x| same_char(x, *c, *caseless)) && k(i + 1)
@@ -396,12 +418,15 @@ impl Node {
                 lazy,
             } => {
                 if node.single() {
-                    // Exactly one character per round: count the run, then try the lengths in order.
+                    // Exactly one character per round: count the run, then try the lengths in order. Counting is
+                    // linear and costs one step per character; the tries after it are what the budget is for.
                     let limit = (*max).min(t.len() - i);
+                    let saved = STEPS.with(|s| s.replace(u32::MAX));
                     let mut n = 0;
                     while n < limit && node.at(t, i + n, &mut |_| true) {
                         n += 1;
                     }
+                    STEPS.with(|s| s.set(saved.saturating_sub(n as u32)));
                     if n < *min {
                         return false;
                     }
