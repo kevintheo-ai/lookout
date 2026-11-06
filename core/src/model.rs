@@ -202,7 +202,8 @@ pub struct LookoutLine {
 
 // ---------- Processes and the window list (Mapper.swift, Overlay.swift) ----------
 
-/// A line of `ps -Ao pid=,ppid=,tty=,time=,comm=`: every process, not only AI CLIs.
+/// One process (Swift read them from `ps -Ao pid=,ppid=,tty=,time=,comm=`; the Rust platform layer asks the system
+/// directly): every process, not only AI CLIs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PsRow {
     pub pid: Pid,
@@ -210,7 +211,7 @@ pub struct PsRow {
     pub tty: String,
     /// CPU time (user + system) in seconds.
     pub cpu: f64,
-    /// Program name as ps shows it: path, bare name or whole command line.
+    /// The executable: its path or bare name, never a command line with arguments (see `mapping::engine_of`).
     pub comm: String,
 }
 
