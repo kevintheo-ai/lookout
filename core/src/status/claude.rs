@@ -198,7 +198,10 @@ pub fn run_command(
     cmd.envs(env);
     let result = match cmd.spawn() {
         Ok(mut child) => {
-            let deadline = Instant::now() + Duration::from_secs_f64(timeout);
+            // A limit that is no duration (negative, NaN) means none left; never a panic with the child unreaped
+            // (review quick 2026-11-06, Grok).
+            let deadline =
+                Instant::now() + Duration::try_from_secs_f64(timeout).unwrap_or(Duration::ZERO);
             let status = loop {
                 match child.try_wait() {
                     Ok(Some(s)) => break Some(s),
