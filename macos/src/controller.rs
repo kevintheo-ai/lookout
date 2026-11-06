@@ -128,6 +128,17 @@ pub fn run() {
     ns_app.run();
 }
 
+/// How the peek ends (`App::end_peek`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PeekEnd {
+    /// Shortcut or menu: the tiles go back, Kevin's middle to the front with focus.
+    Back,
+    /// A click on this tile: it comes into the middle with focus.
+    Into(u64),
+    /// Only the state ends; the caller arranges (pause, empty lot, a click outside, a session from the menu).
+    Only,
+}
+
 /// The status engines of the tick. They hold state across ticks and are used only inside the work block, one at a
 /// time (`tick_in_flight`).
 struct Engines {
@@ -248,11 +259,15 @@ pub(crate) struct App {
     main_number: Option<(u64, i64)>,
     /// Peek at the parking lot (Ctrl+Opt+4 or the menu, Kevin 2026-11-06): the lot's windows tiled on the largest screen.
     pub(crate) peek: bool,
-    /// The tile Kevin clicked during the peek (click watcher): it comes into the middle when the peek ends.
-    peek_clicked: Option<u64>,
+    /// The peek's tiles stand: while it is open nothing moves, whoever gets done, asks or joins (Kevin 2026-11-06
+    /// evening: "es muss schon ruhig bleiben, es soll jetzt nicht die ganze Zeit ein Kommen und ein Gehen sein").
+    peek_frozen: bool,
     click_monitor: Option<mouse::ClickMonitor>,
-    /// Bring the middle to the front with focus after the next move (the peek ended by shortcut or menu).
+    /// Bring the middle to the front with focus after the next move (the peek ended by shortcut, menu or tile click).
     focus_back: bool,
+    /// Focus reports do not count until that focus is back: raising tiles and moving them back makes a tile the key
+    /// window for a moment, and its late report put a worker into the middle (live test 2026-11-06 18:57).
+    focus_quiet: bool,
     observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
 }
 
@@ -417,9 +432,10 @@ impl App {
             pending_restore: None,
             main_number: None,
             peek: false,
-            peek_clicked: None,
+            peek_frozen: false,
             click_monitor: None,
             focus_back: false,
+            focus_quiet: false,
             observers: vec![],
         }
     }
@@ -652,8 +668,10 @@ impl App {
 
     pub(crate) fn handle_focus_change(&mut self) {
         // Own moves are no clicks (convention 7), but a real click in that time is noted and handled after the move
-        // (v4). In the pause too the active session follows: the glow belongs to the status display.
-        if !self.trusted {
+        // (v4). In the pause too the active session follows: the glow belongs to the status display. During the peek
+        // only the click watcher counts (Lookout's own raising moves the focus between tiles), and right after it until
+        // the focus is back.
+        if !self.trusted || self.peek || self.focus_quiet {
             return;
         }
         if !self.focus_gate.event(self.self_move) {
@@ -675,7 +693,14 @@ impl App {
             let at = now();
             let focused = ax::focused_window(pid);
             let title = focused.and_then(ax::title);
-            on_main(move || with_app(move |a| a.on_focused(focused, title, Some(at))));
+            on_main(move || {
+                with_app(move |a| {
+                    // A reading that started before the peek or its end does not count either.
+                    if !a.peek && !a.focus_quiet {
+                        a.on_focused(focused, title, Some(at));
+                    }
+                })
+            });
         });
     }
 
@@ -711,14 +736,6 @@ impl App {
             );
             self.log_focus(&line);
             return;
-        }
-        // Peek (Kevin 2026-11-06): a lot window in front is Lookout's own raising or a click on a tile, which the click
-        // watcher tells; it changes nothing now. Focus on a window outside the lot ends the peek and counts as a click.
-        if self.peek {
-            if self.lot_indices().contains(&idx) {
-                return;
-            }
-            self.end_peek(false);
         }
         // The clicked AI window is the active session: it loses its glow at once, and all glows are placed anew
         // (macOS lifted it above them).
@@ -1005,12 +1022,13 @@ impl App {
         resolve_target(&self.choice, &self.screen_infos(), self.pair.as_ref())
     }
 
-    /// Plan for a choice, also for one only HOVERED (preview), hence the parameters.
+    /// Plan for a choice, also for one only HOVERED (preview), hence the parameters. `peek`: with the parking lot tiled.
     pub(crate) fn plan(
         &self,
         c: &TargetChoice,
         m: LayoutMode,
         g: Option<GridSpec>,
+        peek: bool,
     ) -> Option<(Target, Arrangement)> {
         let infos = self.screen_infos();
         let target = resolve_target(c, &infos, self.pair.as_ref())?;
@@ -1023,7 +1041,7 @@ impl App {
         p.excluded = &self.excluded;
         p.worker_names = &self.cfg.worker_names;
         p.lead_names = &self.cfg.lead_names;
-        p.peek = self.peek;
+        p.peek = peek;
         Some((target, plan_arrangement(&p)))
     }
 
@@ -1044,18 +1062,21 @@ impl App {
         if !self.layout_gate.event(self.self_move) {
             return;
         }
-        if !self.trusted || self.windows.is_empty() {
+        // The open peek stands still (Kevin 2026-11-06 evening): its tiles were placed once, nothing moves until it ends.
+        if !self.trusted || self.windows.is_empty() || (self.peek && self.peek_frozen) {
             return;
         }
-        let Some((target, arr)) = self.plan(&self.choice.clone(), self.mode, None) else {
+        let Some((target, arr)) = self.plan(&self.choice.clone(), self.mode, None, self.peek)
+        else {
             return;
         };
         self.log_plan(&target, &arr);
         self.remember_parking(&arr);
         // An empty parking lot ends the peek (plan); the plan is the same with or without it then.
         if self.peek && arr.lot.is_empty() {
-            self.end_peek(false);
+            self.end_peek(PeekEnd::Only);
         }
+        self.peek_frozen = self.peek;
         self.arrangement = arr;
         self.arrangement_ids = self.windows.iter().map(|w| w.id).collect();
         let arr = &self.arrangement;
@@ -1159,9 +1180,16 @@ impl App {
                         refused.push(pid);
                     }
                 }
-                on_main(move || with_app(move |a| a.move_finished(measured, &targets, &refused)));
+                on_main(move || {
+                    with_app(move |a| a.move_finished(measured, &targets, &refused, focus_back))
+                });
             },
         );
+    }
+
+    /// Focus reports count again a moment after the focus is back (`focus_quiet`).
+    fn end_focus_quiet_soon() {
+        on_main_after(0.5, || with_app(|a| a.focus_quiet = false));
     }
 
     /// The ride is over: take the MEASURED frames, not the targets (a clamped window would otherwise glow with a wrong
@@ -1171,9 +1199,13 @@ impl App {
         measured: Vec<(u64, Rect)>,
         targets: &[(u64, Rect)],
         refused: &[Pid],
+        focus_back: bool,
     ) {
         self.self_move = false;
         self.move_epoch += 1;
+        if focus_back {
+            App::end_focus_quiet_soon();
+        }
         for (id, frame) in measured {
             if let Some(idx) = index_of_window(id, &self.windows) {
                 self.windows[idx].frame = frame;
@@ -1225,6 +1257,7 @@ impl App {
                 vec![pid]
             };
             on_main(move || with_app(move |a| a.activate_refused(&refused)));
+            App::end_focus_quiet_soon();
         });
     }
 
@@ -1270,15 +1303,15 @@ impl App {
 
     // ---------- Peek at the parking lot (Kevin 2026-11-06) ----------
 
-    /// Ctrl+Opt+4 or the menu: on shows the lot's windows as tiles on the largest screen, in front, with labels; off
-    /// brings them back behind the middle, Kevin's session to the front with focus, or the tile he clicked into the
-    /// middle. Not in the pause (it moves windows) and not with an empty lot.
+    /// Ctrl+Opt+4 or the menu: on shows the lot's windows as tiles on the largest screen, in front, with labels, and
+    /// then stands still until it ends (`peek_frozen`); off brings them back behind the middle and Kevin's session to
+    /// the front with focus. Not in the pause (it moves windows) and not with an empty lot.
     pub(crate) fn toggle_peek(&mut self) {
         if !self.has_lot() {
             return;
         }
         if self.peek {
-            self.end_peek(true);
+            self.end_peek(PeekEnd::Back);
             return;
         }
         let n = self.lot_indices().len();
@@ -1286,9 +1319,9 @@ impl App {
             return;
         }
         self.peek = true;
-        self.peek_clicked = None;
+        self.peek_frozen = false;
         log(&format!("Blick an ({n})"));
-        // Kevin's clicks on tiles; Lookout's own raising is no click (it reaches the focus watcher, not this).
+        // Kevin's clicks; Lookout's own raising is no click (it reaches only the focus watcher, ignored meanwhile).
         self.click_monitor = Some(mouse::watch_clicks(
             self.mtm,
             Box::new(|p| with_app(move |a| a.peek_click(p))),
@@ -1296,51 +1329,52 @@ impl App {
         self.apply_layout();
     }
 
-    /// Ends the peek. `restore`: by shortcut or menu, so the clicked tile comes into the middle the normal way, else the
-    /// tiles go back; either way Kevin's middle comes to the front with focus after the ride. Without `restore` (a
-    /// click outside the lot, the pause, an empty lot) only the state ends; the caller arranges.
-    fn end_peek(&mut self, restore: bool) {
+    /// Ends the peek. `Back` (shortcut, menu) and `Into` (a click on a tile, Kevin 2026-11-06 evening: "sofort in die
+    /// Mitte") arrange again and give the focus to the middle after the ride, the clicked worker being the middle with
+    /// `Into`; focus reports wait meanwhile. `Only` (pause, empty lot, a click outside the lot, a session from the menu)
+    /// ends the state; the caller arranges.
+    fn end_peek(&mut self, how: PeekEnd) {
         if !self.peek {
             return;
         }
         self.peek = false;
+        self.peek_frozen = false;
         self.click_monitor = None;
-        let clicked = self.peek_clicked.take();
         log("Blick aus");
-        if !restore {
+        if how == PeekEnd::Only {
             return;
         }
         self.focus_back = true;
-        let clicked = clicked.filter(|&id| {
-            index_of_window(id, &self.windows)
-                .is_some_and(|i| layout_candidates(&self.windows, &self.excluded).contains(&i))
-        });
-        match clicked {
+        self.focus_quiet = true;
+        // A ride replaced by another never reports its end: the reports count again after 3 s at the latest.
+        on_main_after(3.0, || with_app(|a| a.focus_quiet = false));
+        match how {
             // The normal click path: it becomes the main window, the old one swaps out; `apply_layout` follows.
-            Some(id) if self.main != Some(id) => self.on_focused(Some(id), None, None),
+            PeekEnd::Into(id) if self.main != Some(id) => self.on_focused(Some(id), None, None),
             _ => self.apply_layout(),
         }
     }
 
-    /// A click during the peek (click watcher, Cocoa screen point): on a tile = that worker comes into the middle when
-    /// the peek ends; anywhere else = a click into a window outside the lot, which ends the peek (plan).
+    /// A click during the peek (click watcher, Cocoa screen point): on a tile = that worker into the middle at once; anywhere
+    /// else = a click into a window outside the lot, which ends the peek and counts as that click (plan).
     fn peek_click(&mut self, p: Point) {
         if !self.peek {
             return;
         }
         let parked = self.parked_indices();
+        let candidates = layout_candidates(&self.windows, &self.excluded);
         let tile = self
             .lot_indices()
             .into_iter()
-            .filter(|i| !parked.contains(i))
+            .filter(|i| !parked.contains(i) && candidates.contains(i))
             .find(|&i| {
                 let r = self.windows[i].frame;
                 p.x >= r.min_x() && p.x < r.max_x() && p.y >= r.min_y() && p.y < r.max_y()
             });
         match tile {
-            Some(i) => self.peek_clicked = Some(self.windows[i].id),
+            Some(i) => self.end_peek(PeekEnd::Into(self.windows[i].id)),
             None => {
-                self.end_peek(false);
+                self.end_peek(PeekEnd::Only);
                 if !self.paused {
                     self.apply_layout();
                 }
@@ -1535,6 +1569,8 @@ impl App {
         let w = self.windows[idx].clone();
         let line = format!("Nach vorn: {}", self.focus_name(idx));
         self.log_focus(&line);
+        // A session chosen in the menu or a list during the peek: Kevin wants that window, the peek ends.
+        self.end_peek(PeekEnd::Only);
         let h = screens::primary_height();
         ax_queue().exec_async(move || {
             if ax::minimized(w.id) == Some(true) {
@@ -1586,7 +1622,7 @@ impl App {
             self.moving_ids.clear();
             self.layout_gate = MoveGate::default(); // pause means: no arranging afterwards
             // The peek moves windows: off in the pause (plan).
-            self.end_peek(false);
+            self.end_peek(PeekEnd::Only);
             if self.focus_gate.move_ended() {
                 self.handle_focus_change(); // keep a noted click (v4)
             }

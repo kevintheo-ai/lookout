@@ -24,7 +24,7 @@ use lookout_core::model::{
 use lookout_core::motion::{FRAME_TOLERANCE, frames_differ};
 use lookout_core::overlay::{
     OnScreenMatch, PreviewBox, locate_on_screen, preview_boxes, session_line, sessions_header,
-    whereabouts,
+    whereabouts, window_tone,
 };
 use lookout_core::status::windowless_sessions;
 
@@ -39,6 +39,8 @@ const PREVIEW_GRID: &str = "grid:";
 const PREVIEW_WINDOW: &str = "win:";
 /// Session list (plan 1c): the same ids, own key; a click brings the window to the front (R2-4).
 const PREVIEW_FRONT: &str = "front:";
+/// "Show parking lot": the tiles of the peek.
+const PREVIEW_PEEK: &str = "peek:";
 /// Control-room screens: the screen id follows; "auto" = automatic again.
 const PAIR_WORK: &str = "pair-work:";
 const PAIR_CONTROL: &str = "pair-control:";
@@ -390,6 +392,7 @@ fn rebuild(a: &mut App) {
         it.setKeyEquivalentModifierMask(ctrl_opt());
         it.setState(on_off(a.peek));
         it.setEnabled(a.peek || (n > 0 && !a.paused));
+        keyed(&it, PREVIEW_PEEK);
         menu.addItem(&it);
     }
 
@@ -719,6 +722,40 @@ fn highlight(a: &mut App, item: Option<&NSMenuItem>) {
         }]);
         return;
     }
+    // "Show parking lot": where the tiles would stand (Kevin 2026-11-06: the preview was missing there).
+    if key == PREVIEW_PEEK {
+        let Some((_, arr)) = a
+            .plan(&a.choice.clone(), a.mode, None, true)
+            .filter(|_| !a.peek)
+        else {
+            a.preview.hide();
+            return;
+        };
+        let boxes: Vec<PreviewBox> = arr
+            .lot
+            .iter()
+            .filter(|i| !arr.parked.contains(i))
+            .filter_map(|i| {
+                let w = a.windows.get(*i)?;
+                let engine = w
+                    .sessions
+                    .first()
+                    .map_or(w.app.as_str(), |s| s.engine.raw());
+                Some(PreviewBox {
+                    rect: arr.frames[i],
+                    title: w
+                        .sessions
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" · "),
+                    detail: format!("{engine} · {}", window_tone(w).word().to_lowercase()),
+                })
+            })
+            .collect();
+        a.preview.show(&boxes);
+        return;
+    }
     let (mut c, mut m, mut g) = (a.choice.clone(), a.mode, None);
     if let Some(t) = key
         .strip_prefix(PREVIEW_TARGET)
@@ -737,7 +774,7 @@ fn highlight(a: &mut App, item: Option<&NSMenuItem>) {
         a.preview.hide();
         return;
     }
-    let Some((_, arr)) = a.plan(&c, m, g) else {
+    let Some((_, arr)) = a.plan(&c, m, g, a.peek) else {
         a.preview.hide();
         return;
     };
