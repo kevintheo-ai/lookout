@@ -1,34 +1,39 @@
-//! The menu (Main.swift `menuNeedsUpdate`, plan 1c "wie heute, nur aufgeräumt"): screen, arrangement, the parking lot
-//! (only with worker names), sessions by status, "More" for the rest, and the preview outlines on hovering (Kevin
-//! 2026-09-18). Rebuilt each time it opens. The delegate object is also the target of every menu action.
+//! The menu (Main.swift `menuNeedsUpdate`; design A "nach Status gruppiert", Kevin 2026-11-06 evening): a real macOS
+//! menu with symbols, status dots, sections with counts, the name in front and the state below it. Screen, arrangement,
+//! the parking lot (only with worker names), sessions by status, "More" for the rest, and the preview outlines on
+//! hovering (Kevin 2026-09-18). Rebuilt each time it opens. The delegate object is also the target of every menu action.
 
 use std::collections::BTreeSet;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
-use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSControlStateValueOff, NSControlStateValueOn, NSEventModifierFlags, NSMenu, NSMenuDelegate,
-    NSMenuItem,
+    NSColor, NSControlStateValueOff, NSControlStateValueOn, NSEventModifierFlags,
+    NSFontWeightRegular, NSImage, NSImageSymbolConfiguration, NSMenu, NSMenuDelegate, NSMenuItem,
+    NSMenuItemBadge,
 };
-use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
+use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString};
 
+use lookout_core::config::color_from_hex;
 use lookout_core::i18n::tr;
 use lookout_core::layout::{
     active_pair, attention_order, fitted_grid, grid_choices, is_excluded, is_worker,
     resolve_target, screen_names, target_options, target_title,
 };
 use lookout_core::model::{
-    GridSpec, LayoutMode, OnScreenWindow, Pid, ScreenInfo, Target, TargetChoice, TermWindow,
+    GridSpec, LabelTone, LayoutMode, OnScreenWindow, Pid, ScreenInfo, Target, TargetChoice,
+    TermWindow,
 };
 use lookout_core::motion::{FRAME_TOLERANCE, frames_differ};
 use lookout_core::overlay::{
-    OnScreenMatch, PreviewBox, locate_on_screen, preview_boxes, session_line, sessions_header,
-    whereabouts, window_tone,
+    MENU_LOT_ROWS, MENU_ROWS_MAX, MenuGroup, OnScreenMatch, PreviewBox, locate_on_screen,
+    menu_groups, menu_row, more_rows_text, preview_boxes, rows_shown, whereabouts, window_tone,
 };
 use lookout_core::status::windowless_sessions;
 
 use crate::controller::{App, with_app, with_app_now};
+use crate::overlay::srgb;
 use crate::{ax, now, screens};
 
 // Keys on the menu items: the preview tells by them what is hovered.
@@ -273,6 +278,124 @@ fn submenu(a: &App) -> Retained<NSMenu> {
     new_menu(a.mtm, &a.delegate)
 }
 
+/// Sets the item's image so it shows. macOS 27 hides menu images unless the item asks for them (NSMenuItem.h: "AppKit
+/// determines the visibility of menu item images, and will typically hide images"; measured 2026-11-06, neither symbols
+/// nor drawn dots showed). The dots carry the state and Kevin chose the symbols (draft 2026-11-06). The property came
+/// with macOS 27; Lookout runs from 26.0 on, where images show anyway.
+fn show_image(item: &NSMenuItem, image: Option<Retained<NSImage>>) {
+    let Some(image) = image else { return };
+    item.setImage(Some(&image));
+    if item.respondsToSelector(sel!(setPreferredImageVisibility:)) {
+        // SAFETY: an NSInteger property of NSMenuItem; 1 = NSMenuItemImageVisibilityVisible (macOS 27 SDK).
+        let () = unsafe { msg_send![item, setPreferredImageVisibility: 1isize] };
+    }
+}
+
+/// An SF Symbol; `None` (no image) if this macOS lacks it.
+fn symbol(name: &str) -> Option<Retained<NSImage>> {
+    NSImage::imageWithSystemSymbolName_accessibilityDescription(&NSString::from_str(name), None)
+}
+
+/// The status dot of a session row (draft 2026-11-06): waiting and done in the colours of the frames, working a grey
+/// dot, watching a grey ring, the parking lot (`None`) paler. Its description is the state, for VoiceOver.
+fn dot(a: &App, tone: Option<LabelTone>) -> Option<Retained<NSImage>> {
+    let (name, color) = match tone {
+        Some(LabelTone::Waiting) => (
+            "circle.fill",
+            srgb(color_from_hex(&a.cfg.glow_color_waiting)),
+        ),
+        Some(LabelTone::Ready) => ("circle.fill", srgb(color_from_hex(&a.cfg.glow_color))),
+        Some(LabelTone::Running) => ("circle.fill", NSColor::secondaryLabelColor()),
+        Some(LabelTone::Watching) => ("circle", NSColor::secondaryLabelColor()),
+        None => ("circle.fill", NSColor::tertiaryLabelColor()),
+    };
+    let said = tone.map_or(
+        tr("auf dem Parkplatz", "in the parking lot"),
+        LabelTone::word,
+    );
+    let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &NSString::from_str(name),
+        Some(&NSString::from_str(&said.to_lowercase())),
+    )?;
+    // SAFETY: AppKit's weight constant, a plain number set before any code runs.
+    let size = NSImageSymbolConfiguration::configurationWithPointSize_weight(10.0, unsafe {
+        NSFontWeightRegular
+    });
+    let palette = NSImageSymbolConfiguration::configurationWithPaletteColors(
+        &NSArray::from_retained_slice(&[color]),
+    );
+    image.imageWithSymbolConfiguration(&size.configurationByApplyingConfiguration(&palette))
+}
+
+/// The small grey capsule on the right (a duration, a grid, a state). AppKit gives it no colour of its own.
+fn set_badge(item: &NSMenuItem, text: &str) {
+    let badge =
+        NSMenuItemBadge::initWithString(NSMenuItemBadge::alloc(), &NSString::from_str(text));
+    item.setBadge(Some(&badge));
+}
+
+fn count_badge(item: &NSMenuItem, n: usize) {
+    if n > 0 {
+        let badge = NSMenuItemBadge::initWithCount(NSMenuItemBadge::alloc(), n as isize);
+        item.setBadge(Some(&badge));
+    }
+}
+
+fn set_subtitle(item: &NSMenuItem, text: Option<String>) {
+    if let Some(t) = text {
+        item.setSubtitle(Some(&NSString::from_str(&t)));
+    }
+}
+
+/// A session row: status dot and name; its key carries the window's session ids behind `prefix` (what a click does).
+fn session_item(
+    a: &App,
+    w: &TermWindow,
+    title: &str,
+    tone: Option<LabelTone>,
+    action: Sel,
+    prefix: &str,
+) -> Retained<NSMenuItem> {
+    let it = item(a, title, Some(action), "");
+    show_image(&it, dot(a, tone));
+    keyed(&it, &format!("{prefix}{}", ids_of(w)));
+    it
+}
+
+/// Opens or closes the peek (Ctrl+Opt+4); hovering shows where its tiles would stand. `lot`: windows on the lot.
+fn peek_item(a: &App, title: &str, lot: usize) -> Retained<NSMenuItem> {
+    let it = item(
+        a,
+        title,
+        Some(sel!(togglePeek:)),
+        if a.cfg.hotkeys { "4" } else { "" },
+    );
+    it.setKeyEquivalentModifierMask(ctrl_opt());
+    it.setEnabled(a.peek || (lot > 0 && !a.paused));
+    keyed(&it, PREVIEW_PEEK);
+    it
+}
+
+/// The symbol of a screen choice: MacBook, iMac, an external screen, or a control room over two.
+fn target_symbol(option: &TargetChoice, infos: &[ScreenInfo]) -> &'static str {
+    match option {
+        TargetChoice::Screen(id) => match infos.iter().find(|s| s.id == *id) {
+            Some(s) if s.builtin && s.laptop => "laptopcomputer",
+            Some(s) if s.builtin => "desktopcomputer",
+            _ => "display",
+        },
+        _ => "display.2",
+    }
+}
+
+fn mode_symbol(m: LayoutMode) -> &'static str {
+    match m {
+        LayoutMode::Reading => "rectangle.center.inset.filled",
+        LayoutMode::Focus2 => "rectangle.split.3x1",
+        LayoutMode::Grid => "square.grid.3x2",
+    }
+}
+
 fn no_session_text() -> &'static str {
     tr(
         "— keine Session einem Fenster zugeordnet —",
@@ -313,15 +436,17 @@ fn rebuild(a: &mut App) {
     menu.removeAllItems();
 
     if !a.trusted {
-        menu.addItem(&item(
+        let it = item(
             a,
             tr(
-                "⚠︎ Bedienungshilfen fehlen — klicken zum Freigeben",
-                "⚠︎ Accessibility access missing — click to grant",
+                "Bedienungshilfen fehlen — klicken zum Freigeben",
+                "Accessibility access missing — click to grant",
             ),
             Some(sel!(requestTrust:)),
             "",
-        ));
+        );
+        show_image(&it, symbol("exclamationmark.triangle"));
+        menu.addItem(&it);
         menu.addItem(&NSMenuItem::separatorItem(a.mtm));
     }
 
@@ -339,12 +464,14 @@ fn rebuild(a: &mut App) {
         it.setState(on_off(
             resolve_target(&option, &infos, a.pair.as_ref()) == current,
         ));
+        show_image(&it, symbol(target_symbol(&option, &infos)));
         keyed(&it, &format!("{PREVIEW_TARGET}{}", option.raw()));
         menu.addItem(&it);
     }
     // From three screens on: which is work and which control room (Kevin 2026-10-01: "im Menue waehlbar").
     if infos.len() >= 3 {
         let it = item(a, tr("Leitstand-Schirme", "Control room screens"), None, "");
+        show_image(&it, symbol("rectangle.2.swap"));
         it.setSubmenu(Some(&pair_menu(a, &infos)));
         menu.addItem(&it);
     }
@@ -364,26 +491,22 @@ fn rebuild(a: &mut App) {
     ));
     let vis = single_target_visible(a, &infos);
     for (i, m) in LayoutMode::ALL.into_iter().enumerate() {
-        // The grid carries the choice in effect in its title: Ctrl+Opt+3 takes that one.
-        let title = match (m, vis) {
-            (LayoutMode::Grid, Some(v)) => {
-                format!("{} ({})", m.label(), fitted_grid(a.grid, v).label())
-            }
-            _ => m.label().to_owned(),
-        };
         let key = if a.cfg.hotkeys && m != LayoutMode::Grid {
             (i + 1).to_string()
         } else {
             String::new()
         };
-        let it = item(a, &title, Some(sel!(selectMode:)), &key);
+        let it = item(a, m.label(), Some(sel!(selectMode:)), &key);
         it.setKeyEquivalentModifierMask(ctrl_opt());
         it.setState(on_off(m == a.mode && !control_room));
         it.setEnabled(!control_room);
+        show_image(&it, symbol(mode_symbol(m)));
         keyed(&it, &format!("{PREVIEW_MODE}{}", m.raw()));
         if m == LayoutMode::Grid
             && let Some(v) = vis
         {
+            // The grid in effect stands beside it: Ctrl+Opt+3 takes that one.
+            set_badge(&it, &fitted_grid(a.grid, v).label());
             let hotkey = if a.cfg.hotkeys {
                 (i + 1).to_string()
             } else {
@@ -396,15 +519,13 @@ fn rebuild(a: &mut App) {
     // Parking lot (Kevin 2026-11-06), only with worker names; also in the control room. Check mark = peeking.
     if a.has_lot() {
         let n = a.lot_indices().len();
-        let title = format!("{} ({n})", tr("Parkplatz anzeigen", "Show parking lot"));
-        let key = if a.cfg.hotkeys { "4" } else { "" };
-        let it = item(a, &title, Some(sel!(togglePeek:)), key);
-        it.setKeyEquivalentModifierMask(ctrl_opt());
+        let it = peek_item(a, tr("Parkplatz anzeigen", "Show parking lot"), n);
         it.setState(on_off(a.peek));
-        it.setEnabled(a.peek || (n > 0 && !a.paused));
-        keyed(&it, PREVIEW_PEEK);
+        count_badge(&it, n);
+        show_image(&it, symbol("parkingsign.circle"));
         menu.addItem(&it);
         let hand = item(a, tr("Auf den Parkplatz", "To the parking lot"), None, "");
+        show_image(&hand, symbol("arrow.right"));
         hand.setSubmenu(Some(&hand_menu(a)));
         menu.addItem(&hand);
     }
@@ -414,26 +535,25 @@ fn rebuild(a: &mut App) {
 
     menu.addItem(&NSMenuItem::separatorItem(a.mtm));
     let more = item(a, tr("Mehr", "More"), None, "");
+    show_image(&more, symbol("ellipsis.circle"));
     more.setSubmenu(Some(&more_menu(a)));
     menu.addItem(&more);
-    menu.addItem(&item(
+    let quit = item(
         a,
         tr("Lookout beenden", "Quit Lookout"),
         Some(sel!(quitApp:)),
         "q",
-    ));
+    );
+    show_image(&quit, symbol("power"));
+    menu.addItem(&quit);
 }
 
-/// Sessions (plan 1c): header with questions and done ones ("done" without the question, GP 12), then one line per
-/// window like its label. A click brings it to the front, hovering lights it up.
+/// Sessions by status (design A, Kevin 2026-11-06 evening): who waits for Kevin on top, then done and working ones,
+/// each section with its count; the parking lot apart, one line per window. A row: dot, name, below it project, where
+/// the window is and what the session does, the time on the right. A click brings it to the front, hovering lights it
+/// up (as before).
 fn add_sessions(a: &App, menu: &NSMenu) {
     let order = ai_windows_by_status(a);
-    let asking = order.iter().filter(|&&i| a.windows[i].is_waiting()).count();
-    let ready = order
-        .iter()
-        .filter(|&&i| a.windows[i].is_ready() && !a.windows[i].is_waiting())
-        .count();
-    menu.addItem(&header(a, &sessions_header(asking, ready)));
     if order.is_empty() {
         menu.addItem(&disabled(a, no_session_text()));
         return;
@@ -443,21 +563,47 @@ fn add_sessions(a: &App, menu: &NSMenu) {
     let lot = a.lot_indices();
     let lookout = a.lookout_lines();
     let n = now();
-    for &idx in order.iter().take(20) {
-        let w = &a.windows[idx];
-        let line = session_line(w, &a.since, &lookout, n);
-        let notes = session_notes(a, idx, on_screen.as_deref(), &parked, &lot);
-        let title = if notes.is_empty() {
-            line.title.clone()
-        } else {
-            format!("{}  ({})", line.title, notes.join(", "))
-        };
-        let it = item(a, &title, Some(sel!(bringToFrontItem:)), "");
-        if let Some(sub) = &line.subtitle {
-            it.setSubtitle(Some(&NSString::from_str(sub)));
+    let mut budget = MENU_ROWS_MAX;
+    for (group, rows) in menu_groups(&a.windows, &order, &lot) {
+        menu.addItem(&header(a, &group.header(rows.len())));
+        let on_lot = group == MenuGroup::Lot;
+        let shown = rows_shown(rows.len(), if on_lot { MENU_LOT_ROWS } else { budget });
+        for &idx in &rows[..shown] {
+            let w = &a.windows[idx];
+            let row = menu_row(w, &a.since, &lookout, n);
+            let front = sel!(bringToFrontItem:);
+            let it = if on_lot {
+                let it = session_item(a, w, &row.compact(), None, front, PREVIEW_FRONT);
+                set_badge(&it, &row.tone.word().to_lowercase());
+                it
+            } else {
+                let it = session_item(a, w, &row.name, Some(row.tone), front, PREVIEW_FRONT);
+                set_subtitle(
+                    &it,
+                    row.subtitle(&session_notes(a, idx, on_screen.as_deref(), &parked)),
+                );
+                if let Some(d) = &row.duration {
+                    set_badge(&it, d);
+                }
+                it
+            };
+            menu.addItem(&it);
         }
-        keyed(&it, &format!("{PREVIEW_FRONT}{}", ids_of(w)));
-        menu.addItem(&it);
+        let rest = rows.len() - shown;
+        if rest > 0 {
+            // The rest of the lot stands in the peek; the others had no room left.
+            let it = if on_lot {
+                let it = peek_item(a, &more_rows_text(rest), lot.len());
+                show_image(&it, dot(a, None));
+                it
+            } else {
+                disabled(a, &more_rows_text(rest))
+            };
+            menu.addItem(&it);
+        }
+        if !on_lot {
+            budget = budget.saturating_sub(shown);
+        }
     }
 }
 
@@ -469,15 +615,14 @@ fn ids_of(w: &TermWindow) -> String {
         .join("\n")
 }
 
-/// Notes of a session line: where the window is (`whereabouts`), whether Lookout arranges it, whether it is parked or
-/// on the parking lot. "In the list" and "on the parking lot" come from the plan, not from the screen comparison,
-/// which counts congruent windows as visible (GP 2).
+/// Notes of a session row: where the window is (`whereabouts`), whether Lookout arranges it, whether it is parked in a
+/// list. "In the list" comes from the plan, not from the screen comparison, which counts congruent windows as visible
+/// (GP 2). The parking lot has its own section.
 fn session_notes(
     a: &App,
     idx: usize,
     on_screen: Option<&[OnScreenWindow]>,
     parked: &BTreeSet<usize>,
-    lot: &BTreeSet<usize>,
 ) -> Vec<String> {
     let w = &a.windows[idx];
     let mut notes: Vec<String> = [whereabouts(w, is_on_screen(w, on_screen)).label()]
@@ -501,8 +646,6 @@ fn session_notes(
             }
             .to_owned(),
         );
-    } else if lot.contains(&idx) {
-        notes.push(tr("auf dem Parkplatz", "in the parking lot").to_owned());
     } else if parked.contains(&idx) {
         notes.push(tr("in der Liste", "in the list").to_owned());
     }
@@ -519,13 +662,16 @@ fn more_menu(a: &App) -> Retained<NSMenu> {
         "",
     );
     labels.setState(on_off(a.labels_on));
+    show_image(&labels, symbol("tag"));
     sub.addItem(&labels);
-    let side_title = if a.side == lookout_core::model::StackSide::Right {
-        tr("Streifen rechts", "Strip on the right")
+    let (side_title, side_symbol) = if a.side == lookout_core::model::StackSide::Right {
+        (tr("Streifen rechts", "Strip on the right"), "sidebar.right")
     } else {
-        tr("Streifen links", "Strip on the left")
+        (tr("Streifen links", "Strip on the left"), "sidebar.left")
     };
-    sub.addItem(&item(a, side_title, Some(sel!(toggleSide:)), ""));
+    let side = item(a, side_title, Some(sel!(toggleSide:)), "");
+    show_image(&side, symbol(side_symbol));
+    sub.addItem(&side);
     let pause = item(
         a,
         tr("Pause (nichts bewegen)", "Pause (move nothing)"),
@@ -533,9 +679,11 @@ fn more_menu(a: &App) -> Retained<NSMenu> {
         "",
     );
     pause.setState(on_off(a.paused));
+    show_image(&pause, symbol("pause"));
     sub.addItem(&pause);
     sub.addItem(&NSMenuItem::separatorItem(a.mtm));
     let choose = item(a, tr("Fenster auswählen", "Choose windows"), None, "");
+    show_image(&choose, symbol("checklist"));
     choose.setSubmenu(Some(&windows_menu(a)));
     sub.addItem(&choose);
 
@@ -575,12 +723,9 @@ fn more_menu(a: &App) -> Retained<NSMenu> {
                 ),
             ));
         }
-        let it = item(
-            a,
-            &format!("{} ({})", tr("Ohne Fenster", "Without window"), shown.len()),
-            None,
-            "",
-        );
+        let it = item(a, tr("Ohne Fenster", "Without window"), None, "");
+        count_badge(&it, shown.len());
+        show_image(&it, symbol("circle.dashed"));
         it.setSubmenu(Some(&list));
         sub.addItem(&it);
     }
@@ -600,24 +745,25 @@ fn hand_menu(a: &App) -> Retained<NSMenu> {
     let lookout = a.lookout_lines();
     let n = now();
     let focused = a.focused_index();
-    for &idx in order.iter().take(20) {
+    for &idx in order.iter().take(MENU_ROWS_MAX) {
         let w = &a.windows[idx];
-        let worker = is_worker(w, &a.cfg.worker_names, &a.cfg.lead_names);
-        let line = session_line(w, &a.since, &lookout, n);
-        let title = if worker {
-            format!("{}  ({})", line.title, tr("Arbeiter", "worker"))
-        } else {
-            line.title
-        };
-        let key = if a.cfg.hotkeys && Some(idx) == focused {
-            "5"
-        } else {
-            ""
-        };
-        let it = item(a, &title, Some(sel!(toggleHandPark:)), key);
-        it.setKeyEquivalentModifierMask(ctrl_opt());
+        let row = menu_row(w, &a.since, &lookout, n);
+        let it = session_item(
+            a,
+            w,
+            &row.name,
+            Some(row.tone),
+            sel!(toggleHandPark:),
+            PREVIEW_HAND,
+        );
+        let worker = is_worker(w, &a.cfg.worker_names, &a.cfg.lead_names)
+            .then(|| tr("Arbeiter", "worker").to_owned());
+        set_subtitle(&it, row.project_line(worker.as_slice()));
+        if a.cfg.hotkeys && Some(idx) == focused {
+            it.setKeyEquivalent(&NSString::from_str("5"));
+            it.setKeyEquivalentModifierMask(ctrl_opt());
+        }
         it.setState(on_off(a.lot_member(idx)));
-        keyed(&it, &format!("{PREVIEW_HAND}{}", ids_of(w)));
         sub.addItem(&it);
     }
     sub
@@ -635,18 +781,20 @@ fn windows_menu(a: &App) -> Retained<NSMenu> {
     let on_screen = on_screen_of(a, &order);
     let lookout = a.lookout_lines();
     let n = now();
-    for &idx in order.iter().take(20) {
+    for &idx in order.iter().take(MENU_ROWS_MAX) {
         let w = &a.windows[idx];
         let place = whereabouts(w, is_on_screen(w, on_screen.as_deref())).label();
-        let line = session_line(w, &a.since, &lookout, n);
-        let title = if place.is_empty() {
-            line.title
-        } else {
-            format!("{}  ({place})", line.title)
-        };
-        let it = item(a, &title, Some(sel!(toggleExcluded:)), "");
+        let row = menu_row(w, &a.since, &lookout, n);
+        let it = session_item(
+            a,
+            w,
+            &row.name,
+            Some(row.tone),
+            sel!(toggleExcluded:),
+            PREVIEW_WINDOW,
+        );
+        set_subtitle(&it, row.project_line(&[place.to_owned()]));
         it.setState(on_off(!is_excluded(w, &a.excluded)));
-        keyed(&it, &format!("{PREVIEW_WINDOW}{}", ids_of(w)));
         sub.addItem(&it);
     }
     sub

@@ -155,7 +155,7 @@ fn core_rect(r: NSRect) -> Rect {
 }
 
 /// A tint as Swift's `colorFromHex` made it: `NSColor(srgbRed:green:blue:alpha: 1)`.
-fn srgb(c: Rgb) -> Retained<NSColor> {
+pub(crate) fn srgb(c: Rgb) -> Retained<NSColor> {
     NSColor::colorWithSRGBRed_green_blue_alpha(c.0, c.1, c.2, 1.0)
 }
 

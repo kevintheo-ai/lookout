@@ -564,17 +564,13 @@ pub fn label_content(
     let tone = window_tone(w);
     let s = w.visible_session();
     let d = s.and_then(|s| s.digest.as_ref());
-    let duration = entry
-        .filter(|e| e.tone == tone)
-        .and_then(|e| e.since)
-        .map(|start| {
-            let secs = now - start;
-            if secs < 60.0 {
-                duration_text(secs)
-            } else {
-                format!("{}{}", tr("seit ", "for "), duration_text(secs))
-            }
-        });
+    let duration = held(entry, tone, now).map(|secs| {
+        if secs < 60.0 {
+            duration_text(secs)
+        } else {
+            format!("{}{}", tr("seit ", "for "), duration_text(secs))
+        }
+    });
     // v4: the own name ("Project · task", naming hook) carries the project already, no folder after it. Kevin 2026-10-12
     // ("immer klar sehen, welche Session welche ist"): never Claude's topic, it keeps changing ("Ja mach das ·
     // ClaudeCode"). Without an own name a Claude session shows only its folder until the hook names it.
@@ -639,6 +635,14 @@ pub fn label_content(
             .hidden_question()
             .then(|| tr("Tab dahinter hat eine Frage", "A hidden tab has a question").to_owned()),
     }
+}
+
+/// Seconds the window has been in `tone`: only a since entry of that same state counts.
+fn held(entry: Option<&SinceEntry>, tone: LabelTone, now: Time) -> Option<f64> {
+    entry
+        .filter(|e| e.tone == tone)
+        .and_then(|e| e.since)
+        .map(|start| now - start)
 }
 
 /// `label_content` with the since entry and Lookout line of the visible session.
@@ -767,47 +771,186 @@ pub fn session_line(
     now: Time,
 ) -> SessionLine {
     let c = window_label(w, since, lookout, now);
-    let more = w.sessions.len().saturating_sub(1);
-    let tabs = if more > 0 {
-        format!(
-            "  (+{more} {})",
-            tr("Tab", if more == 1 { "tab" } else { "tabs" })
-        )
-    } else {
-        String::new()
-    };
     let sub: Vec<&str> = c.detail.iter().chain(&c.hint).map(String::as_str).collect();
     let duration = c
         .duration
         .as_ref()
         .map_or_else(String::new, |d| format!(" — {d}"));
     SessionLine {
-        title: format!("{} {}{duration}{tabs}", c.tone.symbol(), c.topic),
+        title: format!("{} {}{duration}{}", c.tone.symbol(), c.topic, tabs_note(w)),
         subtitle: (!sub.is_empty()).then(|| sub.join(" · ")),
         tone: c.tone,
     }
 }
 
-/// Head of the sessions in the menu: counts in the label's words (Kevin 2026-09-26); "done" counts only done ones
-/// without a question (GP 12).
-pub fn sessions_header(asking: usize, ready: usize) -> String {
-    let mut counts = vec![];
-    if asking > 0 {
-        let de = if asking == 1 {
-            "wartet auf dich"
-        } else {
-            "warten auf dich"
+/// "  (+1 Tab)" behind the name of a window with more than one session.
+fn tabs_note(w: &TermWindow) -> String {
+    let more = w.sessions.len().saturating_sub(1);
+    if more == 0 {
+        return String::new();
+    }
+    format!(
+        "  (+{more} {})",
+        tr("Tab", if more == 1 { "tab" } else { "tabs" })
+    )
+}
+
+/// Longest line below a name in the menu. AppKit wraps a subtitle at about 290 pt whatever the menu's width (measured
+/// 2026-11-06 on macOS 27: 48 characters fit, from 52 the row grew); one line keeps every row the same height.
+pub const MENU_SUBTITLE_LIMIT: usize = 46;
+/// Rows of the parking lot in the menu before "… and N more".
+pub const MENU_LOT_ROWS: usize = 3;
+/// Rows of the other sections together, as before the sections: 25 two-line rows would outgrow a MacBook screen.
+pub const MENU_ROWS_MAX: usize = 20;
+
+/// A session row in the menu (design A "nach Status gruppiert", Kevin 2026-11-06 evening): the name in front; below it
+/// the project and what the session does or asks; on the right how long it has been so.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuRow {
+    /// The task of the own name "Project · task" (naming hook), else the label's topic; "(+1 Tab)" for more tabs.
+    pub name: String,
+    pub project: Option<String>,
+    /// "überwacht" for a watching one (it stands with the working ones), then the label's step, question or result and
+    /// the hidden-tab hint.
+    pub state: Vec<String>,
+    /// Without "seit": a badge on its own says it.
+    pub duration: Option<String>,
+    pub tone: LabelTone,
+}
+
+impl MenuRow {
+    /// Below the name in the session list: project, `notes` (where the window is), state.
+    pub fn subtitle(&self, notes: &[String]) -> Option<String> {
+        one_line(self.project.iter().chain(notes).chain(&self.state))
+    }
+
+    /// Below the name in the window lists of the submenus: project and `notes`; the dot shows the state.
+    pub fn project_line(&self, notes: &[String]) -> Option<String> {
+        one_line(self.project.iter().chain(notes))
+    }
+
+    /// A compact row of the parking lot: "task · project".
+    pub fn compact(&self) -> String {
+        match &self.project {
+            Some(p) => format!("{} · {p}", self.name),
+            None => self.name.clone(),
+        }
+    }
+}
+
+/// The non-empty parts joined by " · ", at most `MENU_SUBTITLE_LIMIT` characters.
+fn one_line<'a>(parts: impl Iterator<Item = &'a String>) -> Option<String> {
+    let line = parts
+        .filter(|p| !p.is_empty())
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if line.is_empty() {
+        return None;
+    }
+    if graphemes(&line).count() <= MENU_SUBTITLE_LIMIT {
+        return Some(line);
+    }
+    let cut: usize = graphemes(&line)
+        .take(MENU_SUBTITLE_LIMIT - 1)
+        .map(str::len)
+        .sum();
+    Some(format!("{}…", line[..cut].trim_end()))
+}
+
+/// The menu row of a window: the words of its label (`label_content`), arranged for the menu.
+pub fn menu_row(
+    w: &TermWindow,
+    since: &BTreeMap<String, SinceEntry>,
+    lookout: &BTreeMap<String, LookoutLine>,
+    now: Time,
+) -> MenuRow {
+    let visible = w.visible_session();
+    let entry = visible.and_then(|s| since.get(&s.id));
+    let c = label_content(w, entry, visible.and_then(|s| lookout.get(&s.id)), now);
+    let own = visible
+        .and_then(|s| s.digest.as_ref())
+        .and_then(|d| d.name.as_deref());
+    let (project, name) = match own.and_then(|n| n.split_once(" · ")) {
+        Some((project, task)) => (Some(project.to_owned()), task.to_owned()),
+        None => (None, c.topic),
+    };
+    let watching = (c.tone == LabelTone::Watching).then(|| c.tone.word().to_lowercase());
+    MenuRow {
+        name: name + &tabs_note(w),
+        project,
+        state: watching.into_iter().chain(c.detail).chain(c.hint).collect(),
+        duration: held(entry, c.tone, now).map(duration_text),
+        tone: c.tone,
+    }
+}
+
+/// Sections of the session list in the menu (design A): waiting for Kevin, done, working (running and watching), and
+/// the parking lot apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuGroup {
+    Waiting,
+    Ready,
+    Working,
+    Lot,
+}
+
+impl MenuGroup {
+    /// The section's head with its count: AppKit draws no badge on a section header (measured 2026-11-06).
+    pub fn header(self, count: usize) -> String {
+        let title = match self {
+            MenuGroup::Waiting => LabelTone::Waiting.word(),
+            MenuGroup::Ready => LabelTone::Ready.word(),
+            MenuGroup::Working => LabelTone::Running.word(),
+            MenuGroup::Lot => tr("AUF DEM PARKPLATZ", "IN THE PARKING LOT"),
         };
-        counts.push(format!("{asking} {}", tr(de, "waiting for you")));
+        format!("{title} · {count}")
     }
-    if ready > 0 {
-        counts.push(format!("{ready} {}", tr("fertig", "done")));
-    }
-    if counts.is_empty() {
-        "SESSIONS".to_owned()
-    } else {
-        format!("SESSIONS ({})", counts.join(" · "))
-    }
+}
+
+/// The windows of `order` (attention order) by section, keeping that order; `lot`: the windows on the parking lot now
+/// (only running or watching ones park, `plan_arrangement`). Empty sections are left out.
+pub fn menu_groups(
+    windows: &[TermWindow],
+    order: &[usize],
+    lot: &BTreeSet<usize>,
+) -> Vec<(MenuGroup, Vec<usize>)> {
+    let group = |i: usize| {
+        if lot.contains(&i) {
+            return MenuGroup::Lot;
+        }
+        match window_tone(&windows[i]) {
+            LabelTone::Waiting => MenuGroup::Waiting,
+            LabelTone::Ready => MenuGroup::Ready,
+            LabelTone::Running | LabelTone::Watching => MenuGroup::Working,
+        }
+    };
+    [
+        MenuGroup::Waiting,
+        MenuGroup::Ready,
+        MenuGroup::Working,
+        MenuGroup::Lot,
+    ]
+    .into_iter()
+    .map(|g| {
+        (
+            g,
+            order.iter().copied().filter(|&i| group(i) == g).collect(),
+        )
+    })
+    .filter(|(_, rows): &(MenuGroup, Vec<usize>)| !rows.is_empty())
+    .collect()
+}
+
+/// Rows a section shows of its `n` within `cap`: all up to one more than the cap (a single rest row costs the same
+/// line as the hint), else `cap` and then `more_rows_text`.
+pub fn rows_shown(n: usize, cap: usize) -> usize {
+    if n <= cap + 1 { n } else { cap }
+}
+
+/// The last line of a cut section.
+pub fn more_rows_text(n: usize) -> String {
+    format!("… {} {n} {}", tr("und", "and"), tr("weitere", "more"))
 }
 
 /// A list line, ready to draw. `ids`: the sessions of the window (for the click).

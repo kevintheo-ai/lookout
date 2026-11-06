@@ -655,15 +655,169 @@ fn test_label_targets() {
     const { assert!(LABEL_BG_ALPHA >= 0.92, "background nearly opaque") };
 }
 
-/// Menu head with the label's words (Kevin 2026-09-26).
+/// Menu rows (design A, Kevin 2026-11-06 evening): the name in front, project and state below it, the time apart.
 #[test]
-fn test_sessions_header() {
-    assert_eq!(sessions_header(0, 0), "SESSIONS");
+fn test_menu_row() {
+    let now = 50_000.0;
+    let fragt = Session {
+        waiting: true,
+        digest: Some(Digest {
+            name: some("Ultivor · #8 Rules page build"),
+            question: some("Mergen?"),
+            ..Digest::default()
+        }),
+        ..Session::new(
+            "claude:m1",
+            Engine::Claude,
+            Some(1),
+            "ultivor-m1",
+            "/Users/test/AI/Ultivor",
+            true,
+            true,
+        )
+    };
+    let seit = SinceEntry {
+        tone: LabelTone::Waiting,
+        since: Some(now - 10.0 * 60.0),
+    };
+    let since = BTreeMap::from([(fragt.id.clone(), seit)]);
+    let row = menu_row(&tab_window(vec![fragt], "✳ Rules"), &since, &NO_LINES, now);
     assert_eq!(
-        sessions_header(1, 2),
-        "SESSIONS (1 wartet auf dich · 2 fertig)"
+        (
+            row.name.as_str(),
+            row.project.as_deref(),
+            row.duration.as_deref(),
+            row.tone
+        ),
+        (
+            "#8 Rules page build",
+            Some("Ultivor"),
+            Some("10 Min."),
+            LabelTone::Waiting
+        ),
+        "the task in front, the project apart, the time without „seit“"
     );
-    assert_eq!(sessions_header(2, 0), "SESSIONS (2 warten auf dich)");
+    assert_eq!(
+        row.subtitle(&["minimiert (im Dock)".to_owned()]).as_deref(),
+        Some("Ultivor · minimiert (im Dock) · „Mergen?“")
+    );
+    assert_eq!(
+        row.project_line(&["Arbeiter".to_owned()]).as_deref(),
+        Some("Ultivor · Arbeiter"),
+        "submenus: project and note, the dot shows the state"
+    );
+    assert_eq!(row.compact(), "#8 Rules page build · Ultivor");
+
+    // Without an own name the folder is the name; a watching one says so below it (it stands with the working ones).
+    let wacht = Session {
+        watching: true,
+        digest: Some(Digest {
+            text: some("Der Lauf ist gestartet. Ich melde mich."),
+            last: LastBlock::Text,
+            ..Digest::default()
+        }),
+        ..Session::new(
+            "claude:m2",
+            Engine::Claude,
+            Some(2),
+            "lookout-m2",
+            "/Users/test/AI/Lookout",
+            false,
+            true,
+        )
+    };
+    let tab = Session::new(
+        "claude:m3",
+        Engine::Claude,
+        None,
+        "lookout-m3",
+        "/Users/test/AI/Lookout",
+        true,
+        false,
+    );
+    let row = menu_row(&tab_window(vec![wacht, tab], ""), &NO_SINCE, &NO_LINES, now);
+    assert_eq!(
+        (
+            row.name.as_str(),
+            row.project.as_deref(),
+            row.duration.as_deref()
+        ),
+        ("Lookout  (+1 Tab)", None, None)
+    );
+    assert_eq!(
+        row.subtitle(&[]).as_deref(),
+        Some("überwacht · Der Lauf ist gestartet.")
+    );
+    assert_eq!(row.compact(), "Lookout  (+1 Tab)");
+
+    // AppKit wraps a subtitle at about 290 pt whatever the menu's width: one line, cut with an ellipsis.
+    let lang = Session {
+        digest: Some(Digest {
+            name: some("AgentOperator · Team-Lead X und Labor"),
+            step: some("Labor fragt nach dem LongCat-Konto und dem Wochenplan"),
+            ..Digest::default()
+        }),
+        ..Session::new(
+            "claude:m4",
+            Engine::Claude,
+            Some(4),
+            "ao-m4",
+            "/Users/test/AI/AgentOperator",
+            false,
+            true,
+        )
+    };
+    let sub = menu_row(&tab_window(vec![lang], ""), &NO_SINCE, &NO_LINES, now)
+        .subtitle(&[])
+        .unwrap();
+    assert!(
+        sub.starts_with("AgentOperator · jetzt: Labor fragt")
+            && sub.ends_with('…')
+            && graphemes(&sub).count() <= MENU_SUBTITLE_LIMIT,
+        "{sub}"
+    );
+}
+
+/// Sections of the menu (design A): fixed order, empty ones left out, the count in the head (AppKit draws no badge on
+/// a section header, measured 2026-11-06).
+#[test]
+fn test_menu_groups() {
+    let fragt = fake_window_with(true, 1.0, None, true, true);
+    let fertig = fake_window(true, 2.0);
+    let laeuft = fake_window(false, 3.0);
+    let mut wacht = fake_window(false, 4.0);
+    wacht.sessions[0].watching = true;
+    let arbeiter = fake_window(false, 5.0);
+    let windows = [fragt, fertig, laeuft, wacht, arbeiter];
+    assert_eq!(
+        menu_groups(&windows, &[0, 1, 2, 3, 4], &BTreeSet::from([4])),
+        vec![
+            (MenuGroup::Waiting, vec![0]),
+            (MenuGroup::Ready, vec![1]),
+            (MenuGroup::Working, vec![2, 3]),
+            (MenuGroup::Lot, vec![4]),
+        ],
+        "running and watching ones work together, the parking lot stands apart"
+    );
+    assert_eq!(
+        menu_groups(&windows, &[2, 1], &BTreeSet::new()),
+        vec![(MenuGroup::Ready, vec![1]), (MenuGroup::Working, vec![2])],
+        "fixed order of the sections, empty ones left out"
+    );
+    assert_eq!(MenuGroup::Waiting.header(3), "WARTET AUF DICH · 3");
+    assert_eq!(MenuGroup::Working.header(4), "ARBEITET · 4");
+    assert_eq!(MenuGroup::Lot.header(7), "AUF DEM PARKPLATZ · 7");
+}
+
+/// The parking lot stays compact: a single rest row would cost the same line as the hint.
+#[test]
+fn test_rows_shown() {
+    assert_eq!(
+        [0, 3, 4, 5, 9].map(|n| rows_shown(n, MENU_LOT_ROWS)),
+        [0, 3, 4, 3, 3]
+    );
+    assert_eq!(rows_shown(25, MENU_ROWS_MAX), MENU_ROWS_MAX);
+    assert_eq!(more_rows_text(4), "… und 4 weitere");
 }
 
 // ---------- v4: saubere Namen, Fenster am Namen, verworfene Klicks (design 2026-09-21) ----------
@@ -1048,11 +1202,9 @@ fn test_english_texts_overlay() {
         [30.0, 380.0, 3900.0, 7220.0].map(duration_text),
         ["just now", "6 min", "1 h 5 min", "2 h"]
     );
-    assert_eq!(
-        sessions_header(1, 2),
-        "SESSIONS (1 waiting for you · 2 done)"
-    );
-    assert_eq!(sessions_header(2, 0), "SESSIONS (2 waiting for you)");
+    assert_eq!(MenuGroup::Waiting.header(2), "WAITING FOR YOU · 2");
+    assert_eq!(MenuGroup::Lot.header(1), "IN THE PARKING LOT · 1");
+    assert_eq!(more_rows_text(4), "… and 4 more");
     assert!(
         WindowWhereabouts::Minimized.label() == "minimized (in the Dock)"
             && WindowWhereabouts::OtherSpace.label() == "other desktop"
