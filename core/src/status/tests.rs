@@ -4024,7 +4024,43 @@ fn test_lookout_line() {
     assert!(!applied(alt).waiting, "a line from an earlier turn");
     let codex = Session::new("codex:c", Engine::Codex, Some(1), "c", "", true, true);
     assert!(!applied(codex).waiting, "Claude only");
-    // (Swift's last 2 asserts, the label detail from the line, need `overlay::label_content`: integration.)
+
+    // Label: the line says what it is about.
+    let label = |s: Session, title: &str| {
+        let line = s.digest.as_ref().and_then(|d| d.line(&[]));
+        crate::overlay::label_content(
+            &crate::testutil::tab_window(vec![s], title),
+            None,
+            line.as_ref(),
+            now,
+        )
+        .detail
+    };
+    let mut f = Session::new(
+        "claude:l",
+        Engine::Claude,
+        Some(2),
+        "alpha-l",
+        "/Users/test/Projects/Alpha",
+        true,
+        true,
+    );
+    f.digest = Some(Digest {
+        title: Some("Rechnungen".into()),
+        text: Some("Kevin, alles gebucht. Mehr folgt.\n✓ Lookout: fertig (12 Rechnungen)".into()),
+        last: LastBlock::Text,
+        ..Digest::default()
+    });
+    assert_eq!(label(f, "✳ Rechnungen").as_deref(), Some("12 Rechnungen"));
+    let mut w = applied(plain("Bereit.\n? Lookout: Bitte (Merge #126)"));
+    if let Some(d) = w.digest.as_mut() {
+        d.step = Some("deploy".into());
+    }
+    assert_eq!(
+        label(w, "✳ Shop").as_deref(),
+        Some("Merge #126"),
+        "the request instead of 'Freigabe: <step>'"
+    );
 }
 
 // ---------- Phase 2: teilbar (language, settings, greeting) ----------
