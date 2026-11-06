@@ -906,19 +906,19 @@ fn focus_arrange(
     windows: &[TermWindow],
 ) -> Arrangement {
     let (main_rect, left, right) = reading_layout(vis, side);
-    if left.is_none() || right.is_none() {
-        if let Some((left, middle, right)) = three_column_layout(vis) {
-            let mut out = Arrangement {
-                frames: BTreeMap::from([(main, middle)]),
-                main: Some(main),
-                ..Default::default()
-            };
-            let (ready, running): (Vec<usize>, Vec<usize>) =
-                rest.iter().partition(|&&i| windows[i].is_ready());
-            fill_side(left, &ready, &[], middle, &mut out);
-            fill_side(right, &running, &[], middle, &mut out);
-            return out;
-        }
+    if (left.is_none() || right.is_none())
+        && let Some((left, middle, right)) = three_column_layout(vis)
+    {
+        let mut out = Arrangement {
+            frames: BTreeMap::from([(main, middle)]),
+            main: Some(main),
+            ..Default::default()
+        };
+        let (ready, running): (Vec<usize>, Vec<usize>) =
+            rest.iter().partition(|&&i| windows[i].is_ready());
+        fill_side(left, &ready, &[], middle, &mut out);
+        fill_side(right, &running, &[], middle, &mut out);
+        return out;
     }
     let mut out = Arrangement {
         frames: BTreeMap::from([(main, main_rect)]),

@@ -335,10 +335,10 @@ pub fn digest_transcript(text: &str) -> Digest {
                                 d.question = first_question(&input).map(str::to_owned);
                                 d.question_id = str_of(b, "id").map(str::to_owned);
                             }
-                            if WAKE_TOOLS.contains(&name) {
-                                if let Some(id) = str_of(b, "id") {
-                                    pending.insert(id.to_owned(), (name.to_owned(), input));
-                                }
+                            if WAKE_TOOLS.contains(&name)
+                                && let Some(id) = str_of(b, "id")
+                            {
+                                pending.insert(id.to_owned(), (name.to_owned(), input));
                             }
                         }
                         Some("thinking") => d.last = LastBlock::Thinking,
@@ -374,18 +374,17 @@ fn note_wake_sources(obj: &Obj, results: &[&Obj], pending: &mut Pending, d: &mut
         d.user_prompt_at = d.user_prompt.as_ref().and_then(|_| transcript_date(obj));
     }
     // Another session (socket "uds:…", checked by Claude), not the report of an own subagent (`handback`).
-    if let Some(o) = origin {
-        if kind == Some("peer")
-            && str_of(o, "from").is_some_and(|f| f.starts_with("uds:"))
-            && o.get("handback").and_then(as_bool) != Some(true)
-        {
-            d.peer_pid = o.get("verifiedPeerPid").and_then(as_int).and_then(pid);
-            d.peer_name = str_of(o, "name").map(str::to_owned);
-            d.peer_at = transcript_date(obj);
-            d.user_turn = Some(false);
-            if let Some(name) = &d.peer_name {
-                d.partners.insert(name.clone());
-            }
+    if let Some(o) = origin
+        && kind == Some("peer")
+        && str_of(o, "from").is_some_and(|f| f.starts_with("uds:"))
+        && o.get("handback").and_then(as_bool) != Some(true)
+    {
+        d.peer_pid = o.get("verifiedPeerPid").and_then(as_int).and_then(pid);
+        d.peer_name = str_of(o, "name").map(str::to_owned);
+        d.peer_at = transcript_date(obj);
+        d.user_turn = Some(false);
+        if let Some(name) = &d.peer_name {
+            d.partners.insert(name.clone());
         }
     }
     let empty = Obj::new();
@@ -497,15 +496,15 @@ fn socket_pid(to: &str) -> Option<Pid> {
 /// A timer fired: a one-shot cron is gone, a recurring one stays; the loop timer is gone when the firing fits its time
 /// (an earlier run of another job leaves it standing).
 fn note_fire(obj: &Obj, d: &mut Digest) {
-    if let Some(tid) = str_of(obj, "taskId") {
-        if matches!(d.wakeups.get(tid), Some(Some(_))) {
-            d.wakeups.remove(tid);
-        }
+    if let Some(tid) = str_of(obj, "taskId")
+        && matches!(d.wakeups.get(tid), Some(Some(_)))
+    {
+        d.wakeups.remove(tid);
     }
-    if let (Some(Some(loop_at)), Some(fired)) = (d.wakeups.get("loop"), transcript_date(obj)) {
-        if fired >= loop_at - 60.0 {
-            d.wakeups.remove("loop");
-        }
+    if let (Some(Some(loop_at)), Some(fired)) = (d.wakeups.get("loop"), transcript_date(obj))
+        && fired >= loop_at - 60.0
+    {
+        d.wakeups.remove("loop");
     }
 }
 
@@ -599,10 +598,11 @@ impl TranscriptReader {
             return None;
         };
         let (size, modified) = (meta.len(), meta.modified().ok());
-        if let Some(c) = self.cache.get(session_id) {
-            if c.size == size && c.modified == modified {
-                return Some(c.digest.clone());
-            }
+        if let Some(c) = self.cache.get(session_id)
+            && c.size == size
+            && c.modified == modified
+        {
+            return Some(c.digest.clone());
         }
         let text = tail_string(&path, self.tail_bytes)?;
         let mut d = digest_transcript(&text);

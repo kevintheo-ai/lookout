@@ -842,10 +842,11 @@ pub fn more_text(n: usize) -> String {
 pub fn row_at(lines: &[ListLine], y: f64) -> Option<&[String]> {
     let mut top = 0.0;
     for line in lines {
-        if y >= top && y < top + line.height() {
-            if let ListLine::Row { ids, .. } = line {
-                return Some(ids);
-            }
+        if y >= top
+            && y < top + line.height()
+            && let ListLine::Row { ids, .. } = line
+        {
+            return Some(ids);
         }
         top += line.height();
     }

@@ -155,10 +155,10 @@ pub fn read_session_files(
         parsed += 1;
         // Left-over file (session crashed, pid given to a newer process since, also a root process): the process is
         // younger than the entry. 2 s slack for the clocks.
-        if let (Some(pid), Some(started)) = (s.pid, s.started_at) {
-            if start_of(pid).is_some_and(|p| p - started > 2.0) {
-                continue;
-            }
+        if let (Some(pid), Some(started)) = (s.pid, s.started_at)
+            && start_of(pid).is_some_and(|p| p - started > 2.0)
+        {
+            continue;
         }
         sessions.push(s);
     }

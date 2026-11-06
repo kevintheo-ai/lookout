@@ -117,8 +117,14 @@ pub fn unminimize(id: u64) {
     todo!()
 }
 
-/// `AXRaise` (orders only within its app, R2-6) and `AXMain` = true. AX queue only.
+/// `AXRaise` only (orders only within its app, R2-6). AX queue only.
 pub fn raise(id: u64) {
+    let _ = id;
+    todo!()
+}
+
+/// `AXMain` = true. AX queue only.
+pub fn set_main(id: u64) {
     let _ = id;
     todo!()
 }
