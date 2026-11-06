@@ -470,7 +470,9 @@ fn concat(items: &[Node], t: &[char], i: usize, k: &mut dyn FnMut(usize) -> bool
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+// Newer clippy reads `k(i) || more(k)` and `more(k) || k(i)` as the same block; the order is the point (lazy ends
+// first, greedy takes one more round first), both sides match with side effects.
+#[allow(clippy::too_many_arguments, clippy::if_same_then_else)]
 fn repeat(
     node: &Node,
     min: usize,
