@@ -38,9 +38,15 @@ pub fn ps_rows() -> Option<Vec<PsRow>> {
                 ppid: k.ppid,
                 tty: tty_name(k.tdev),
                 cpu: cpu_seconds(k.pid),
-                comm: procargs(k.pid, &mut args)
-                    .and_then(program_name)
-                    .unwrap_or_else(|| c_string(&k.comm)),
+                // A zombie is "<defunct>" in ps: else a dead shell child of Claude would count as a background job
+                // (core `background_tasks` takes shells by name; measured 2026-11-06, 5 zombies, ps "<defunct>").
+                comm: if k.stat == SZOMB {
+                    "<defunct>".into()
+                } else {
+                    procargs(k.pid, &mut args)
+                        .and_then(program_name)
+                        .unwrap_or_else(|| c_string(&k.comm))
+                },
             })
             .collect(),
     )
@@ -189,6 +195,9 @@ fn command_text(path: &str, args: &[&str], accept: &[i32]) -> Option<String> {
     )
     .map(|data| String::from_utf8_lossy(&data).into_owned())
 }
+
+/// `p_stat` of a zombie (<sys/proc.h>).
+const SZOMB: u8 = 5;
 
 /// The process table (`sysctl KERN_PROC_ALL`).
 fn process_table() -> Option<Vec<KinfoProc>> {
@@ -378,7 +387,10 @@ struct KinfoProc {
     /// `kp_proc.p_un.__p_starttime`.
     start_sec: libc::time_t,
     start_usec: i32,
-    _a: [u8; 28],
+    _a: [u8; 24],
+    /// `kp_proc.p_stat`; `SZOMB` = 5.
+    stat: u8,
+    _a2: [u8; 3],
     /// `kp_proc.p_pid`.
     pid: Pid,
     _b: [u8; 199],
@@ -396,6 +408,7 @@ struct KinfoProc {
 const _: () = assert!(
     size_of::<KinfoProc>() == 648
         && offset_of!(KinfoProc, start_usec) == 8
+        && offset_of!(KinfoProc, stat) == 36
         && offset_of!(KinfoProc, pid) == 40
         && offset_of!(KinfoProc, comm) == 243
         && offset_of!(KinfoProc, ppid) == 560
