@@ -4,10 +4,9 @@
 //! itself runs every 5 minutes only (crash diagnosis: 13.4 starts per minute).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -168,8 +167,9 @@ pub fn read_session_files(
 
 /// Runs a command with a hard time limit (seconds). `None` = failure or timeout. `accept`: exit codes that are no
 /// failure (lsof ends with 1 when nothing matches). The environment is inherited; `env` sets, `unset` removes.
-/// Differences to Swift: stdin is /dev/null, the time limit kills (SIGKILL, Swift: SIGTERM), and a grandchild that keeps
-/// the output pipe open cannot hold the caller past the limit.
+/// Differences to Swift: stdin is /dev/null, the time limit kills (SIGKILL, Swift: SIGTERM), and the output goes to a
+/// private temp file instead of a pipe: a grandchild that inherits a pipe keeps it open after the command ended, the
+/// reading blocked, the run counted as a timeout and its reader thread leaked (review quick 2026-11-06, GLM).
 pub fn run_command(
     path: &str,
     args: &[&str],
@@ -179,57 +179,77 @@ pub fn run_command(
     accept: &[i32],
     log: &mut dyn FnMut(&str),
 ) -> Option<Vec<u8>> {
-    let mut cmd = Command::new(path);
-    // stderr to /dev/null: a pipe nobody reads fills at 64 KB and blocks the child.
-    cmd.args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    for k in unset {
-        cmd.env_remove(k);
-    }
-    cmd.envs(env);
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
+    let (out_path, out) = match output_file() {
+        Ok(f) => f,
         Err(e) => {
             log(&format!("Watcher: {path} nicht startbar — {e}"));
             return None;
         }
     };
-    // The time limit MUST hang on the process, not on the reading: reading blocks until the child closes its pipe.
-    let deadline = Instant::now() + Duration::from_secs_f64(timeout);
-    let (tx, rx) = mpsc::channel();
-    if let Some(mut out) = child.stdout.take() {
-        thread::spawn(move || {
-            let mut data = vec![];
-            let _ = out.read_to_end(&mut data);
-            let _ = tx.send(data);
-        });
+    let mut cmd = Command::new(path);
+    // stderr to /dev/null: nobody reads it.
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(out))
+        .stderr(Stdio::null());
+    for k in unset {
+        cmd.env_remove(k);
     }
-    let data = rx
-        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .ok();
-    let status = data.as_ref().and_then(|_| {
-        loop {
-            match child.try_wait() {
-                Ok(Some(s)) => break Some(s),
-                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(5)),
-                _ => break None,
+    cmd.envs(env);
+    let result = match cmd.spawn() {
+        Ok(mut child) => {
+            let deadline = Instant::now() + Duration::from_secs_f64(timeout);
+            let status = loop {
+                match child.try_wait() {
+                    Ok(Some(s)) => break Some(s),
+                    Ok(None) if Instant::now() < deadline => {
+                        thread::sleep(Duration::from_millis(5))
+                    }
+                    _ => break None,
+                }
+            };
+            match status {
+                // Ended by a signal: never a result, even if the signal number were in `accept`.
+                Some(s) => s
+                    .code()
+                    .filter(|c| accept.contains(c))
+                    .and_then(|_| std::fs::read(&out_path).ok()),
+                None => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    log(&format!(
+                        "Watcher: {path} {} ueberschritt {}s — abgebrochen",
+                        args.join(" "),
+                        timeout as i64
+                    ));
+                    None
+                }
             }
         }
-    });
-    let Some(status) = status else {
-        let _ = child.kill();
-        let _ = child.wait();
-        log(&format!(
-            "Watcher: {path} {} ueberschritt {}s — abgebrochen",
-            args.join(" "),
-            timeout as i64
-        ));
-        return None;
+        Err(e) => {
+            log(&format!("Watcher: {path} nicht startbar — {e}"));
+            None
+        }
     };
-    // Ended by a signal: never a result, even if the signal number were in `accept`.
-    status.code().filter(|c| accept.contains(c)).and(data)
+    let _ = std::fs::remove_file(&out_path);
+    result
+}
+
+/// A fresh output file only this user can read (session lists are private), created exclusively so nobody can plant a
+/// link there first.
+fn output_file() -> std::io::Result<(std::path::PathBuf, std::fs::File)> {
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "lookout-run-{}-{}",
+        std::process::id(),
+        COUNT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let file = options.open(&path)?;
+    Ok((path, file))
 }
 
 /// The official query for ONE configuration folder (starts `claude`, ~0.25 s CPU). `None` = not possible.

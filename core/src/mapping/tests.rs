@@ -881,3 +881,36 @@ fn match_sessions_puts_sessions_into_windows() {
         "by pid; window gone or no pid: none"
     );
 }
+
+/// review quick 2026-11-06 (GLM): the title read back from the window goes into an OSC 0 sequence on the session's tty.
+/// An ESC or BEL in it would end that sequence early and let the rest act as terminal commands (ESC[6n makes the
+/// terminal type its answer into the session), so control characters never go back.
+#[test]
+fn restored_titles_carry_no_control_characters() {
+    let procs = [engine_proc(
+        21,
+        Engine::Claude,
+        "ttys021",
+        "/w/Bad\u{7}\u{1b}[6nDir",
+    )];
+    let mut before = vec![
+        tab_window(vec![], "x\u{1b}]8;;http://evil\u{1b}\\y\u{7}z\u{9b}6n"),
+        tab_window(vec![], "zsh"),
+    ];
+    before[0].id = 200;
+    before[1].id = 201;
+    let mut ping = Ping::start(&procs, &BTreeMap::new(), &before, &BTreeSet::from([21]));
+    let back = ping.read(&["wg-map-21".to_string(), "zsh".to_string()]);
+    assert_eq!(back.len(), 1);
+    assert_eq!(
+        back[0].title, "x]8;;http://evil\\yz6n",
+        "original title without ESC, BEL, CSI"
+    );
+    let mut lost = Ping::start(&procs, &BTreeMap::new(), &before, &BTreeSet::from([21]));
+    lost.read(&["".to_string(), "".to_string()]);
+    assert_eq!(
+        lost.finish()[0].title,
+        "Bad[6nDir",
+        "the folder fallback too"
+    );
+}

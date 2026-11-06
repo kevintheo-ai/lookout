@@ -4206,6 +4206,32 @@ fn run_command_limits_and_exit_codes() {
     assert!(lines[0].starts_with("Watcher: /nonexistent/x nicht startbar — "));
 }
 
+/// review quick 2026-11-06 (GLM): a grandchild that inherits the output kept a pipe open after the command ended; the
+/// reading blocked, the run counted as a timeout, and its reader thread leaked for good.
+#[test]
+fn run_command_does_not_wait_for_grandchildren() {
+    let none: BTreeMap<String, String> = BTreeMap::new();
+    let start = std::time::Instant::now();
+    let out = run_command(
+        "/bin/sh",
+        &["-c", "sleep 3 & echo hi"],
+        &none,
+        &[],
+        2.0,
+        &[0],
+        &mut |_| {},
+    );
+    assert_eq!(
+        out,
+        Some(b"hi\n".to_vec()),
+        "the command ended with its output"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "no wait for the grandchild"
+    );
+}
+
 #[test]
 fn timestamps_like_iso8601_date_formatter() {
     // Measured with Foundation 2026-11-06.

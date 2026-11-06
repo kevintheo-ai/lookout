@@ -466,7 +466,9 @@ impl Ping {
 }
 
 /// Title back. Without a known original (background tab) the title falls back to the folder name: the usual terminal
-/// naming and never an empty tab.
+/// naming and never an empty tab. Control characters never go back: the title travels inside an OSC 0 sequence, and an
+/// ESC or BEL from a crafted title or folder name would end it early and turn the rest into terminal commands (review
+/// quick 2026-11-06, GLM; the Swift version wrote them unfiltered).
 fn restore_title(p: &EngineProc, original: Option<&str>) -> TitleWrite {
     let fallback = if p.cwd.is_empty() {
         p.engine.raw()
@@ -475,7 +477,11 @@ fn restore_title(p: &EngineProc, original: Option<&str>) -> TitleWrite {
     };
     TitleWrite {
         tty: p.tty.clone(),
-        title: original.unwrap_or(fallback).to_owned(),
+        title: original
+            .unwrap_or(fallback)
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect(),
     }
 }
 
