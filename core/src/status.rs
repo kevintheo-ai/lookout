@@ -52,22 +52,9 @@ fn secs(t: SystemTime) -> Time {
 }
 
 // ---------- JSON values as JSONSerialization + `as?` bridge them (measured 2026-11-06) ----------
-//
-// ponytail: duplicates config.rs's private `json_int`/`json_bool`; merge them when config.rs is touched anyway.
 
-/// `as? Int`: integers in range, integral floats, booleans as 0 and 1.
-fn as_int(v: &Value) -> Option<i64> {
-    match v {
-        Value::Bool(b) => Some(i64::from(*b)),
-        Value::Number(n) => n.as_i64().or_else(|| {
-            let f = n.as_f64()?;
-            (f.fract() == 0.0
-                && (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&f))
-            .then_some(f as i64)
-        }),
-        _ => None,
-    }
-}
+/// `as? Int` and `as? Bool`: the same bridging the config reader uses.
+use crate::config::{json_bool as as_bool, json_int as as_int};
 
 /// `as? Double`: numbers that a double holds exactly (2^53 + 1 does not), booleans as 0 and 1.
 fn as_double(v: &Value) -> Option<f64> {
@@ -83,19 +70,6 @@ fn as_double(v: &Value) -> Option<f64> {
                 n.as_f64()
             }
         }
-        _ => None,
-    }
-}
-
-/// `as? Bool`: booleans, and numbers that are exactly 0 or 1.
-fn as_bool(v: &Value) -> Option<bool> {
-    match v {
-        Value::Bool(b) => Some(*b),
-        Value::Number(n) => match n.as_f64()? {
-            0.0 => Some(false),
-            1.0 => Some(true),
-            _ => None,
-        },
         _ => None,
     }
 }

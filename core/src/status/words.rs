@@ -7,7 +7,8 @@ use std::sync::LazyLock;
 
 use super::regex::{Regex, escape};
 use crate::model::{
-    Digest, Engine, LineStatus, LookoutLine, Session, Time, fold_case, is_whitespace, trim_ws,
+    Digest, Engine, LineStatus, LookoutLine, Session, Time, drop_first_character, fold_case,
+    is_whitespace, trim_ws,
 };
 use crate::overlay::greeting_name;
 
@@ -29,24 +30,6 @@ fn is_newline(c: char) -> bool {
         c,
         '\n' | '\u{B}' | '\u{C}' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}'
     )
-}
-
-/// Swift's `dropFirst()` on a string: the first character with what belongs to its cluster ("✓︎" with the text
-/// variation selector is one character). ponytail: the same hand-picked ranges as `model::title_glyph`.
-fn drop_first_character(s: &str) -> &str {
-    let mut chars = s.chars();
-    if chars.next().is_none() {
-        return s;
-    }
-    let rest = chars.as_str();
-    let cut = rest
-        .char_indices()
-        .find(|&(_, c)| {
-            !matches!(c as u32, 0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF
-                | 0xFE00..=0xFE0F | 0xFE20..=0xFE2F | 0x1F3FB..=0x1F3FF | 0xE0020..=0xE007F | 0xE0100..=0xE01EF)
-        })
-        .map_or(rest.len(), |(i, _)| i);
-    &rest[cut..]
 }
 
 fn regex(pattern: &str, caseless: bool, lines: bool) -> Regex {

@@ -17,7 +17,7 @@ use crate::layout::{LIST_HEADER_H, LIST_ROW_H, screen_index};
 use crate::mapping::{index_of_window, last_path_component};
 use crate::model::{
     Arrangement, Engine, LabelTone, LastBlock, ListEntry, LookoutLine, OnScreenWindow, Pid,
-    Session, SideList, TermWindow, Time, title_glyph, trim_ws,
+    Session, SideList, TermWindow, Time, graphemes, title_glyph, trim_ws,
 };
 use crate::motion::{WARP_BID, ax_origin, cocoa_to_ax, glide_path};
 
@@ -453,22 +453,31 @@ pub fn first_sentence(text: &str) -> String {
         .collect();
     let mut s = lines.join(" ").replace("**", "").replace('`', "");
     if let Some(rest) = after_greeting(&s, &greeting_name()) {
-        let first = characters(rest).first().copied().unwrap_or("");
+        let first = graphemes(rest).next().unwrap_or("");
         s = format!("{}{}", first.to_uppercase(), &rest[first.len()..]);
     }
-    let chars = characters(&s);
-    let end = (0..chars.len()).find(|&i| {
-        matches!(chars[i], "." | "!" | "?") && chars.get(i + 1).is_none_or(|n| *n == " ")
-    });
-    if let Some(end) = end {
-        s = chars[..=end].concat();
+    // One pass, up to the first sentence end ("." "!" "?" before a space or the end) and never further than the limit
+    // needs: before, two full character lists of the whole text were built on every label refresh (review quick
+    // 2026-11-06, Codex).
+    let (kept, count) = {
+        let (mut kept, mut count) = (0, 0);
+        let mut chars = graphemes(&s).peekable();
+        while let Some(c) = chars.next() {
+            kept += c.len();
+            count += 1;
+            let end = matches!(c, "." | "!" | "?") && chars.peek().is_none_or(|n| *n == " ");
+            if end || count > SENTENCE_LIMIT {
+                break;
+            }
+        }
+        (kept, count)
+    };
+    if count > SENTENCE_LIMIT {
+        let cut: usize = graphemes(&s).take(SENTENCE_LIMIT - 1).map(str::len).sum();
+        return format!("{}…", &s[..cut]);
     }
-    let chars = characters(&s);
-    if chars.len() > SENTENCE_LIMIT {
-        chars[..SENTENCE_LIMIT - 1].concat() + "…"
-    } else {
-        s
-    }
+    s.truncate(kept);
+    s
 }
 
 /// The text after a greeting: the name at the very start (case-insensitive) and the next non-blank character neither
@@ -496,10 +505,9 @@ fn after_greeting<'a>(s: &'a str, name: &str) -> Option<&'a str> {
     if next.is_alphabetic() || next.is_numeric() {
         return None;
     }
-    let skip: usize = characters(rest)
-        .iter()
-        .take_while(|c| **c != "#" && c.chars().next().is_some_and(|f| !f.is_alphanumeric()))
-        .map(|c| c.len())
+    let skip: usize = graphemes(rest)
+        .take_while(|c| *c != "#" && c.chars().next().is_some_and(|f| !f.is_alphanumeric()))
+        .map(str::len)
         .sum();
     Some(&rest[skip..])
 }
@@ -515,34 +523,6 @@ fn is_newline(c: char) -> bool {
         c,
         '\n' | '\u{B}' | '\u{C}' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}'
     )
-}
-
-/// The text cut into Swift `Character`s (extended grapheme clusters): a character with the marks, variation selectors,
-/// emoji modifiers and tags after it, pictographs joined by ZWJ, flag pairs. Swift counts and cuts by these.
-/// ponytail: hand-picked ranges like `model::title_glyph`, not the UAX #29 tables; Hangul jamo, spacing marks and prepend
-/// characters count one by one. Labels show Latin text and emoji.
-fn characters(s: &str) -> Vec<&str> {
-    let mut out = vec![];
-    // `flags`: regional indicators in a row before `c`; an odd count leaves one waiting for its partner.
-    let (mut start, mut prev, mut flags) = (0, None, 0);
-    for (i, c) in s.char_indices() {
-        let flag = ('\u{1F1E6}'..='\u{1F1FF}').contains(&c);
-        let extend = matches!(c as u32,
-            0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF | 0x200C | 0x200D
-                | 0xFE00..=0xFE0F | 0xFE20..=0xFE2F | 0x1F3FB..=0x1F3FF | 0xE0020..=0xE007F | 0xE0100..=0xE01EF);
-        let pictograph = matches!(c as u32, 0x2190..=0x2BFF | 0x1F000..=0x1FAFF);
-        let joins = extend || (prev == Some('\u{200D}') && pictograph) || (flag && flags % 2 == 1);
-        if prev.is_some() && !joins {
-            out.push(&s[start..i]);
-            start = i;
-        }
-        flags = if flag { flags + 1 } else { 0 };
-        prev = Some(c);
-    }
-    if start < s.len() {
-        out.push(&s[start..]);
-    }
-    out
 }
 
 /// What a label says. One pure function, so label, list and menu say the same.

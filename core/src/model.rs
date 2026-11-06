@@ -10,6 +10,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use crate::geom::Rect;
 use crate::i18n::tr;
 
@@ -248,42 +250,23 @@ pub enum TitleGlyph {
 
 /// Glyph and the title text without it, trimmed.
 pub fn title_glyph(title: &str) -> (TitleGlyph, &str) {
-    let mut chars = title.chars();
-    let glyph = match chars.next() {
+    let glyph = match title.chars().next() {
         Some('\u{25D0}' | '\u{25D1}') => TitleGlyph::Busy,
         Some('\u{2733}') => TitleGlyph::Idle,
         _ => return (TitleGlyph::None, trim_ws(title)),
     };
-    (glyph, trim_ws(rest_of_cluster(chars.as_str())))
+    (glyph, trim_ws(drop_first_character(title)))
 }
 
-/// Drops what still belongs to the first character's grapheme cluster: Swift's `dropFirst` takes "✳️" (with
-/// variation selector) as one character.
-/// ponytail: hand-picked ranges (marks, selectors, modifiers, tags, ZWJ + pictograph), not the UAX #29 tables;
-/// Claude writes "✳ " or "✳️ " here.
-fn rest_of_cluster(s: &str) -> &str {
-    let mut chars = s.char_indices();
-    let mut cut = 0;
-    while let Some((i, c)) = chars.next() {
-        // Combining marks, variation selectors, emoji modifiers, tags: they join the character before them.
-        let extend = matches!(c as u32,
-            0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF | 0x200C | 0xFE00..=0xFE0F
-                | 0xFE20..=0xFE2F | 0x1F3FB..=0x1F3FF | 0xE0020..=0xE007F | 0xE0100..=0xE01EF);
-        if extend {
-            cut = i + c.len_utf8();
-        } else if c == '\u{200D}' {
-            cut = i + c.len_utf8();
-            match chars.next() {
-                Some((j, d)) if matches!(d as u32, 0x2190..=0x2BFF | 0x1F000..=0x1FAFF) => {
-                    cut = j + d.len_utf8()
-                }
-                _ => break,
-            }
-        } else {
-            break;
-        }
-    }
-    &s[cut..]
+/// Swift `Character`s: extended grapheme clusters (UAX #29), produced lazily. "✳️" (with variation selector), a
+/// family emoji joined by ZWJ or a flag pair are one character each, as Swift counts and cuts them.
+pub fn graphemes(s: &str) -> impl Iterator<Item = &str> {
+    s.graphemes(true)
+}
+
+/// Swift's `dropFirst()` on a string: everything after the first character.
+pub fn drop_first_character(s: &str) -> &str {
+    graphemes(s).next().map_or(s, |first| &s[first.len()..])
 }
 
 /// Texts a Claude session writes into the window title: own name and topic, both, because the title lags behind a

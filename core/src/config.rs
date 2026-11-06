@@ -151,7 +151,7 @@ fn names(obj: &Map<String, Value>, key: &str) -> Vec<String> {
 }
 
 /// Swift `as? Int` on a JSON value: integers in range, integral floats, booleans as 0 and 1.
-fn json_int(v: &Value) -> Option<i64> {
+pub(crate) fn json_int(v: &Value) -> Option<i64> {
     match v {
         Value::Bool(b) => Some(i64::from(*b)),
         Value::Number(n) => n.as_i64().or_else(|| {
@@ -166,7 +166,7 @@ fn json_int(v: &Value) -> Option<i64> {
 }
 
 /// Swift `as? Bool` on a JSON value: booleans, and numbers that are exactly 0 or 1.
-fn json_bool(v: &Value) -> Option<bool> {
+pub(crate) fn json_bool(v: &Value) -> Option<bool> {
     match v {
         Value::Bool(b) => Some(*b),
         Value::Number(n) => {

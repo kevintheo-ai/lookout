@@ -391,6 +391,7 @@ fn first_sentence_counts_characters_like_swift() {
         format!("{} ok.", family.repeat(100)),
         "104 characters stay whole (Rust counts 504 chars)"
     );
+    let characters = |s: &'static str| crate::model::graphemes(s).collect::<Vec<_>>();
     assert_eq!(
         characters("✳\u{FE0F}é\u{301}a"),
         ["✳\u{FE0F}", "é\u{301}", "a"]
