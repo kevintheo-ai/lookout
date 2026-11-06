@@ -3,6 +3,8 @@
 #   ./build-rust.sh --tests   format check, lints and tests of the whole workspace
 #   ./build-rust.sh --probe   build, bundle and sign like the installed app, start it once, and print whether it holds
 #                             Accessibility access; the installed app is never touched
+#   ./build-rust.sh --app     build, bundle and sign into target/Lookout.app for a live test; the installed app is
+#                             never touched
 #
 # Environment (optional): LOOKOUT_BUNDLE_ID and LOOKOUT_SIGN_ID, default: those of the installed
 # ~/Applications/Lookout.app. Accessibility access belongs to bundle id + signing identity, so the probe tells whether
@@ -78,8 +80,19 @@ case "${1:-}" in
     open -n -W "$STAGE/Lookout.app" --args --probe
     cat "$LOG"
     ;;
+  --app)
+    # Build, bundle and sign into target/Lookout.app with the installed app's bundle id and signature, so its
+    # Accessibility grant applies. The installed app stays untouched; a live test quits it, starts this one with
+    # `open -n`, and starts the installed one again afterwards.
+    identity
+    (cd "$DIR" && cargo build --release)
+    APP="$DIR/target/Lookout.app"
+    rm -rf "$APP"
+    bundle "$APP"
+    echo "$APP"
+    ;;
   *)
-    echo "usage: $0 --tests | --probe" >&2
+    echo "usage: $0 --tests | --probe | --app" >&2
     exit 2
     ;;
 esac
