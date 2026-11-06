@@ -1,8 +1,8 @@
 # Lookout
 
 I run a lot of AI sessions in the terminal at the same time, and I kept losing track of them. Which one is
-done? Which one has been waiting for my answer for a while? So my AI agents built me Lookout, a small Mac app
-for exactly that.
+done? Which one has been waiting for my answer for a while? So I built Lookout with the help of AI: a small Mac
+app for exactly that.
 
 It sits in the menu bar, lines up the terminal windows of your Claude Code, Codex, Grok and Kimi sessions in
 Warp or Ghostty, and shows which session is working, which one is done and which one is waiting for you.
@@ -75,9 +75,11 @@ windows, and windows you took out stay where they are.
 
 ## How it was built
 
-I don't write code by hand. Lookout was written by AI agents: Claude Code wrote it, first in Swift, now in Rust.
-Codex, GLM and Kimi reviewed the Swift version in rounds; Codex, GLM, Muse and Grok reviewed the Rust version in
-rounds. I used it every day and said what had to change until it felt right. The "watching" rules were tuned on
+I built Lookout myself, with the help of AI. I am the architect and the brain: I design it, plan it, set the
+rules, decide and accept the result. The AI agents carry out the work: Claude Code writes the code, first in
+Swift, now in Rust. Several language models from different vendors review plans and code in rounds: Codex, GLM
+and Kimi reviewed the Swift version; Codex, GLM, Muse and Grok reviewed the Rust version. This is not vibe coding.
+I used it every day and said what had to change until it felt right. The "watching" rules were tuned on
 1,204 real cases from my own sessions. The status rules were carried over unchanged: on 41,293 real answer texts
 from my sessions, the Rust version's word rules give exactly the same results as the Swift version's. I work in
 German, so the code comments and the log file are in German too.
@@ -324,7 +326,7 @@ there too and then stays in the arrangement. Lookout remembers this per session.
 
 ## Kurz auf Deutsch
 
-Lookout ist eine kleine Menüleisten-App, die ich mir für meinen eigenen Schreibtisch habe bauen lassen: Sie ordnet
+Lookout ist eine kleine Menüleisten-App, die ich mit KI-Hilfe für meinen eigenen Schreibtisch gebaut habe: Sie ordnet
 die Terminalfenster deiner KI-Sessions (Claude Code, Codex, Grok, Kimi in Warp oder Ghostty) und zeigt ruhig, wer
 arbeitet, wer fertig ist und wer auf dich wartet. Fertig ist mintgrün umrahmt, bernsteinfarben heisst: die Session
 braucht deine Freigabe oder deine Auswahl in einem Fragefenster. Endet eine Antwort mit einer Lookout-Zeile
