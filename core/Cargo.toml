@@ -8,4 +8,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Local time for one-shot cron wake-ups and Codex's day folders (Swift: Calendar.current, DateFormatter).
+chrono = { version = "=0.4.45", default-features = false, features = ["clock"] }
 serde_json = "=1.0.154"
