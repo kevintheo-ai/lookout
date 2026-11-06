@@ -1085,6 +1085,9 @@ pub struct PlanInput<'a> {
     /// Parking lot (Kevin 2026-11-06): name parts of worker sessions (`is_worker`).
     pub worker_names: &'a [String],
     pub lead_names: &'a [String],
+    /// Session ids Kevin sent to the parking lot by hand (Ctrl+Opt+5 or the menu, Kevin 2026-11-06 evening): such a
+    /// window parks like a worker, whatever its name, a lead too.
+    pub hand_parked: &'a BTreeSet<String>,
     /// Show the parking lot: tiled on the largest screen instead of parked behind the main window.
     pub peek: bool,
 }
@@ -1109,6 +1112,7 @@ impl<'a> PlanInput<'a> {
             excluded: &NO_EXCLUSIONS,
             worker_names: &[],
             lead_names: &[],
+            hand_parked: &NO_EXCLUSIONS,
             peek: false,
         }
     }
@@ -1119,8 +1123,8 @@ impl<'a> PlanInput<'a> {
 /// active session (`focused`) stands in the middle in Focus and Focus 2 and alone on the work screen in the control
 /// room. The arrangement only applies to `Single`; the control room is fixed.
 ///
-/// Parking lot (Kevin 2026-11-06): worker windows that run or watch (`is_worker`, not done, no hidden question; never
-/// the main window) stay out of the arrangement and lie behind the main window without a list row, in `parked` and
+/// Parking lot (Kevin 2026-11-06): worker windows that run or watch (`is_worker` or sent by hand, `hand_parked`; not
+/// done, no hidden question; never the main window) stay out of the arrangement and lie behind the main window without a list row, in `parked` and
 /// `lot`. With `peek` they are tiled on the largest screen instead (only `lot`); whoever gets no tile stays parked. A
 /// single-screen grid has no lot.
 pub fn plan_arrangement(p: &PlanInput) -> Arrangement {
@@ -1135,10 +1139,12 @@ pub fn plan_arrangement(p: &PlanInput) -> Arrangement {
     let main = p.focused.filter(|f| ordered.contains(f)).unwrap_or(first);
     let screen = |i: usize| p.screens[i.min(p.screens.len() - 1)];
     let parks = |&i: &usize| {
+        let w = &windows[i];
         i != main
-            && is_worker(&windows[i], p.worker_names, p.lead_names)
-            && !windows[i].is_ready()
-            && !windows[i].hidden_question()
+            && (is_worker(w, p.worker_names, p.lead_names)
+                || w.sessions.iter().any(|s| p.hand_parked.contains(&s.id)))
+            && !w.is_ready()
+            && !w.hidden_question()
     };
     let lot: Vec<usize> = ordered.iter().copied().filter(parks).collect();
     let rest: Vec<usize> = rest_sequence(&ordered, main, p.rest_hint)

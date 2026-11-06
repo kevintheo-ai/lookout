@@ -15,8 +15,8 @@ use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
 
 use lookout_core::i18n::tr;
 use lookout_core::layout::{
-    active_pair, attention_order, fitted_grid, grid_choices, is_excluded, resolve_target,
-    screen_names, target_options, target_title,
+    active_pair, attention_order, fitted_grid, grid_choices, is_excluded, is_worker,
+    resolve_target, screen_names, target_options, target_title,
 };
 use lookout_core::model::{
     GridSpec, LayoutMode, OnScreenWindow, Pid, ScreenInfo, Target, TargetChoice, TermWindow,
@@ -41,6 +41,8 @@ const PREVIEW_WINDOW: &str = "win:";
 const PREVIEW_FRONT: &str = "front:";
 /// "Show parking lot": the tiles of the peek.
 const PREVIEW_PEEK: &str = "peek:";
+/// "To the parking lot": the window's session ids follow; a click sends it there by hand or takes it back.
+const PREVIEW_HAND: &str = "hand:";
 /// Control-room screens: the screen id follows; "auto" = automatic again.
 const PAIR_WORK: &str = "pair-work:";
 const PAIR_CONTROL: &str = "pair-control:";
@@ -156,6 +158,14 @@ define_class!(
         #[unsafe(method(togglePeek:))]
         fn toggle_peek(&self, _sender: Option<&AnyObject>) {
             with_app(App::toggle_peek);
+        }
+
+        #[unsafe(method(toggleHandPark:))]
+        fn toggle_hand_park(&self, sender: &NSMenuItem) {
+            if let Some(k) = key_after(sender, PREVIEW_HAND) {
+                let ids = session_ids(&k);
+                with_app(move |a| a.toggle_hand_park(&ids));
+            }
         }
 
         #[unsafe(method(toggleLabels:))]
@@ -394,6 +404,9 @@ fn rebuild(a: &mut App) {
         it.setEnabled(a.peek || (n > 0 && !a.paused));
         keyed(&it, PREVIEW_PEEK);
         menu.addItem(&it);
+        let hand = item(a, tr("Auf den Parkplatz", "To the parking lot"), None, "");
+        hand.setSubmenu(Some(&hand_menu(a)));
+        menu.addItem(&hand);
     }
 
     menu.addItem(&NSMenuItem::separatorItem(a.mtm));
@@ -574,6 +587,49 @@ fn more_menu(a: &App) -> Retained<NSMenu> {
     sub
 }
 
+/// "To the parking lot" (Kevin 2026-11-06 evening): check mark = sent there by hand, a click sends or takes back,
+/// hovering lights up the window. Workers are there by name: checked, not clickable. The window Kevin is in carries
+/// Ctrl+Opt+5, which does the same for it.
+fn hand_menu(a: &App) -> Retained<NSMenu> {
+    let sub = submenu(a);
+    let order = ai_windows_by_status(a);
+    if order.is_empty() {
+        sub.addItem(&disabled(a, no_session_text()));
+        return sub;
+    }
+    let lookout = a.lookout_lines();
+    let n = now();
+    let focused = a.focused_index();
+    for &idx in order.iter().take(20) {
+        let w = &a.windows[idx];
+        let worker = is_worker(w, &a.cfg.worker_names, &a.cfg.lead_names);
+        let line = session_line(w, &a.since, &lookout, n);
+        let title = if worker {
+            format!(
+                "{}  ({})",
+                line.title,
+                tr("Arbeiter, automatisch", "worker, automatic")
+            )
+        } else {
+            line.title
+        };
+        let key = if a.cfg.hotkeys && Some(idx) == focused {
+            "5"
+        } else {
+            ""
+        };
+        let it = item(a, &title, Some(sel!(toggleHandPark:)), key);
+        it.setKeyEquivalentModifierMask(ctrl_opt());
+        it.setState(on_off(
+            worker || w.sessions.iter().any(|s| a.hand_parked.contains(&s.id)),
+        ));
+        it.setEnabled(!worker);
+        keyed(&it, &format!("{PREVIEW_HAND}{}", ids_of(w)));
+        sub.addItem(&it);
+    }
+    sub
+}
+
 /// "Choose windows": check mark = arranged, a click takes the window out or back in, hovering lights up exactly this
 /// window (Kevin 2026-09-18). Whoever is not to be seen says so in the title.
 fn windows_menu(a: &App) -> Retained<NSMenu> {
@@ -675,7 +731,7 @@ fn highlight(a: &mut App, item: Option<&NSMenuItem>) {
         a.preview.hide();
         return;
     };
-    for prefix in [PREVIEW_FRONT, PREVIEW_WINDOW] {
+    for prefix in [PREVIEW_FRONT, PREVIEW_WINDOW, PREVIEW_HAND] {
         let Some(rest) = key.strip_prefix(prefix) else {
             continue;
         };
@@ -698,6 +754,18 @@ fn highlight(a: &mut App, item: Option<&NSMenuItem>) {
         };
         let detail = if prefix == PREVIEW_FRONT {
             tr("Klick holt es nach vorn", "Click brings it to the front")
+        } else if prefix == PREVIEW_HAND {
+            if w.sessions.iter().any(|s| a.hand_parked.contains(&s.id)) {
+                tr(
+                    "auf dem Parkplatz — Klick holt es zurück",
+                    "on the parking lot — click brings it back",
+                )
+            } else {
+                tr(
+                    "Klick schickt es auf den Parkplatz",
+                    "click sends it to the parking lot",
+                )
+            }
         } else if is_excluded(w, &a.excluded) {
             tr(
                 "ausgeschlossen — Klick nimmt es wieder auf",

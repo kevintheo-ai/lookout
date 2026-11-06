@@ -2096,3 +2096,53 @@ fn plan_log_line_like_swift() {
         "Plan: ziel=screen:ID -> single(0), anordnung=focus2, 15 Fenster, 1 geparkt, Parkplatz 2"
     );
 }
+
+/// By hand (Kevin 2026-11-06 evening, Ctrl+Opt+5): a session id in `hand_parked` parks its window like a worker,
+/// whatever its name, a lead too; done or asking it stands with the waiting ones; the main window never parks.
+#[test]
+fn parking_by_hand_like_a_worker() {
+    let w = lot_windows();
+    let (workers, leads) = (names(&["Worker"]), names(&["Ultivor · Team lead"]));
+    let by_hand: BTreeSet<String> = [&w[0], &w[3], &w[4]]
+        .iter()
+        .map(|x| x.sessions[0].id.clone())
+        .collect();
+    let p = PlanInput {
+        focused: Some(0),
+        worker_names: &workers,
+        lead_names: &leads,
+        hand_parked: &by_hand,
+        ..input(Reading, Single(0), &w, Right)
+    };
+    let a = plan_arrangement(&p);
+    assert_eq!(
+        a.lot,
+        BTreeSet::from([1, 2, 4]),
+        "running window 4 parks by hand beside the workers"
+    );
+    assert!(
+        !a.lot.contains(&3),
+        "done window 3 stands with the waiting ones"
+    );
+    assert!(
+        !a.lot.contains(&0),
+        "the main window never parks, by hand neither"
+    );
+    let p = PlanInput {
+        focused: Some(1),
+        ..p
+    };
+    assert!(
+        plan_arrangement(&p).lot.contains(&0),
+        "the lead parks when sent by hand and not the main window"
+    );
+    let none = BTreeSet::new();
+    let p = PlanInput {
+        hand_parked: &none,
+        ..p
+    };
+    assert!(
+        !plan_arrangement(&p).lot.contains(&4),
+        "without the hand it stays"
+    );
+}

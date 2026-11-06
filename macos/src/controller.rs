@@ -28,8 +28,8 @@ use lookout_core::config::{AppConfig, color_from_hex, config_from_json};
 use lookout_core::geom::{Point, Rect};
 use lookout_core::i18n::{is_german, prefers_german, set_german};
 use lookout_core::layout::{
-    DEFAULT_GRID, PlanInput, layout_candidates, plan_arrangement, plan_log_line, resolve_target,
-    rest_sequence, status_swap, swapped_rest, unique_screen_ids,
+    DEFAULT_GRID, PlanInput, attention_order, layout_candidates, plan_arrangement, plan_log_line,
+    resolve_target, rest_sequence, status_swap, swapped_rest, unique_screen_ids,
 };
 use lookout_core::mapping::{
     PING_POLL, PING_ROUNDS, PING_WAIT, Ping, PingState, attach_processes, index_of_window,
@@ -68,6 +68,8 @@ pub(crate) const DEFAULTS_TARGET: &str = "lookout.target";
 pub(crate) const DEFAULTS_GRID: &str = "lookout.grid";
 pub(crate) const DEFAULTS_EXCLUDED: &str = "lookout.excluded";
 pub(crate) const DEFAULTS_LABELS: &str = "lookout.labels";
+/// Sessions sent to the parking lot by hand (new in the Rust app; the Swift app ignores the key).
+pub(crate) const DEFAULTS_PARKED: &str = "lookout.parked";
 /// Control-room screens, chosen in the menu from three screens on (Kevin 2026-10-01).
 pub(crate) const DEFAULTS_PAIR_WORK: &str = "lookout.leitstand.work";
 pub(crate) const DEFAULTS_PAIR_CONTROL: &str = "lookout.leitstand.control";
@@ -218,6 +220,9 @@ pub(crate) struct App {
     /// Session ids Kevin took out of the arrangement (design v3). ponytail: never thinned out, a few dozen ids weigh
     /// nothing in the defaults.
     pub(crate) excluded: BTreeSet<String>,
+    /// Session ids sent to the parking lot by hand (Ctrl+Opt+5 or the menu, Kevin 2026-11-06 evening); they park like
+    /// workers. ponytail: never thinned out either, like `excluded`.
+    pub(crate) hand_parked: BTreeSet<String>,
     pub(crate) side: StackSide,
     pub(crate) paused: bool,
     tick_in_flight: bool,
@@ -359,6 +364,10 @@ impl App {
             .unwrap_or_default()
             .into_iter()
             .collect();
+        let hand_parked: BTreeSet<String> = prefs::string_array(DEFAULTS_PARKED)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         let labels_on = prefs::boolean(DEFAULTS_LABELS).unwrap_or(cfg.labels);
         let side = StackSide::parse(&cfg.stack_side);
 
@@ -405,6 +414,7 @@ impl App {
             pair,
             grid,
             excluded,
+            hand_parked,
             side,
             paused: false,
             tick_in_flight: false,
@@ -472,9 +482,10 @@ impl App {
             log("WARNUNG: keine Bedienungshilfen-Berechtigung");
         }
         if self.cfg.hotkeys {
-            // Ctrl+Opt+4 only with worker names: a registration without a task swallows the combination system-wide.
+            // Ctrl+Opt+4 and 5 only with the parking lot (worker names): a registration without a task swallows the
+            // combination system-wide.
             let digits: &[u8] = if self.has_lot() {
-                &[1, 2, 3, 4]
+                &[1, 2, 3, 4, 5]
             } else {
                 &[1, 2, 3]
             };
@@ -802,7 +813,7 @@ impl App {
         }
     }
 
-    fn focused_index(&self) -> Option<usize> {
+    pub(crate) fn focused_index(&self) -> Option<usize> {
         self.focused
             .and_then(|id| index_of_window(id, &self.windows))
     }
@@ -1039,6 +1050,7 @@ impl App {
         p.rest_hint = &hint;
         p.grid = g.unwrap_or(self.grid);
         p.excluded = &self.excluded;
+        p.hand_parked = &self.hand_parked;
         p.worker_names = &self.cfg.worker_names;
         p.lead_names = &self.cfg.lead_names;
         p.peek = peek;
@@ -1387,10 +1399,26 @@ impl App {
 
     // ---------- Actions ----------
 
-    /// Ctrl+Opt+1…3 = arrangement, Ctrl+Opt+4 = peek. The peek comes BEFORE the control-room lock: it works there too.
+    /// Ctrl+Opt+1…3 = arrangement, Ctrl+Opt+4 = peek, Ctrl+Opt+5 = this window to the parking lot and back. Both come
+    /// BEFORE the control-room lock: they work there too.
     fn hotkey(&mut self, idx: usize) {
         if idx == 3 {
             self.toggle_peek();
+            return;
+        }
+        if idx == 4 {
+            // The window Kevin is in; not during the peek (focus reports wait then, so that window is not known).
+            let ids = self.focused_index().filter(|_| !self.peek).map(|i| {
+                self.windows[i]
+                    .sessions
+                    .iter()
+                    .map(|s| s.id.clone())
+                    .collect::<Vec<_>>()
+            });
+            match ids {
+                Some(ids) => self.toggle_hand_park(&ids),
+                None => log("Parkplatz von Hand: kein KI-Fenster im Fokus"),
+            }
             return;
         }
         let Some(&m) = LayoutMode::ALL.get(idx) else {
@@ -1552,6 +1580,64 @@ impl App {
         if !self.paused {
             self.apply_layout();
         }
+    }
+
+    /// Sends a window to the parking lot by hand or takes it back (Kevin 2026-11-06 evening: Ctrl+Opt+5 in the window or
+    /// the menu), remembered per session id like the exclusions. It then parks like a worker: while it runs or
+    /// watches; done or asking it stands with the waiting ones. Was it the middle, it leaves at once: the most urgent
+    /// other window takes its place, with the focus.
+    pub(crate) fn toggle_hand_park(&mut self, ids: &[String]) {
+        if ids.is_empty() || !self.has_lot() {
+            return;
+        }
+        let was_in = ids.iter().any(|id| self.hand_parked.contains(id));
+        for id in ids {
+            if was_in {
+                self.hand_parked.remove(id);
+            } else {
+                self.hand_parked.insert(id.clone());
+            }
+        }
+        prefs::set_string_array(
+            DEFAULTS_PARKED,
+            &self.hand_parked.iter().cloned().collect::<Vec<_>>(),
+        );
+        let idx = self
+            .windows
+            .iter()
+            .position(|w| w.sessions.iter().any(|s| ids.contains(&s.id)));
+        let name = idx.map_or_else(|| ids.join(","), |i| self.focus_name(i));
+        log(&format!(
+            "Parkplatz von Hand: {name} -> {}",
+            if was_in { "zurück" } else { "rein" }
+        ));
+        if !was_in
+            && let Some(i) = idx
+            && self.main_index() == Some(i)
+            && let Some(next) = self.next_main(i)
+        {
+            let id = self.windows[next].id;
+            self.main = Some(id);
+            self.focused = Some(id);
+            self.focus_back = true;
+            self.focus_quiet = true;
+            on_main_after(3.0, || with_app(|a| a.focus_quiet = false));
+        }
+        if !self.paused {
+            self.apply_layout();
+        }
+    }
+
+    /// Who takes the middle when it goes to the parking lot by hand: the most urgent other arranged window (question,
+    /// then done, then running: `attention_order`) that does not park itself.
+    fn next_main(&self, leaving: usize) -> Option<usize> {
+        let lot = self.lot_indices();
+        let others: Vec<usize> = layout_candidates(&self.windows, &self.excluded)
+            .into_iter()
+            .filter(|&i| i != leaving && !lot.contains(&i))
+            .collect();
+        let ws: Vec<&TermWindow> = others.iter().map(|&i| &self.windows[i]).collect();
+        attention_order(&ws).first().map(|&k| others[k])
     }
 
     /// A click on a session in the menu or a list (plan 1c/1d, GP 4, R2-4): the window to the front, a minimized one
