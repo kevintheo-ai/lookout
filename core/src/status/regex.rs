@@ -4,7 +4,10 @@
 //! multi-line anchors. Only what those patterns use; anything else is a parse error.
 //!
 //! A backtracking matcher over code points like ICU. A quantifier over a node that always takes exactly one character
-//! counts its run in a loop, so the stack depth depends on the pattern, not on the length of the text.
+//! counts its run in a loop, so the stack depth depends on the pattern, not on the length of the text. A quantifier
+//! over a group recurses per round, so its rounds are capped at `MAX_GROUP_ROUNDS`: beyond that it does not match,
+//! as ICU gives up when its backtracking stack runs full (review quick 2026-11-06, Muse: 1,000 rounds of " noch"
+//! aborted the process). Real answers repeat a group a few times at most.
 //!
 //! ponytail: character properties come from Rust's `char` methods plus hand-picked ranges (combining marks, format
 //! characters), not ICU's tables. Case-insensitive matching folds single characters; ICU folds fully ("strasse"
@@ -13,6 +16,10 @@
 //! regex crate with lookaround, if a dependency becomes acceptable here.
 
 use std::ops::Range;
+
+/// Most rounds a quantifier over a group takes (see the module comment). 256 rounds use about half a megabyte of stack
+/// in a debug build, well inside a thread's 2 MiB.
+const MAX_GROUP_ROUNDS: usize = 256;
 
 #[derive(Debug)]
 pub struct Regex {
@@ -404,7 +411,7 @@ impl Node {
                         (*min..=n).rev().any(|c| k(i + c))
                     }
                 } else {
-                    repeat(node, *min, *max, *lazy, t, i, 0, k)
+                    repeat(node, *min, (*max).min(MAX_GROUP_ROUNDS), *lazy, t, i, 0, k)
                 }
             }
         }
@@ -699,5 +706,24 @@ mod tests {
         let r = Regex::new(r"(?:[^.!?]|[.!?](?=\S))+", false, false).unwrap();
         let t: Vec<char> = long.chars().collect();
         assert_eq!(r.find_all(&t).first(), Some(&(0..t.len())));
+    }
+
+    /// review quick 2026-11-06 (Muse, PoC confirmed): a group repeated per round recursed per round; 1,000 rounds of
+    /// " noch" (a model stuck in a loop) overflowed the stack and aborted the process. Rounds over a group are capped.
+    #[test]
+    fn repeated_group_is_capped_not_a_crash() {
+        let r = Regex::new(r"\bwarte\w*( nur| noch)* auf (dich|dein)", true, false).unwrap();
+        let found = |n: usize| {
+            let t: Vec<char> = format!("warte{} auf dich", " noch".repeat(n))
+                .chars()
+                .collect();
+            r.find_at(&t, 0).is_some()
+        };
+        assert!(found(3), "real text: a few rounds match");
+        assert!(found(MAX_GROUP_ROUNDS), "up to the cap");
+        assert!(
+            !found(100_000),
+            "beyond the cap no match, like ICU giving up on its backtracking stack"
+        );
     }
 }
