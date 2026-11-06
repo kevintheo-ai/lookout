@@ -1470,10 +1470,13 @@ impl App {
         match tile {
             Some(i) => self.end_peek(PeekEnd::Into(self.windows[i].id)),
             None => {
+                // That click counts: read the focus now (its report may have come while the peek still ignored it, or
+                // comes next), so the clicked window becomes the middle. Arranging at once raised the old middle after
+                // the ride, and it took the focus back (review quick 2026-11-06). Another app or no AI window: arrange
+                // a moment later.
                 self.end_peek(PeekEnd::Only);
-                if !self.paused {
-                    self.apply_layout();
-                }
+                self.handle_focus_change();
+                on_main_after(0.3, || with_app(App::apply_layout));
             }
         }
     }

@@ -745,7 +745,8 @@ fn more_menu(a: &App) -> Retained<NSMenu> {
 
 /// "To the parking lot" (Kevin 2026-11-06 evening): check mark = on the lot (a worker by name or sent by hand), a click
 /// sends it there or takes it off, workers too ("die nach vorne zu holen"); hovering lights up the window. The window
-/// Kevin is in carries Ctrl+Opt+5, which does the same for it.
+/// Kevin is in carries Ctrl+Opt+5, which does the same for it. Every window, the menu scrolls: with 20 to 25 workers a
+/// cut list left some unreachable (review quick 2026-11-06).
 fn hand_menu(a: &App) -> Retained<NSMenu> {
     let sub = submenu(a);
     let order = ai_windows_by_status(a);
@@ -756,7 +757,7 @@ fn hand_menu(a: &App) -> Retained<NSMenu> {
     let lookout = a.lookout_lines();
     let n = now();
     let focused = a.focused_index();
-    for &idx in order.iter().take(MENU_ROWS_MAX) {
+    for &idx in &order {
         let w = &a.windows[idx];
         let row = menu_row(w, &a.since, &lookout, n);
         let it = session_item(
@@ -781,7 +782,7 @@ fn hand_menu(a: &App) -> Retained<NSMenu> {
 }
 
 /// "Choose windows": check mark = arranged, a click takes the window out or back in, hovering lights up exactly this
-/// window (Kevin 2026-09-18). Whoever is not to be seen says so in the title.
+/// window (Kevin 2026-09-18). Whoever is not to be seen says so below the name. Every window, as in `hand_menu`.
 fn windows_menu(a: &App) -> Retained<NSMenu> {
     let sub = submenu(a);
     let order = ai_windows_by_status(a);
@@ -792,7 +793,7 @@ fn windows_menu(a: &App) -> Retained<NSMenu> {
     let on_screen = on_screen_of(a, &order);
     let lookout = a.lookout_lines();
     let n = now();
-    for &idx in order.iter().take(MENU_ROWS_MAX) {
+    for &idx in &order {
         let w = &a.windows[idx];
         let place = whereabouts(w, is_on_screen(w, on_screen.as_deref())).label();
         let row = menu_row(w, &a.since, &lookout, n);

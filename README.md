@@ -52,10 +52,20 @@ Warp or Ghostty, and shows which session is working, which one is done and which
 - **Lists at the side:** in Focus and Focus 2, when a side is full, the extra sessions show up as rows in a list
   at the bottom of that side. Their windows wait behind the center window; a click on a row brings that window
   to the center. The lists only show while labels are on.
+- **Parking lot (optional):** with the setting `workerNames`, the windows of worker sessions wait behind your
+  active session while they work or watch, and come back when they are done or ask something. Details below.
 - **Menu bar:** the icon's top right tile fills as soon as a session is done or waiting (the window you're working
   in counts too). No numbers, nothing blinking. The menu lists your sessions by status; a click brings that window
   to the front and makes it the active one. Hover over a screen or layout in the menu to see where your windows
   would go before anything moves.
+- **The menu:** it is a real macOS menu (keyboard, VoiceOver, light and dark mode as usual). The sessions stand in
+  sections with a count: WAITING FOR YOU, DONE, WORKING (working and watching sessions) and, with a parking lot,
+  IN THE PARKING LOT. That last section is compact: three rows, then "… and N more", which opens the peek. Each
+  session row has a colored dot (amber: waiting for you, mint: done, grey: working, grey ring: watching, paler on
+  the parking lot), the session name, below it the project and what the session does or asks, and on the right how
+  long it has been in that state. Hover over a session to see where its window is. Screens, layouts, the parking
+  lot, *More* and *Quit* have symbols. The switches (labels, strip side, pause) and the window choices (*Choose
+  windows*, *Without window*) are under *More*.
 - **"Watching":** some Claude Code sessions are done but only wait for their own background job (a CI run,
   workers), for another session, or for a timer they set themselves. They turn grey instead of "done": they don't
   need you, so they don't ask for your attention. Details and limits below.
@@ -65,10 +75,22 @@ windows, and windows you took out stay where they are.
 
 ## How it was built
 
-I don't write code by hand. Lookout was written by AI agents: Claude Code built it, Codex, GLM and Kimi
-reviewed it in rounds, and I used it every day and said what had to change until it felt right. The
-"watching" rules were tuned on 1,204 real cases from my own sessions. I work in German, so the code comments
-and the log file are in German too.
+I don't write code by hand. Lookout was written by AI agents: Claude Code wrote it, first in Swift, now in Rust.
+Codex, GLM and Kimi reviewed the Swift version in rounds; Codex, GLM, Muse and Grok reviewed the Rust version in
+rounds. I used it every day and said what had to change until it felt right. The "watching" rules were tuned on
+1,204 real cases from my own sessions. The status rules were carried over unchanged: on 41,293 real answer texts
+from my sessions, the Rust version's word rules give exactly the same results as the Swift version's. I work in
+German, so the code comments and the log file are in German too.
+
+Version 4.0 is a rewrite of Lookout in Rust. It keeps the behavior of the Swift version and adds the parking lot
+and a new look for the menu. The code is a Cargo workspace with two crates:
+
+- `core`: all the logic (settings, layouts, parking lot and peek, status rules, matching windows to sessions, log
+  format). It makes no operating system calls; CI also runs its tests on Linux.
+- `macos`: the Mac layer through the objc2 crates (Accessibility, window list, processes, the title marker,
+  gliding windows, frames, labels, lists, the hover preview, menu and hotkeys).
+
+The Swift version stays in the git history, under the tag `swift-final`.
 
 ## Requirements
 
@@ -76,7 +98,8 @@ and the log file are in German too.
 - [Warp](https://www.warp.dev) (the stable version, not Warp Preview) or [Ghostty](https://ghostty.org). I use
   Warp every day; Ghostty works too, but it got less real use.
 - Claude Code (tested with 2.1.295) and/or the Codex, Grok or Kimi command line tools
-- Xcode Command Line Tools (`xcode-select --install`), for `swiftc`
+- Rust 1.88 or newer ([rustup.rs](https://rustup.rs), or `brew install rust`), and the Xcode Command Line Tools
+  (`xcode-select --install`) for the macOS SDK and the linker
 
 Lookout reads Claude Code's status from its files. For background agents and as a fallback it also runs
 `claude agents`, and it looks for `claude` in `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`. If yours
@@ -98,8 +121,11 @@ other). You can pick another screen or layout in the menu.
 
 To start Lookout at login: System Settings > General > Login Items > add Lookout.
 
-`./build.sh --tests` builds and runs the tests (116 right now). If you have Xcode.app installed and `swiftc`
-complains about the license, run `sudo xcodebuild -license accept` once.
+`./build.sh --tests` runs a format check, the linter (clippy) and the tests: 188 right now. If you have Xcode.app
+installed and the build complains about the Xcode license, run `sudo xcodebuild -license accept` once.
+
+`./build.sh --app` builds and signs the app into `target/Lookout.app` without installing it, for a test next to
+the installed one.
 
 **Keep the Accessibility access across rebuilds (optional):** `build.sh` signs ad hoc if you have no code
 signing identity, and macOS then asks for access again after every rebuild. To avoid that, create a
@@ -135,15 +161,17 @@ Lookout (it reads the file once at start), for example:
 | `readyThresholdSec` | `90` | seconds of quiet before a background command counts as resting, and the fallback for tools that don't say when their answer ends |
 | `pollSec` | `3` | how often windows are checked (seconds) |
 | `sessionPollSec` | `6` | how often session status is read (seconds) |
-| `hotkeys` | `true` | Ctrl+Opt+1 … 3 for Focus, Focus 2 and the last grid |
+| `hotkeys` | `true` | Ctrl+Opt+1 … 3 for Focus, Focus 2 and the last grid; with `workerNames` also Ctrl+Opt+4 (peek) and Ctrl+Opt+5 (parking lot by hand) |
 | `glow` | `true` | colored frames around windows that are done or waiting |
 | `glowColor` | `"#5ECFA0"` | frame color for "done" (mint) |
 | `glowColorWaiting` | `"#E8B25C"` | frame color for "waiting for you" (amber) |
 | `labels` | `true` | whether labels show at first start; after that, your choice in the menu is used |
-| `leadNames` | `[]` | own names (`claude --name …` or `/rename`) of sessions that lead other sessions, written exactly the same; an automatic topic title does not count (see "Watching" below) |
+| `leadNames` | `[]` | own names (`claude --name …` or `/rename`) of sessions that lead other sessions, written exactly the same; an automatic topic title does not count (see "Watching" below); these sessions never park |
 | `otherWindowNames` | `[]` | parts of window names where you answer for other sessions (for example `"front desk"`, any case); a `?` status line that only sends you there does not bring this window forward (see "The session's own status line") |
+| `workerNames` | `[]` | parts of session names (any case) that mark worker windows for the parking lot, for example `"Worker · "`; without them there is no parking lot |
 
-The menu remembers your choice of screen, layout, grid, control room screens, excluded windows and labels.
+The menu remembers your choice of screen, layout, grid, control room screens, excluded windows and labels, and
+also which windows you sent to the parking lot or took off it by hand.
 Pause and the side of the strip (*More > Strip on the right/left*) start fresh after a restart.
 
 ## What Lookout does on your Mac
@@ -160,8 +188,9 @@ I want you to know exactly what it touches:
   `claude agents` every 5 minutes, and more often if the status files are missing.
 - Some sessions **start with a prompt you didn't type** (for example a handover from another session). To tell
   these apart from your own messages, it reads the start arguments of that Claude process.
-- It opens **no network connection** itself. It runs local tools only: `ps` (every 3 seconds), `nettop` and
-  `lsof` (only while a Claude session has finished its answer but still runs background commands), and `claude`.
+- It opens **no network connection** itself. It runs local tools only: `nettop` and `lsof` (only while a Claude
+  session has finished its answer but still runs background commands), and `claude`. It reads the process list
+  directly.
 - It writes a log to `~/Library/Logs/Lookout.log` (in German; rotated at 5 MB, one old file kept). The log
   contains session names, status changes and the titles of terminal windows you click, but no answer text.
 - The **labels show transcript text** (answers, questions), and so does the open menu. Before you share your
@@ -244,6 +273,31 @@ and something else wakes you, `? Lookout: request (…)` when I should do anythi
 I add it with a `SessionStart` and `UserPromptSubmit` hook (`additionalContext`) that skips background runs
 (`claude -p`), because scripts read their output. A line in `CLAUDE.md` would reach those runs too.
 
+## The parking lot (optional)
+
+The parking lot is off by default. You turn it on with the setting `workerNames`: parts of session names, any
+case, for example `"Worker · "`. A window whose session name contains one of them is a worker.
+
+- While a worker works or watches, its window waits behind your active session: no frame, no label, no place in
+  the side columns. When it is done or asks something, it comes back next to your active session like any other
+  window; when it works again, it goes back.
+- Never parked are sessions named in `leadNames`, the active session, a window with a question in a tab behind
+  it, and excluded, minimized and full screen windows.
+- It works in Focus, Focus 2 and the control room. The Grid on one screen keeps showing all windows.
+- Without `workerNames` nothing changes, and Ctrl+Opt+4 and 5 stay free for other apps.
+
+**Peek:** Ctrl+Opt+4 or *Show parking lot* in the menu shows all parked windows as tiles on your biggest screen,
+in front, with labels. The tiles are as large as their number allows and never smaller than Warp's minimum window
+size (480 × 192 points). What does not fit stands as rows in a list next to the tiles (a MacBook screen holds 15
+tiles, or 10 next to the list). While the peek is open nothing moves, even when workers finish, ask or join. A
+click on a tile or a list row brings that worker to the middle at once. Ctrl+Opt+4 again closes the peek and
+brings your session back to the front; a click into any other window ends it too. There is no peek during
+*More > Pause (move nothing)*, and none with an empty parking lot.
+
+**By hand:** Ctrl+Opt+5 sends the window you are in to the parking lot (it then behaves like a worker) or takes it
+back. *To the parking lot* in the menu does the same for any window; a worker can be taken off the parking lot
+there too and then stays in the arrangement. Lookout remembers this per session.
+
 ## Limits
 
 - Status files and transcript entries are **internal formats of Claude Code**. If the status files change,
@@ -265,6 +319,8 @@ I add it with a `SessionStart` and `UserPromptSubmit` hook (`additionalContext`)
 - Identical monitors that report no serial number look the same to macOS; Lookout tells them apart only by their
   order from the left. After you unplug or plug in one of them, your choice can move to its neighbor; one click in
   the menu sets it again.
+- A session whose own name contains a `workerNames` entry parks too, even if it is one of yours.
+- Parked windows show no sign on screen; the menu and Ctrl+Opt+4 show them.
 
 ## Kurz auf Deutsch
 
@@ -272,7 +328,9 @@ Lookout ist eine kleine Menüleisten-App, die ich mir für meinen eigenen Schrei
 die Terminalfenster deiner KI-Sessions (Claude Code, Codex, Grok, Kimi in Warp oder Ghostty) und zeigt ruhig, wer
 arbeitet, wer fertig ist und wer auf dich wartet. Fertig ist mintgrün umrahmt, bernsteinfarben heisst: die Session
 braucht deine Freigabe oder deine Auswahl in einem Fragefenster. Endet eine Antwort mit einer Lookout-Zeile
-(`◌` / `?` / `✓ Lookout: …`, siehe oben), gilt, was die Session selbst sagt. Installation wie oben (`git clone`, `./build.sh`,
+(`◌` / `?` / `✓ Lookout: …`, siehe oben), gilt, was die Session selbst sagt. Seit Version 4 ist Lookout in Rust
+neu geschrieben. Mit der Einstellung `workerNames` warten die Fenster von Worker-Sessions hinter deiner aktiven
+Session (Parkplatz); Ctrl+Opt+4 zeigt sie. Installation wie oben (`git clone`, `./build.sh`,
 Bedienungshilfen freigeben). Die Sprache folgt dem Mac; fest auf Deutsch mit `{"language": "de"}` in
 `~/.config/lookout.json`. Die Schilder zeigen Text aus deinen Sessions: vor dem Bildschirmteilen unter
 *Mehr > Schilder anzeigen* ausschalten.
