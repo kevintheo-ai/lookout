@@ -135,8 +135,9 @@ pub fn last_path_component(path: &str) -> &str {
 }
 
 /// AI CLI with a real terminal? Only such a process can stand in a terminal window. The name is the last path part of
-/// `row.comm`, which is the executable's path or bare name, never a command line with arguments: the platform layer fills
-/// it from the process's own path (review quick 2026-11-06, Codex: with arguments "tail -f /tmp/claude" would count).
+/// `row.comm`, the program as started (argv[0], like `ps -o comm=` that Swift read), never the further arguments (review
+/// quick 2026-11-06, Codex: with arguments "tail -f /tmp/claude" would count). Not the resolved executable either:
+/// Claude runs as `~/.local/bin/claude`, a link to `.../versions/2.1.319`.
 pub fn engine_of(row: &PsRow) -> Option<Engine> {
     if row.tty.starts_with("ttys") {
         Engine::from_raw(last_path_component(&row.comm))

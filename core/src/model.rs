@@ -213,7 +213,8 @@ pub struct PsRow {
     pub tty: String,
     /// CPU time (user + system) in seconds.
     pub cpu: f64,
-    /// The executable: its path or bare name, never a command line with arguments (see `mapping::engine_of`).
+    /// The program as started, like `ps -o comm=`: argv[0], a path or a bare name, never the further arguments (see
+    /// `mapping::engine_of`). A program that rewrites its argv[0] shows the new text, in ps too.
     pub comm: String,
 }
 
