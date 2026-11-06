@@ -7,14 +7,29 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "Lookout"
 path = "src/main.rs"
+
+# AppKit wants the main thread; the default test harness runs tests on worker threads.
+[[test]]
+name = "appkit"
+path = "tests/appkit.rs"
+harness = false
 
 [dependencies]
 lookout-core = { path = "../core" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "=0.6.2"
+dispatch2 = "=0.3.1"
+libc = "=0.2.191"
 objc2 = "=0.6.5"
-objc2-foundation = "=0.3.2"
 objc2-app-kit = "=0.3.2"
+objc2-application-services = "=0.3.2"
+objc2-core-foundation = "=0.3.2"
+objc2-core-graphics = "=0.3.2"
+objc2-foundation = "=0.3.2"

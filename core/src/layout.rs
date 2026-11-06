@@ -1229,5 +1229,46 @@ pub fn plan_layout(p: &PlanInput) -> BTreeMap<usize, Rect> {
     plan_arrangement(p).frames
 }
 
+/// Swift's `"\(target)"` in the plan log line: the log stays Swift's byte for byte, so both apps can be compared.
+pub fn target_log_text(t: &Target) -> String {
+    match *t {
+        Target::Single(s) => format!("single({s})"),
+        Target::ControlRoom {
+            work,
+            control,
+            ready_side,
+            flipped,
+        } => format!(
+            "leitstand(work: {work}, control: {control}, readySide: Lookout.StackSide.{}, flipped: {flipped})",
+            ready_side.raw()
+        ),
+    }
+}
+
+/// The plan log line (Main.swift `logPlan`), one per change: "Plan: ziel=… -> …, anordnung=…, N Fenster", then the
+/// windows behind the middle that a list shows ("M geparkt") and the parking lot ("Parkplatz K", Kevin 2026-11-06).
+pub fn plan_log_line(
+    choice: &TargetChoice,
+    target: &Target,
+    mode: LayoutMode,
+    arr: &Arrangement,
+) -> String {
+    let mut line = format!(
+        "Plan: ziel={} -> {}, anordnung={}, {} Fenster",
+        choice.raw(),
+        target_log_text(target),
+        mode.raw(),
+        arr.frames.len()
+    );
+    let listed = arr.parked.difference(&arr.lot).count();
+    if listed > 0 {
+        line += &format!(", {listed} geparkt");
+    }
+    if !arr.lot.is_empty() {
+        line += &format!(", Parkplatz {}", arr.lot.len());
+    }
+    line
+}
+
 #[cfg(test)]
 mod tests;

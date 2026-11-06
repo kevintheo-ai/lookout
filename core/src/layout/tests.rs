@@ -2070,3 +2070,29 @@ fn parking_peek_tiles_the_largest_screen() {
         "behind the main window"
     );
 }
+
+/// The plan line is Swift's (log 2026-11-06 17:22:17), plus the parking lot.
+#[test]
+fn plan_log_line_like_swift() {
+    let target = Target::ControlRoom {
+        work: 1,
+        control: 0,
+        ready_side: Left,
+        flipped: true,
+    };
+    let mut arr = Arrangement::default();
+    for i in 0..15 {
+        arr.frames.insert(i, Rect::ZERO);
+    }
+    assert_eq!(
+        plan_log_line(&Both3, &target, Reading, &arr),
+        "Plan: ziel=both3 -> leitstand(work: 1, control: 0, readySide: Lookout.StackSide.left, flipped: true), \
+         anordnung=reading, 15 Fenster"
+    );
+    arr.parked = BTreeSet::from([3, 4, 5]);
+    arr.lot = BTreeSet::from([4, 5]);
+    assert_eq!(
+        plan_log_line(&Screen("ID".into()), &Single(0), Focus2, &arr),
+        "Plan: ziel=screen:ID -> single(0), anordnung=focus2, 15 Fenster, 1 geparkt, Parkplatz 2"
+    );
+}

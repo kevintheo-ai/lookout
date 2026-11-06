@@ -518,6 +518,14 @@ impl StackSide {
             StackSide::Right
         }
     }
+
+    /// Swift `rawValue`, as the log writes it.
+    pub fn raw(self) -> &'static str {
+        match self {
+            StackSide::Left => "left",
+            StackSide::Right => "right",
+        }
+    }
 }
 
 /// The three arrangements (design v3, Kevin 2026-09-18). Order = menu and shortcuts Ctrl+Opt+1…3.

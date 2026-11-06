@@ -6,6 +6,7 @@ pub mod config;
 pub mod geom;
 pub mod i18n;
 pub mod layout;
+pub mod log;
 pub mod mapping;
 pub mod model;
 pub mod motion;

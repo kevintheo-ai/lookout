@@ -75,7 +75,7 @@ case "${1:-}" in
     : > "$LOG"
     # -n: a second instance beside the running Lookout; started by LaunchServices, so macOS checks the bundle's own
     # Accessibility access, not that of the terminal this script runs in.
-    open -n -W "$STAGE/Lookout.app"
+    open -n -W "$STAGE/Lookout.app" --args --probe
     cat "$LOG"
     ;;
   *)
