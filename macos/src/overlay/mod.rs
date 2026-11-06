@@ -6,16 +6,38 @@
 //! Design rule (Kevin 2026-09-18): "smoothe Prozesse, die den Geist calm halten, aber informieren": mint instead of red,
 //! a thin line with a soft halo, slow breathing (4.5 s) just below notice, every frame out of step with the others,
 //! soft fades, nothing jumps.
+//!
+//! State lives in `RefCell`s. AppKit calls back only into the views (drawing, the list's click), and a view borrows
+//! only its own state; the list's click runs `on_click` with no borrow held, so the controller may update the list
+//! from inside it.
 
-use std::collections::{BTreeMap, BTreeSet};
+mod glow;
+mod labels;
+mod lists;
+mod preview;
 
-use objc2::MainThreadMarker;
+pub use glow::GlowOverlay;
+pub use labels::LabelOverlay;
+pub use lists::ListOverlay;
+pub use preview::PreviewOverlay;
+
 use objc2::rc::Retained;
-use objc2_app_kit::{NSPanel, NSWindow};
+use objc2::runtime::AnyObject;
+use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2_app_kit::{
+    NSBackingStoreType, NSColor, NSFloatingWindowLevel, NSFont, NSFontAttributeName,
+    NSFontWeightBold, NSFontWeightRegular, NSFontWeightSemibold, NSForegroundColorAttributeName,
+    NSLineBreakMode, NSMutableParagraphStyle, NSNormalWindowLevel, NSPanel, NSParagraphStyle,
+    NSParagraphStyleAttributeName, NSResponder, NSScreen, NSStringDrawing, NSWindow,
+    NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowOrderingMode, NSWindowStyleMask,
+};
+use objc2_foundation::{
+    NSAttributedStringKey, NSDictionary, NSObject, NSPoint, NSRect, NSSize, NSString,
+};
 
 use lookout_core::geom::Rect;
-use lookout_core::model::OnScreenWindow;
-use lookout_core::overlay::{GlowTarget, LabelTarget, ListTarget, PreviewBox};
+use lookout_core::model::{OnScreenWindow, Pid};
+use lookout_core::overlay::{FontWeight, sits_above};
 
 /// sRGB components 0…1.
 pub type Rgb = (f64, f64, f64);
@@ -30,22 +52,80 @@ pub enum Level {
     Floating,
 }
 
+define_class!(
+    // SAFETY: NSPanel has no subclassing requirements; no ivars, no `Drop`.
+    #[unsafe(super(NSPanel, NSWindow, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    struct OverlayPanel;
+
+    impl OverlayPanel {
+        /// The frame as given. AppKit moves every window it sets: under the menu bar, and back onto its old screen
+        /// when it changes screens. An overlay must lie exactly over its window, else the frame sat 7 pt too low at
+        /// the top and stuck top left on the MacBook after a move to the LG's bottom edge (Kevin 2026-09-25, probe
+        /// −7,−460 instead of −7,−7).
+        // SAFETY: the signature of -[NSWindow constrainFrameRect:toScreen:].
+        #[unsafe(method(constrainFrameRect:toScreen:))]
+        fn constrain_frame_rect(&self, frame: NSRect, _screen: Option<&NSScreen>) -> NSRect {
+            frame
+        }
+    }
+);
+
+/// What both panel kinds share: an `OverlayPanel`, borderless and non-activating, clear, without shadow, not hidden on
+/// deactivation, no window animation.
+fn base_panel(mtm: MainThreadMarker, level: Level) -> Retained<NSPanel> {
+    let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
+    // SAFETY: NSPanel's initializer with its argument types. A panel is not released on close (NSPanel's default, the
+    // AppKit tests check it), so the `Retained` stays its only owner.
+    let panel: Retained<OverlayPanel> = unsafe {
+        msg_send![
+            OverlayPanel::alloc(mtm),
+            initWithContentRect: NSRect::ZERO,
+            styleMask: style,
+            backing: NSBackingStoreType::Buffered,
+            defer: false
+        ]
+    };
+    let panel = Retained::into_super(panel);
+    panel.setOpaque(false);
+    panel.setBackgroundColor(Some(&NSColor::clearColor()));
+    panel.setHasShadow(false);
+    panel.setLevel(match level {
+        Level::Normal => NSNormalWindowLevel,
+        Level::Floating => NSFloatingWindowLevel,
+    });
+    panel.setHidesOnDeactivate(false);
+    panel.setAnimationBehavior(NSWindowAnimationBehavior::None);
+    panel
+}
+
 /// Click-through, non-activating panel for glow, labels and preview (Swift `makeOverlayPanel`): borderless +
 /// non-activating, clear, no shadow, ignores mouse events, not hidden on deactivation, on all spaces + stationary +
 /// ignores cycle + full-screen auxiliary, `animationBehavior = .none` (else macOS animates every show and hide and old
 /// and new outlines overlap, 2026-09-18), and a subclass whose `constrainFrameRect:toScreen:` returns the frame
 /// unchanged (else AppKit pushed it under the menu bar or back onto its old screen, Kevin 2026-09-25).
 pub fn make_overlay_panel(mtm: MainThreadMarker, level: Level) -> Retained<NSPanel> {
-    let _ = (mtm, level);
-    todo!()
+    let panel = base_panel(mtm, level);
+    panel.setIgnoresMouseEvents(true);
+    panel.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::Stationary
+            | NSWindowCollectionBehavior::IgnoresCycle
+            | NSWindowCollectionBehavior::FullScreenAuxiliary,
+    );
+    panel
 }
 
 /// The list panel (Swift `makeListPanel`): takes clicks without activating Lookout (borderless + non-activating,
 /// `becomesKeyOnlyIfNeeded`), normal level, NOT on all spaces (`moveToActiveSpace | ignoresCycle`), no animation, the
 /// same frame-keeping subclass.
 pub fn make_list_panel(mtm: MainThreadMarker) -> Retained<NSPanel> {
-    let _ = mtm;
-    todo!()
+    let panel = base_panel(mtm, Level::Normal);
+    panel.setBecomesKeyOnlyIfNeeded(true);
+    panel.setCollectionBehavior(
+        NSWindowCollectionBehavior::MoveToActiveSpace | NSWindowCollectionBehavior::IgnoresCycle,
+    );
+    panel
 }
 
 /// Puts a panel on `frame` (Cocoa) right above window `above` (CGWindowID), changing only what differs (Swift `place`):
@@ -53,129 +133,79 @@ pub fn make_list_panel(mtm: MainThreadMarker) -> Retained<NSPanel> {
 /// window lies between (every order call on another app's window costs WindowServer a rights check with an error line,
 /// 284/min until 27.09.). No number: `orderFrontRegardless`.
 pub fn place(panel: &NSWindow, frame: Rect, above: Option<i64>, stack: Option<&[OnScreenWindow]>) {
-    let _ = (panel, frame, above, stack);
-    todo!()
-}
-
-/// The glow around done and asking windows (Swift `GlowOverlay`): one panel per target id on `Level::Normal`, frame =
-/// target rect grown by 7 pt on every side, a rounded line (inset 7, radius 11, width 2.5) with a soft outer halo (shadow
-/// blur 13, alpha 0.75; line alpha 0.9, then a second stroke without shadow at 0.85). Alpha per core `glow_alpha` with
-/// a phase offset that grows by `GLOW_PHASE_STEP` per new panel; animated by a 30 Hz timer that runs only while panels
-/// exist; a faded-out panel is ordered out and dropped.
-pub struct GlowOverlay(());
-
-impl GlowOverlay {
-    pub fn new(mtm: MainThreadMarker) -> GlowOverlay {
-        let _ = mtm;
-        todo!()
+    if core_rect(panel.frame()) != frame {
+        panel.setFrame_display(ns_rect(frame), false);
     }
-
-    /// Colour for done (`ready`) and asking (`waiting`); existing panels redraw.
-    pub fn set_tints(&self, ready: Rgb, waiting: Rgb) {
-        let _ = (ready, waiting);
-        todo!()
-    }
-
-    /// New ids fade in, missing ones fade out; a changed reason redraws in its colour. `frozen`: ids of gliding windows,
-    /// which follow their window via `follow` and are left alone here (a tick with a stale rect would pull them back).
-    pub fn update(
-        &self,
-        targets: &[GlowTarget],
-        frozen: &BTreeSet<String>,
-        stack: Option<&[OnScreenWindow]>,
-    ) {
-        let _ = (targets, frozen, stack);
-        todo!()
-    }
-
-    pub fn hide_all(&self) {
-        todo!()
-    }
-
-    /// While gliding: the frame moves with its window (Cocoa rect per id, grown by 7 pt), no display.
-    pub fn follow(&self, rects: &BTreeMap<String, Rect>) {
-        let _ = rects;
-        todo!()
+    let Some(number) = above else {
+        panel.orderFrontRegardless();
+        return;
+    };
+    let own = std::process::id() as Pid;
+    if !sits_above(panel.windowNumber() as i64, number, stack, own) {
+        panel.orderWindow_relativeTo(NSWindowOrderingMode::Above, number as isize);
     }
 }
 
-/// The labels (Swift `LabelOverlay`): one panel per id on `Level::Normal`, black background at `LABEL_BG_ALPHA`, radius
-/// 10, the lines of `LabelContent::lines` from the top (padding `LABEL_PADDING`, x inset 11, style per core
-/// `label_line_style`, truncated at the tail); line 0 in the tone's colour (waiting -> waiting tint, ready -> ready tint,
-/// else white 0.82), line 1 white, the rest white 0.8. New panels fade in over 0.45 s, gone ones fade out over 0.35 s
-/// and are ordered out; content or tint change redraws.
-pub struct LabelOverlay(());
-
-impl LabelOverlay {
-    pub fn new(mtm: MainThreadMarker) -> LabelOverlay {
-        let _ = mtm;
-        todo!()
-    }
-
-    pub fn set_tints(&self, ready: Rgb, waiting: Rgb) {
-        let _ = (ready, waiting);
-        todo!()
-    }
-
-    pub fn update(&self, targets: &[LabelTarget], stack: Option<&[OnScreenWindow]>) {
-        let _ = (targets, stack);
-        todo!()
-    }
-
-    pub fn hide_all(&self) {
-        todo!()
-    }
+fn ns_rect(r: Rect) -> NSRect {
+    NSRect::new(NSPoint::new(r.x, r.y), NSSize::new(r.w, r.h))
 }
 
-/// The lists at the foot of a side (Swift `ListOverlay`, plan 1d): at most one panel per list (`make_list_panel`), view
-/// flipped (top to bottom), accepts the first mouse, black background at `LABEL_BG_ALPHA`, radius 8; header 12 pt
-/// semibold white 0.6; row title `LIST_FONT_SIZE` semibold in its tone's colour (ready/waiting tint, running and
-/// watching white 0.78), detail below in white 0.78; "+N" row via core `more_text` in white 0.6; line height 19 pt,
-/// x inset 10; a click on a row calls `on_click` with its session ids (core `row_at`).
-pub struct ListOverlay(());
-
-impl ListOverlay {
-    /// `on_click` runs on the main thread from the click (outside any other call into the overlay).
-    pub fn new(mtm: MainThreadMarker, on_click: Box<dyn Fn(Vec<String>)>) -> ListOverlay {
-        let _ = (mtm, on_click);
-        todo!()
-    }
-
-    pub fn set_tints(&self, ready: Rgb, waiting: Rgb) {
-        let _ = (ready, waiting);
-        todo!()
-    }
-
-    /// Panels beyond the targets are ordered out; changed lines or tints redraw.
-    pub fn update(&self, targets: &[ListTarget], stack: Option<&[OnScreenWindow]>) {
-        let _ = (targets, stack);
-        todo!()
-    }
-
-    pub fn hide_all(&self) {
-        todo!()
-    }
+fn core_rect(r: NSRect) -> Rect {
+    Rect::new(r.origin.x, r.origin.y, r.size.width, r.size.height)
 }
 
-/// The preview outlines while the menu is open (Swift `PreviewOverlay`): one `Level::Floating` panel per box, drawn once
-/// (menu tracking stops default-mode timers): accent colour fill 0.16, dashed line (12, 7) width 3 at 0.9, radius 12,
-/// inset 4; centred title (system font, size `bounds.width / 16` clamped to 14…26, semibold, white) and detail (13
-/// medium, white 0.85) on a black 0.5 block.
-pub struct PreviewOverlay(());
+/// A tint as Swift's `colorFromHex` made it: `NSColor(srgbRed:green:blue:alpha: 1)`.
+fn srgb(c: Rgb) -> Retained<NSColor> {
+    NSColor::colorWithSRGBRed_green_blue_alpha(c.0, c.1, c.2, 1.0)
+}
 
-impl PreviewOverlay {
-    pub fn new(mtm: MainThreadMarker) -> PreviewOverlay {
-        let _ = mtm;
-        todo!()
-    }
+fn white(alpha: f64) -> Retained<NSColor> {
+    NSColor::whiteColor().colorWithAlphaComponent(alpha)
+}
 
-    /// Replaces all outlines.
-    pub fn show(&self, boxes: &[PreviewBox]) {
-        let _ = boxes;
-        todo!()
-    }
+fn black(alpha: f64) -> Retained<NSColor> {
+    NSColor::blackColor().colorWithAlphaComponent(alpha)
+}
 
-    pub fn hide(&self) {
-        todo!()
-    }
+fn system_font(size: f64, weight: FontWeight) -> Retained<NSFont> {
+    // SAFETY: AppKit's weight constants, plain numbers set before any code runs.
+    let weight = unsafe {
+        match weight {
+            FontWeight::Regular => NSFontWeightRegular,
+            FontWeight::Semibold => NSFontWeightSemibold,
+            FontWeight::Bold => NSFontWeightBold,
+        }
+    };
+    NSFont::systemFontOfSize_weight(size, weight)
+}
+
+/// Truncated at the tail, like every line the overlays draw.
+fn tail_truncating() -> Retained<NSMutableParagraphStyle> {
+    let para = NSMutableParagraphStyle::new();
+    para.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+    para
+}
+
+fn text_attributes(
+    font: &NSFont,
+    color: &NSColor,
+    para: &NSParagraphStyle,
+) -> Retained<NSDictionary<NSAttributedStringKey, AnyObject>> {
+    // SAFETY: AppKit's attribute names, set before any code runs.
+    let keys = unsafe {
+        [
+            NSFontAttributeName,
+            NSForegroundColorAttributeName,
+            NSParagraphStyleAttributeName,
+        ]
+    };
+    let values: [&AnyObject; 3] = [font, color, para];
+    NSDictionary::from_slices(&keys, &values)
+}
+
+/// `NSString.draw(in:withAttributes:)` with font, colour and paragraph style, in the drawing view's coordinates.
+fn draw_text(text: &str, rect: Rect, font: &NSFont, color: &NSColor, para: &NSParagraphStyle) {
+    let attrs = text_attributes(font, color, para);
+    // SAFETY: the dictionary holds the value types AppKit expects for these keys (`text_attributes`).
+    unsafe { NSString::from_str(text).drawInRect_withAttributes(ns_rect(rect), Some(&attrs)) };
 }
