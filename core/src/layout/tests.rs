@@ -2047,7 +2047,7 @@ fn parking_peek_tiles_the_largest_screen() {
         "without peek the same lot lies parked"
     );
 
-    // 26 workers: 18 grid tiles + 6 in the mini stack; the last two by first sighting stay parked.
+    // 26 workers (Kevin 2026-11-06 evening: 20 to 25 must fit): on the LG all of them as tiles, no list.
     let mut many = vec![named("Main", false, t0)];
     many.extend((1..27).map(|i| named(&format!("worker {i}"), false, t0 + i as f64)));
     let full = plan_arrangement(&PlanInput {
@@ -2058,15 +2058,65 @@ fn parking_peek_tiles_the_largest_screen() {
         }
     });
     assert_eq!(full.lot.len(), 26);
-    assert_eq!(
-        full.parked,
-        BTreeSet::from([25, 26]),
-        "overflow stays parked"
-    );
     assert!(
-        full.parked
+        full.parked.is_empty() && full.lists.is_empty(),
+        "all tiled on the LG"
+    );
+    let tiles: Vec<Rect> = full.lot.iter().map(|i| full.frames[i]).collect();
+    assert!(
+        tiles
             .iter()
-            .all(|i| full.frames[i] == full.frames[&0]),
+            .all(|t| OLED.contains(*t) && t.width() >= MIN_CARD_W && t.height() >= MIN_CARD_H),
+        "never below Warp's minimum"
+    );
+    for i in 0..tiles.len() {
+        for j in i + 1..tiles.len() {
+            assert!(!tiles[i].intersects(tiles[j]), "tiles overlap");
+        }
+    }
+
+    // MacBook alone, 22 workers: 10 tiles beside the list, the 12 others as list rows, parked behind the middle.
+    let screens = [MACBOOK];
+    let mac = plan_arrangement(&PlanInput {
+        peek: true,
+        ..PlanInput {
+            windows: &many[..23],
+            screens: &screens,
+            target: Single(0),
+            ..base
+        }
+    });
+    let tiled: Vec<usize> = mac
+        .lot
+        .iter()
+        .copied()
+        .filter(|i| !mac.parked.contains(i))
+        .collect();
+    assert_eq!(
+        (tiled.len(), mac.parked.len()),
+        (10, 12),
+        "10 tiles, 12 in the list"
+    );
+    assert_eq!(
+        mac.lists.len(),
+        1,
+        "the peek's list replaces the side lists"
+    );
+    let list = &mac.lists[0];
+    assert!(
+        MACBOOK.contains(list.rect) && list.rect.max_x() == MACBOOK.max_x(),
+        "list at the right edge"
+    );
+    assert_eq!(list.count(), 12, "every overflow window has a row");
+    assert!(matches!(&list.entries[0], Header(h) if h == "+12 weitere auf dem Parkplatz"));
+    for &i in &tiled {
+        assert!(
+            !mac.frames[&i].intersects(list.rect),
+            "tile {i} under the list"
+        );
+    }
+    assert!(
+        mac.parked.iter().all(|i| mac.frames[i] == mac.frames[&0]),
         "behind the main window"
     );
 }
@@ -2145,4 +2195,38 @@ fn parking_by_hand_like_a_worker() {
         !plan_arrangement(&p).lot.contains(&4),
         "without the hand it stays"
     );
+}
+
+/// Taken off by hand (Kevin 2026-11-06 evening: "die nach vorne zu holen und die nicht auf dem Parkplatz zu haben"):
+/// a worker whose session is in `hand_kept` stays in the arrangement; the check mark follows `lot_member`.
+#[test]
+fn parking_kept_by_hand_stays() {
+    let w = lot_windows();
+    let (workers, leads) = (names(&["Worker"]), names(&["Ultivor · Team lead"]));
+    let kept: BTreeSet<String> = BTreeSet::from([w[1].sessions[0].id.clone()]);
+    let none = BTreeSet::new();
+    let p = PlanInput {
+        focused: Some(0),
+        worker_names: &workers,
+        lead_names: &leads,
+        hand_kept: &kept,
+        ..input(Reading, Single(0), &w, Right)
+    };
+    let a = plan_arrangement(&p);
+    assert_eq!(
+        a.lot,
+        BTreeSet::from([2]),
+        "worker 1 stays out, worker 2 parks"
+    );
+    assert!(
+        !lot_member(&w[1], &workers, &leads, &none, &kept)
+            && lot_member(&w[2], &workers, &leads, &none, &kept)
+    );
+    assert!(lot_member(
+        &w[4],
+        &workers,
+        &leads,
+        &BTreeSet::from([w[4].sessions[0].id.clone()]),
+        &none
+    ));
 }

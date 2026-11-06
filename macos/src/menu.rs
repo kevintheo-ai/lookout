@@ -587,9 +587,9 @@ fn more_menu(a: &App) -> Retained<NSMenu> {
     sub
 }
 
-/// "To the parking lot" (Kevin 2026-11-06 evening): check mark = sent there by hand, a click sends or takes back,
-/// hovering lights up the window. Workers are there by name: checked, not clickable. The window Kevin is in carries
-/// Ctrl+Opt+5, which does the same for it.
+/// "To the parking lot" (Kevin 2026-11-06 evening): check mark = on the lot (a worker by name or sent by hand), a click
+/// sends it there or takes it off, workers too ("die nach vorne zu holen"); hovering lights up the window. The window
+/// Kevin is in carries Ctrl+Opt+5, which does the same for it.
 fn hand_menu(a: &App) -> Retained<NSMenu> {
     let sub = submenu(a);
     let order = ai_windows_by_status(a);
@@ -605,11 +605,7 @@ fn hand_menu(a: &App) -> Retained<NSMenu> {
         let worker = is_worker(w, &a.cfg.worker_names, &a.cfg.lead_names);
         let line = session_line(w, &a.since, &lookout, n);
         let title = if worker {
-            format!(
-                "{}  ({})",
-                line.title,
-                tr("Arbeiter, automatisch", "worker, automatic")
-            )
+            format!("{}  ({})", line.title, tr("Arbeiter", "worker"))
         } else {
             line.title
         };
@@ -620,10 +616,7 @@ fn hand_menu(a: &App) -> Retained<NSMenu> {
         };
         let it = item(a, &title, Some(sel!(toggleHandPark:)), key);
         it.setKeyEquivalentModifierMask(ctrl_opt());
-        it.setState(on_off(
-            worker || w.sessions.iter().any(|s| a.hand_parked.contains(&s.id)),
-        ));
-        it.setEnabled(!worker);
+        it.setState(on_off(a.lot_member(idx)));
         keyed(&it, &format!("{PREVIEW_HAND}{}", ids_of(w)));
         sub.addItem(&it);
     }
@@ -755,7 +748,11 @@ fn highlight(a: &mut App, item: Option<&NSMenuItem>) {
         let detail = if prefix == PREVIEW_FRONT {
             tr("Klick holt es nach vorn", "Click brings it to the front")
         } else if prefix == PREVIEW_HAND {
-            if w.sessions.iter().any(|s| a.hand_parked.contains(&s.id)) {
+            if a.windows
+                .iter()
+                .position(|x| x.id == w.id)
+                .is_some_and(|i| a.lot_member(i))
+            {
                 tr(
                     "auf dem Parkplatz — Klick holt es zurück",
                     "on the parking lot — click brings it back",
@@ -799,7 +796,7 @@ fn highlight(a: &mut App, item: Option<&NSMenuItem>) {
             a.preview.hide();
             return;
         };
-        let boxes: Vec<PreviewBox> = arr
+        let mut boxes: Vec<PreviewBox> = arr
             .lot
             .iter()
             .filter(|i| !arr.parked.contains(i))
@@ -821,6 +818,18 @@ fn highlight(a: &mut App, item: Option<&NSMenuItem>) {
                 })
             })
             .collect();
+        // Who finds no tile stands in the list beside them.
+        boxes.extend(arr.lists.iter().map(|l| {
+            PreviewBox {
+                rect: l.rect,
+                title: format!("{} ({})", tr("Liste", "List"), l.count()),
+                detail: tr(
+                    "Klick auf eine Zeile holt in die Mitte",
+                    "a click on a row brings it to the middle",
+                )
+                .to_owned(),
+            }
+        }));
         a.preview.show(&boxes);
         return;
     }

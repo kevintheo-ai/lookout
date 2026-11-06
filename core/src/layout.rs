@@ -620,6 +620,27 @@ pub fn is_worker(w: &TermWindow, worker_names: &[String], lead_names: &[String])
     })
 }
 
+/// Is a window meant for the parking lot (the check mark in the menu)? A worker by name unless taken off by hand, or
+/// sent there by hand (Kevin 2026-11-06 evening).
+pub fn lot_member(
+    w: &TermWindow,
+    worker_names: &[String],
+    lead_names: &[String],
+    hand_parked: &BTreeSet<String>,
+    hand_kept: &BTreeSet<String>,
+) -> bool {
+    let has = |set: &BTreeSet<String>| w.sessions.iter().any(|s| set.contains(&s.id));
+    (is_worker(w, worker_names, lead_names) && !has(hand_kept)) || has(hand_parked)
+}
+
+/// Does a lot member park right now? Only while it runs or watches: done, asking or with a question in a tab behind
+/// it, it stands with the waiting ones.
+fn on_lot(w: &TermWindow, p: &PlanInput) -> bool {
+    lot_member(w, p.worker_names, p.lead_names, p.hand_parked, p.hand_kept)
+        && !w.is_ready()
+        && !w.hidden_question()
+}
+
 /// Windows Lookout arranges: with an AI session, movable and not excluded, stable by first sighting. Plain terminals,
 /// minimised, full-screen and excluded windows stay untouched.
 pub fn layout_candidates(windows: &[TermWindow], excluded: &BTreeSet<String>) -> Vec<usize> {
@@ -1088,6 +1109,8 @@ pub struct PlanInput<'a> {
     /// Session ids Kevin sent to the parking lot by hand (Ctrl+Opt+5 or the menu, Kevin 2026-11-06 evening): such a
     /// window parks like a worker, whatever its name, a lead too.
     pub hand_parked: &'a BTreeSet<String>,
+    /// Session ids Kevin took off the parking lot by hand: a worker whose session is here never parks.
+    pub hand_kept: &'a BTreeSet<String>,
     /// Show the parking lot: tiled on the largest screen instead of parked behind the main window.
     pub peek: bool,
 }
@@ -1113,6 +1136,7 @@ impl<'a> PlanInput<'a> {
             worker_names: &[],
             lead_names: &[],
             hand_parked: &NO_EXCLUSIONS,
+            hand_kept: &NO_EXCLUSIONS,
             peek: false,
         }
     }
@@ -1138,14 +1162,7 @@ pub fn plan_arrangement(p: &PlanInput) -> Arrangement {
     }
     let main = p.focused.filter(|f| ordered.contains(f)).unwrap_or(first);
     let screen = |i: usize| p.screens[i.min(p.screens.len() - 1)];
-    let parks = |&i: &usize| {
-        let w = &windows[i];
-        i != main
-            && (is_worker(w, p.worker_names, p.lead_names)
-                || w.sessions.iter().any(|s| p.hand_parked.contains(&s.id)))
-            && !w.is_ready()
-            && !w.hidden_question()
-    };
+    let parks = |&i: &usize| i != main && on_lot(&windows[i], p);
     let lot: Vec<usize> = ordered.iter().copied().filter(parks).collect();
     let rest: Vec<usize> = rest_sequence(&ordered, main, p.rest_hint)
         .into_iter()
@@ -1209,11 +1226,15 @@ pub fn plan_arrangement(p: &PlanInput) -> Arrangement {
     if let Some(&main_rect) = out.frames.get(&main) {
         let largest = first_max(0..p.screens.len(), |i| rect_area(p.screens[i]))
             .map_or(main_rect, |i| p.screens[i]);
-        let tiles = if p.peek {
-            grid_arrange(largest, p.side, &lot)
+        let (tiles, list) = if p.peek {
+            peek_layout(largest, p.side, &lot)
         } else {
-            BTreeMap::new()
+            (BTreeMap::new(), None)
         };
+        // The peek covers its screen: the arrangement's own lists would lie under the tiles; only the peek's shows.
+        if p.peek {
+            out.lists = list.into_iter().collect();
+        }
         for &i in &lot {
             match tiles.get(&i) {
                 Some(&tile) => {
@@ -1228,6 +1249,102 @@ pub fn plan_arrangement(p: &PlanInput) -> Arrangement {
         out.lot = lot.into_iter().collect();
     }
     out
+}
+
+/// Width of the list beside the peek's tiles: name, duration and step stay readable (Kevin 2026-11-06 evening).
+pub const PEEK_LIST_W: f64 = 400.0;
+
+/// The peek (Kevin 2026-11-06 evening, "Kacheln + Liste", for 20 to 25 workers): as many tiles on `vis` as fit, never
+/// below Warp's minimum size, as large as their number allows; whoever finds no tile stands in a list at the side
+/// edge (status, name, step, like the labels; a click brings the worker into the middle). MacBook: 15 tiles, or 10
+/// beside the list; a large screen 35.
+fn peek_layout(
+    vis: Rect,
+    side: StackSide,
+    ids: &[usize],
+) -> (BTreeMap<usize, Rect>, Option<SideList>) {
+    let room = |area: Rect| {
+        count_at_least_one(area.width() / MIN_CARD_W)
+            * count_at_least_one(area.height() / MIN_CARD_H)
+    };
+    if ids.len() <= room(vis) {
+        return (best_grid(vis, ids), None);
+    }
+    let column = rail_rect(vis, side, PEEK_LIST_W);
+    let area = main_area(vis, side, PEEK_LIST_W);
+    let (tiled, rest) = ids.split_at(room(area).min(ids.len()));
+    let fit = ((column.height() - LIST_HEADER_H) / LIST_ROW_H)
+        .floor()
+        .max(0.0) as usize;
+    let (rows, more) = if rest.len() <= fit {
+        (rest.len(), 0)
+    } else {
+        let rows = fit.saturating_sub(1);
+        (rows, rest.len() - rows)
+    };
+    let mut entries = vec![ListEntry::Header(format!(
+        "+{} {}",
+        rest.len(),
+        tr("weitere auf dem Parkplatz", "more in the parking lot")
+    ))];
+    entries.extend(rest[..rows].iter().map(|&i| ListEntry::Row(i)));
+    if more > 0 {
+        entries.push(ListEntry::More(more));
+    }
+    let height = LIST_HEADER_H + (rows + usize::from(more > 0)) as f64 * LIST_ROW_H;
+    let list = SideList {
+        rect: Rect::new(
+            column.min_x(),
+            column.max_y() - height,
+            column.width(),
+            height,
+        ),
+        entries,
+    };
+    (best_grid(area, tiled), Some(list))
+}
+
+/// All `ids` on `area` (the caller made sure they fit at Warp's minimum size) in the grid with the fewest empty cells;
+/// on a tie the cells closest to a usual window shape (16:10).
+fn best_grid(area: Rect, ids: &[usize]) -> BTreeMap<usize, Rect> {
+    let n = ids.len();
+    if n == 0 {
+        return BTreeMap::new();
+    }
+    let max_cols = count_at_least_one(area.width() / MIN_CARD_W).min(n);
+    let max_rows = count_at_least_one(area.height() / MIN_CARD_H);
+    let shape = |cols: usize, rows: usize| {
+        let aspect = (area.width() / cols as f64) / (area.height() / rows as f64);
+        (aspect / 1.6).ln().abs()
+    };
+    let (cols, rows) = (1..=max_cols)
+        .map(|c| (c, n.div_ceil(c)))
+        .filter(|&(_, r)| r <= max_rows)
+        .min_by(|&(c1, r1), &(c2, r2)| {
+            (c1 * r1)
+                .cmp(&(c2 * r2))
+                .then(cmp_f64(shape(c1, r1), shape(c2, r2)))
+        })
+        .unwrap_or((max_cols, max_rows));
+    let (w, h) = (
+        (area.width() / cols as f64).floor(),
+        (area.height() / rows as f64).floor(),
+    );
+    ids.iter()
+        .enumerate()
+        .map(|(k, &i)| {
+            let (col, row) = (k % cols, k / cols);
+            (
+                i,
+                Rect::new(
+                    area.min_x() + col as f64 * w,
+                    area.max_y() - (row + 1) as f64 * h,
+                    w,
+                    h,
+                ),
+            )
+        })
+        .collect()
 }
 
 /// Only the frames (`plan_arrangement`).
