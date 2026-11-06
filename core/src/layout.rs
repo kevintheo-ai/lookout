@@ -1,0 +1,1233 @@
+//! Layout math. Pure functions, everything in Cocoa coordinates (origin bottom-left); conversion to AX happens only
+//! when a frame is written to a window. Slot 0 is always top-left, then row by row to the right and down.
+
+use std::borrow::Borrow;
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::geom::{Rect, cmp_f64};
+use crate::i18n::tr;
+use crate::model::{
+    Arrangement, GridSpec, LabelTone, LayoutMode, ListEntry, Pair, RailSplit, ScreenInfo, SideList,
+    StackSide, Target, TargetChoice, TermWindow, Time, fold_case,
+};
+
+/// Smallest window Warp allows (spike: 480×192; Ghostty 90×48).
+pub const MIN_CARD_W: f64 = 480.0;
+pub const MIN_CARD_H: f64 = 192.0;
+/// Target width of a terminal tile: 1000 pt hold about 119 columns of 14-pt monospace, enough for code without
+/// unreadably long lines.
+pub const IDEAL_CARD_W: f64 = 1000.0;
+/// Comfortable reading width for ONE big window. Across a full 21:9 screen a line would hold ~358 characters.
+pub const READING_WIDTH: f64 = 1400.0;
+/// List row: two text lines like the labels (2 × 19 pt) plus 4 pt margin each. The header is smaller.
+pub const LIST_ROW_H: f64 = 46.0;
+pub const LIST_HEADER_H: f64 = 28.0;
+
+/// Swift `Int(x)` for the small counts here: truncates toward zero. Swift traps on NaN and overflow; this saturates.
+fn int(x: f64) -> i64 {
+    x as i64
+}
+
+/// `max(1, Int(floor(x)))` as a count.
+fn count_at_least_one(x: f64) -> usize {
+    int(x.floor()).max(1) as usize
+}
+
+/// Columns and rows for `count` windows on this screen. Fill the width first (full height per window), rows only when
+/// the columns run out. Minimum sizes are never undercut.
+pub fn auto_grid(vis: Rect, count: usize) -> (usize, usize) {
+    if count == 0 {
+        return (1, 1);
+    }
+    let by_ideal = int((vis.width() / IDEAL_CARD_W).round()).max(1);
+    let by_minimum = int((vis.width() / MIN_CARD_W).floor()).max(1);
+    let cols = (by_ideal.min(by_minimum) as usize).min(count).max(1);
+    let max_rows = count_at_least_one(vis.height() / MIN_CARD_H);
+    (cols, max_rows.min(count.div_ceil(cols)).max(1))
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GridResult<K> {
+    pub frames: BTreeMap<K, Rect>,
+    pub overflow: Vec<K>,
+}
+
+/// Width of the mini stack at the edge: a sixth of the area, never below the minimum width Warp allows (spike: 480 pt).
+pub fn mini_rail_width(vis: Rect) -> f64 {
+    MIN_CARD_W.max((vis.width() / 6.0).floor())
+}
+
+fn rail_rect(vis: Rect, side: StackSide, width: f64) -> Rect {
+    let x = if side == StackSide::Right {
+        vis.max_x() - width
+    } else {
+        vis.min_x()
+    };
+    Rect::new(x, vis.min_y(), width, vis.height())
+}
+
+/// The area without the edge strip.
+pub fn main_area(vis: Rect, side: StackSide, rail_width: f64) -> Rect {
+    let x = if side == StackSide::Right {
+        vis.min_x()
+    } else {
+        vis.min_x() + rail_width
+    };
+    Rect::new(x, vis.min_y(), vis.width() - rail_width, vis.height())
+}
+
+/// cols×rows tiles. If not all ids fit, the extra ones go into the mini stack, and the tiles only get the remaining
+/// area (rail taken off first).
+pub fn grid_layout<K: Ord + Clone>(
+    vis: Rect,
+    cols: usize,
+    rows: usize,
+    side: StackSide,
+    ids: &[K],
+) -> GridResult<K> {
+    let mut out = GridResult {
+        frames: BTreeMap::new(),
+        overflow: vec![],
+    };
+    if cols == 0 || rows == 0 || ids.is_empty() {
+        return out;
+    }
+    let capacity = cols.saturating_mul(rows);
+    let overflow = ids.len() > capacity;
+    if overflow {
+        out.overflow = ids[capacity..].to_vec();
+    }
+    let area = if overflow {
+        main_area(vis, side, mini_rail_width(vis))
+    } else {
+        vis
+    };
+    // Shrink the grid to the actual number: a single window belongs on the whole screen, not in the top-left corner of
+    // an empty 2×2 (Kevin, live run 2026-09-18). The capacity stays cols×rows; it only decides the overflow.
+    let shown = ids.len().min(capacity);
+    let use_cols = cols.min(shown).max(1);
+    let use_rows = shown.div_ceil(use_cols).max(1);
+    let cell_w = (area.width() / use_cols as f64).floor();
+    let cell_h = (area.height() / use_rows as f64).floor();
+    for (i, id) in ids.iter().take(capacity).enumerate() {
+        let (col, row) = (i % use_cols, i / use_cols);
+        let r = Rect::new(
+            area.min_x() + col as f64 * cell_w,
+            area.max_y() - (row + 1) as f64 * cell_h,
+            cell_w,
+            cell_h,
+        );
+        out.frames.insert(id.clone(), r);
+    }
+    out
+}
+
+/// Mini stack at the edge: equally wide cards one below the other. What no longer fits the height stays untouched:
+/// better arrange fewer than stack windows on top of each other that nobody finds again.
+pub fn mini_stack<K: Ord + Clone>(vis: Rect, side: StackSide, ids: &[K]) -> BTreeMap<K, Rect> {
+    if ids.is_empty() {
+        return BTreeMap::new();
+    }
+    let width = mini_rail_width(vis);
+    let rail = rail_rect(vis, side, width);
+    let count = ids
+        .len()
+        .min(count_at_least_one(rail.height() / MIN_CARD_H));
+    let card_h = (rail.height() / count as f64).floor();
+    let card = |i: usize| {
+        Rect::new(
+            rail.min_x(),
+            rail.max_y() - (i + 1) as f64 * card_h,
+            width,
+            card_h,
+        )
+    };
+    ids.iter()
+        .take(count)
+        .enumerate()
+        .map(|(i, id)| (id.clone(), card(i)))
+        .collect()
+}
+
+/// Focus view: one window fills the remaining area, the others stand beside it as a mini stack. Returns
+/// `(main, rail)`.
+pub fn focus_layout(vis: Rect, side: StackSide) -> (Rect, Rect) {
+    let width = mini_rail_width(vis);
+    (main_area(vis, side, width), rail_rect(vis, side, width))
+}
+
+/// Reading-width focus: the main window stands CENTRED at a comfortable reading width, the others lie as strips at
+/// both edges. If two strips do not fit beside it (laptop), the view falls back to one strip and equals
+/// `focus_layout`. Returns `(main, left, right)`.
+pub fn reading_layout(vis: Rect, side: StackSide) -> (Rect, Option<Rect>, Option<Rect>) {
+    let rail = mini_rail_width(vis);
+    let both_fit = vis.width() >= READING_WIDTH + 2.0 * rail;
+    if !both_fit {
+        let (main, r) = focus_layout(vis, side);
+        return (
+            main,
+            (side == StackSide::Left).then_some(r),
+            (side == StackSide::Right).then_some(r),
+        );
+    }
+    let main_w = READING_WIDTH.min(vis.width() - 2.0 * rail);
+    let left_w = ((vis.width() - main_w) / 2.0).floor();
+    let right_w = vis.width() - main_w - left_w;
+    let left = Rect::new(vis.min_x(), vis.min_y(), left_w, vis.height());
+    let main = Rect::new(vis.min_x() + left_w, vis.min_y(), main_w, vis.height());
+    let right = Rect::new(main.max_x(), vis.min_y(), right_w, vis.height());
+    (main, Some(left), Some(right))
+}
+
+/// Cards one below the other in any strip (not only at the screen edge).
+pub fn strip_stack<K: Ord + Clone>(rail: Rect, ids: &[K]) -> BTreeMap<K, Rect> {
+    let wide = rail.width() > 0.0;
+    if ids.is_empty() || !wide {
+        return BTreeMap::new();
+    }
+    let count = ids
+        .len()
+        .min(count_at_least_one(rail.height() / MIN_CARD_H));
+    let card_h = (rail.height() / count as f64).floor();
+    let card = |i: usize| {
+        Rect::new(
+            rail.min_x(),
+            rail.max_y() - (i + 1) as f64 * card_h,
+            rail.width(),
+            card_h,
+        )
+    };
+    ids.iter()
+        .take(count)
+        .enumerate()
+        .map(|(i, id)| (id.clone(), card(i)))
+        .collect()
+}
+
+/// Who needs Kevin first? (Kevin 2026-09-18) First sessions with an open QUESTION (nothing goes on without an
+/// answer), then done sessions, and among those whoever was done FIRST; whoever is done later queues behind. Others
+/// after, by first sighting. Decides the left column in Focus 2 (top = first). Returns positions in `windows`.
+pub fn attention_order<W: Borrow<TermWindow>>(windows: &[W]) -> Vec<usize> {
+    let keys: Vec<(bool, bool, Time, Time)> = windows
+        .iter()
+        .map(|w| {
+            let w = w.borrow();
+            let s = w.shown_state();
+            (
+                s.waiting,
+                s.ready,
+                w.ready_since.unwrap_or(w.first_seen),
+                w.first_seen,
+            )
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..windows.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (wa, ra, since_a, first_a) = keys[a];
+        let (wb, rb, since_b, first_b) = keys[b];
+        wb.cmp(&wa)
+            .then(rb.cmp(&ra))
+            .then_with(|| {
+                if ra && rb {
+                    cmp_f64(since_a, since_b)
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .then_with(|| cmp_f64(first_a, first_b))
+    });
+    order
+}
+
+/// `ids` (indices into `windows`) in attention order.
+fn by_attention(ids: &[usize], windows: &[TermWindow]) -> Vec<usize> {
+    let picked: Vec<&TermWindow> = ids.iter().map(|&i| &windows[i]).collect();
+    attention_order(&picked)
+        .into_iter()
+        .map(|k| ids[k])
+        .collect()
+}
+
+// ---------- Planning across all screens ----------
+
+/// Screen a window lies on: the LARGEST overlap wins. A centre test falls short: if the centre lies in the Dock strip
+/// (not part of `visibleFrame`) it hits no screen, and a fallback to 0 would pull the window from the second monitor
+/// onto the main screen. Without any overlap the nearest centre decides.
+pub fn screen_index(frame: Rect, screens: &[Rect]) -> usize {
+    let mut best = 0;
+    let mut best_area = 0.0;
+    for (i, s) in screens.iter().enumerate() {
+        let cut = s.intersection(frame);
+        let area = if cut.is_null() {
+            0.0
+        } else {
+            cut.width() * cut.height()
+        };
+        if area > best_area {
+            best_area = area;
+            best = i;
+        }
+    }
+    if best_area > 0.0 {
+        return best;
+    }
+    let mut best_dist = f64::MAX;
+    for (i, s) in screens.iter().enumerate() {
+        let (dx, dy) = (s.mid_x() - frame.mid_x(), s.mid_y() - frame.mid_y());
+        let d = dx * dx + dy * dy;
+        if d < best_dist {
+            best_dist = d;
+            best = i;
+        }
+    }
+    best
+}
+
+// ---------- Target: where do the windows go? (Kevin 2026-09-18, replaces the waiting room) ----------
+//
+// The waiting room sent every session that was "done" between two answers to the MacBook, also the one Kevin was
+// working in, and every status change switched the screen. Now Kevin decides by button: all on one screen, or control
+// room.
+
+/// Index of the screen with this id; empty: none. Equal monitors are called X, X#2, X#3 from the left
+/// (`unique_screen_ids`); when one is unplugged, the ones to its right move up a number. If "X#3" is missing, the
+/// highest remaining twin counts, not the left one (review quick 2026-10-01: Codex R1, GLM + Kimi R2).
+/// ponytail: only the order tells equal monitors apart, macOS itself does not. Unplugging and replugging can move the
+/// choice to the neighbour (X#2 chosen, X gone, X#3 there -> the right neighbour). Remedy if ever needed: store the
+/// position of the chosen screen too.
+pub fn screen_index_by_id(id: &str, screens: &[ScreenInfo]) -> Option<usize> {
+    if id.is_empty() {
+        return None;
+    }
+    if let Some(i) = screens.iter().position(|s| s.id == id) {
+        return Some(i);
+    }
+    // Swift matches `#\d+$` and then needs `Int(...)`: only ASCII digits that fit an Int count.
+    let (base, digits) = id.rsplit_once('#')?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let n: i64 = digits.parse().ok()?;
+    // No number can be higher than the number of screens; this also bounds a broken stored "X#99999999".
+    let start = (n - 1).min(screens.len() as i64);
+    (1..=start).rev().find_map(|k| {
+        let wanted = if k == 1 {
+            base.to_owned()
+        } else {
+            format!("{base}#{k}")
+        };
+        screens.iter().position(|s| s.id == wanted)
+    })
+}
+
+/// Do two ids point at the same screen right now, also "X#2" and "X" while the twin is unplugged?
+pub fn same_screen(a: &str, b: &str, screens: &[ScreenInfo]) -> bool {
+    a == b
+        || screen_index_by_id(a, screens).is_some_and(|i| Some(i) == screen_index_by_id(b, screens))
+}
+
+/// The control-room pair chosen in the menu as screen indices when it applies: from three screens on, both found (also
+/// via the twin), different; otherwise `None` = automatic. Arrangement and menu check mark both read here (review quick
+/// 2026-10-01).
+pub fn active_pair(pair: Option<&Pair<String>>, screens: &[ScreenInfo]) -> Option<Pair<usize>> {
+    let pair = pair?;
+    if screens.len() < 3 {
+        return None;
+    }
+    let work = screen_index_by_id(&pair.work, screens)?;
+    let control = screen_index_by_id(&pair.control, screens)?;
+    (work != control).then_some(Pair { work, control })
+}
+
+/// Index of the first largest area (Swift `max(by:)` keeps the first of equals).
+fn first_max(indices: impl Iterator<Item = usize>, area: impl Fn(usize) -> f64) -> Option<usize> {
+    indices.reduce(|best, i| if area(best) < area(i) { i } else { best })
+}
+
+/// Index of the first smallest area (Swift `min(by:)` keeps the first of equals).
+fn first_min(indices: impl Iterator<Item = usize>, area: impl Fn(usize) -> f64) -> Option<usize> {
+    indices.reduce(|best, i| if area(i) < area(best) { i } else { best })
+}
+
+fn rect_area(r: Rect) -> f64 {
+    r.width() * r.height()
+}
+
+/// Choice + screens -> target. If the chosen screen is missing, the target falls back to the largest present one. The
+/// control room needs two screens: work = largest, control = smallest; from three screens on the pair chosen in the
+/// menu counts while both are attached (Kevin 2026-10-01, `active_pair`). `None` only without any screen.
+pub fn resolve_target(
+    choice: &TargetChoice,
+    screens: &[ScreenInfo],
+    pair: Option<&Pair<String>>,
+) -> Option<Target> {
+    let area = |i: usize| rect_area(screens[i].visible);
+    let largest = first_max(0..screens.len(), area)?;
+    let room = |work, control, ready_side, flipped| Target::ControlRoom {
+        work,
+        control,
+        ready_side,
+        flipped,
+    };
+    let ready_side = if *choice == TargetChoice::Both2 {
+        StackSide::Right
+    } else {
+        StackSide::Left
+    };
+    Some(match choice {
+        TargetChoice::External => Target::Single(
+            first_max((0..screens.len()).filter(|&i| !screens[i].builtin), area).unwrap_or(largest),
+        ),
+        TargetChoice::Builtin => Target::Single(
+            (0..screens.len())
+                .find(|&i| screens[i].builtin)
+                .unwrap_or(largest),
+        ),
+        TargetChoice::Screen(id) => {
+            Target::Single(screen_index_by_id(id, screens).unwrap_or(largest))
+        }
+        TargetChoice::Both | TargetChoice::Both2 | TargetChoice::Both3 => {
+            if let Some(p) = active_pair(pair, screens) {
+                return Some(if *choice == TargetChoice::Both3 {
+                    room(p.work, p.control, StackSide::Left, true)
+                } else {
+                    room(p.work, p.control, ready_side, false)
+                });
+            }
+            let Some(smallest) = first_min((0..screens.len()).filter(|&i| i != largest), area)
+            else {
+                return Some(Target::Single(largest));
+            };
+            if *choice == TargetChoice::Both3 {
+                // Work screen is the MacBook, as the button says; only without a built-in screen the smallest (review
+                // quick).
+                let work = (0..screens.len())
+                    .find(|&i| screens[i].builtin && i != largest)
+                    .unwrap_or(smallest);
+                room(work, largest, StackSide::Left, true)
+            } else {
+                room(largest, smallest, ready_side, false)
+            }
+        }
+    })
+}
+
+/// Entries under SCREEN: every screen on its own (external ones from left to right as on the desk, the built-in one
+/// last), from two screens on the three control rooms.
+pub fn target_options(screens: &[ScreenInfo]) -> Vec<TargetChoice> {
+    let mut single: Vec<&ScreenInfo> = screens.iter().filter(|s| !s.id.is_empty()).collect();
+    single.sort_by(|a, b| {
+        a.builtin
+            .cmp(&b.builtin)
+            .then(cmp_f64(a.visible.min_x(), b.visible.min_x()))
+            .then(cmp_f64(-a.visible.max_y(), -b.visible.max_y()))
+    });
+    let mut out: Vec<TargetChoice> = single
+        .into_iter()
+        .map(|s| TargetChoice::Screen(s.id.clone()))
+        .collect();
+    if screens.len() > 1 {
+        out.extend([TargetChoice::Both, TargetChoice::Both2, TargetChoice::Both3]);
+    }
+    out
+}
+
+/// Positions of `indices` ordered left to right, top first (Swift's `place` tuple).
+fn by_place(screens: &[ScreenInfo], mut indices: Vec<usize>) -> Vec<usize> {
+    indices.sort_by(|&a, &b| {
+        let (ra, rb) = (screens[a].visible, screens[b].visible);
+        cmp_f64(ra.min_x(), rb.min_x()).then(cmp_f64(-ra.max_y(), -rb.max_y()))
+    });
+    indices
+}
+
+/// Two equal monitors without serial number can report the same id: from left to right the first keeps it, the others
+/// get "#2", "#3"; otherwise both menu entries would point at the same screen. An empty id stays empty.
+pub fn unique_screen_ids(screens: &[ScreenInfo]) -> Vec<ScreenInfo> {
+    let mut out = screens.to_vec();
+    let ids: BTreeSet<&str> = screens
+        .iter()
+        .map(|s| s.id.as_str())
+        .filter(|id| !id.is_empty())
+        .collect();
+    for id in ids {
+        let same = by_place(
+            screens,
+            (0..screens.len())
+                .filter(|&i| screens[i].id == id)
+                .collect(),
+        );
+        for (n, &i) in same.iter().enumerate().skip(1) {
+            out[i].id = format!("{id}#{}", n + 1);
+        }
+    }
+    out
+}
+
+/// Names in the menu: external ones as macOS calls them, the built-in one MacBook or iMac. Equal names get (1), (2)
+/// from left to right.
+pub fn screen_names(screens: &[ScreenInfo]) -> Vec<String> {
+    let base: Vec<&str> = screens
+        .iter()
+        .map(|s| {
+            if !s.builtin {
+                s.name.as_str()
+            } else if s.laptop {
+                "MacBook"
+            } else {
+                "iMac"
+            }
+        })
+        .collect();
+    (0..base.len())
+        .map(|i| {
+            let same: Vec<usize> = (0..base.len()).filter(|&j| base[j] == base[i]).collect();
+            if same.len() <= 1 {
+                return base[i].to_owned();
+            }
+            match by_place(screens, same).iter().position(|&j| j == i) {
+                Some(n) => format!("{} ({})", base[i], n + 1),
+                None => base[i].to_owned(),
+            }
+        })
+        .collect()
+}
+
+/// Menu title of a target with the screens' real names (until 2026-10-01 "MacBook" was fixed in it); `None` if it does
+/// not work with the attached screens.
+pub fn target_title(
+    option: &TargetChoice,
+    screens: &[ScreenInfo],
+    pair: Option<&Pair<String>>,
+) -> Option<String> {
+    let names = screen_names(screens);
+    let on = |i: usize| -> String {
+        if !screens[i].builtin {
+            return format!("{}{}", tr("auf ", "on "), names[i]);
+        }
+        let s = if screens[i].laptop {
+            tr("aufs MacBook", "on the MacBook")
+        } else {
+            tr("auf den iMac", "on the iMac")
+        };
+        s.to_owned()
+    };
+    let several = screens.len() > 1;
+    match option {
+        TargetChoice::Screen(id) => screens
+            .iter()
+            .position(|s| s.id == *id)
+            .map(|i| format!("{}{}", tr("Alle ", "All "), on(i))),
+        TargetChoice::External | TargetChoice::Builtin => None,
+        TargetChoice::Both => several.then(|| {
+            tr(
+                "Leitstand (fertige links)",
+                "Control room (done on the left)",
+            )
+            .to_owned()
+        }),
+        TargetChoice::Both2 => several.then(|| {
+            tr(
+                "Leitstand 2 (fertige rechts)",
+                "Control room 2 (done on the right)",
+            )
+            .to_owned()
+        }),
+        TargetChoice::Both3 => {
+            if !several {
+                return None;
+            }
+            let Some(Target::ControlRoom { work, .. }) =
+                resolve_target(&TargetChoice::Both3, screens, pair)
+            else {
+                return None;
+            };
+            Some(format!(
+                "{}{})",
+                tr("Leitstand 3 (aktiv ", "Control room 3 (active "),
+                on(work)
+            ))
+        }
+    }
+}
+
+/// Choose the control-room screens in the menu (from three screens on, Kevin 2026-10-01): the same screen for both
+/// roles swaps them. Screens are compared, not names, and the previous ids stay: "X#2" (right one of two equal ones,
+/// the left one unplugged right now) would otherwise become "X" and after replugging mean the left one (review quick
+/// 2026-10-01 round 2, GLM).
+pub fn choose_pair(
+    current: &Pair<String>,
+    work: Option<&str>,
+    control: Option<&str>,
+    screens: &[ScreenInfo],
+) -> Pair<String> {
+    let same = |a: &str, b: &str| same_screen(a, b, screens);
+    let mut p = current.clone();
+    if let Some(work) = work.filter(|&w| !same(w, &p.work)) {
+        if same(work, &p.control) {
+            p = Pair {
+                work: p.control,
+                control: p.work,
+            };
+        } else {
+            p.work = work.to_owned();
+        }
+    }
+    if let Some(control) = control.filter(|&c| !same(c, &p.control)) {
+        if same(control, &p.work) {
+            p = Pair {
+                work: p.control,
+                control: p.work,
+            };
+        } else {
+            p.control = control.to_owned();
+        }
+    }
+    p
+}
+
+/// Did Kevin take this window out of the arrangement? Remembered per session id (Kevin 2026-09-18); a window with
+/// several sessions is out as soon as one of them is.
+pub fn is_excluded(w: &TermWindow, excluded: &BTreeSet<String>) -> bool {
+    w.sessions.iter().any(|s| excluded.contains(&s.id))
+}
+
+/// Worker window (parking lot, Kevin 2026-11-06): the name of its VISIBLE session (status-file name or own name from
+/// the transcript) contains a `worker_names` entry, case-insensitive. A session named exactly like a `lead_names` entry
+/// is never a worker; no visible session, no worker.
+pub fn is_worker(w: &TermWindow, worker_names: &[String], lead_names: &[String]) -> bool {
+    let Some(s) = w.visible_session() else {
+        return false;
+    };
+    let names: Vec<&str> = [
+        Some(s.name.as_str()),
+        s.digest.as_ref().and_then(|d| d.name.as_deref()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if names.iter().any(|n| lead_names.iter().any(|l| l == n)) {
+        return false;
+    }
+    let wanted: Vec<String> = worker_names
+        .iter()
+        .filter(|n| !n.is_empty())
+        .map(|n| fold_case(n))
+        .collect();
+    names.iter().any(|n| {
+        let n = fold_case(n);
+        wanted.iter().any(|w| n.contains(w.as_str()))
+    })
+}
+
+/// Windows Lookout arranges: with an AI session, movable and not excluded, stable by first sighting. Plain terminals,
+/// minimised, full-screen and excluded windows stay untouched.
+pub fn layout_candidates(windows: &[TermWindow], excluded: &BTreeSet<String>) -> Vec<usize> {
+    let mut out: Vec<usize> = (0..windows.len())
+        .filter(|&i| {
+            !windows[i].sessions.is_empty()
+                && windows[i].layoutable()
+                && !is_excluded(&windows[i], excluded)
+        })
+        .collect();
+    out.sort_by(|&a, &b| cmp_f64(windows[a].first_seen, windows[b].first_seen));
+    out
+}
+
+/// Order of the non-main windows in Focus and control room: first the remembered order (`hint`, only windows that
+/// still exist), then newcomers by first sighting.
+pub fn rest_sequence(ordered: &[usize], main: usize, hint: &[usize]) -> Vec<usize> {
+    let known: Vec<usize> = hint
+        .iter()
+        .copied()
+        .filter(|&i| i != main && ordered.contains(&i))
+        .collect();
+    let new = ordered
+        .iter()
+        .copied()
+        .filter(|&i| i != main && !known.contains(&i));
+    known.iter().copied().chain(new).collect()
+}
+
+/// Click on a side window or tile: the new main window SWAPS places with the old one; only these two move (preview
+/// page 2026-09-18). Before, a click re-sorted all side windows by first sighting.
+pub fn swapped_rest(rest: &[usize], old_main: usize, new_main: usize) -> Vec<usize> {
+    let mut out = rest.to_vec();
+    if let Some(i) = rest.iter().position(|&x| x == new_main) {
+        out[i] = old_main;
+    }
+    out
+}
+
+// ---------- Status decides the order (plan 1d, Kevin 2026-09-26) ----------
+//
+// One rule for Focus 1 (GP 5, R2-3), three separate groups: question · done without question · running. In question
+// and done only the time of being done decides the place (`attention_order`), nothing is swapped there; among the
+// running the click order counts. Focus 2 and control room keep their order.
+
+/// Focus 1: question, then done (by time of being done), then the running in click order (`rest`).
+pub fn status_sequence(rest: &[usize], windows: &[TermWindow]) -> Vec<usize> {
+    let waiting: Vec<usize> = rest
+        .iter()
+        .copied()
+        .filter(|&i| windows[i].is_ready())
+        .collect();
+    let mut out = by_attention(&waiting, windows);
+    out.extend(rest.iter().copied().filter(|&i| !windows[i].is_ready()));
+    out
+}
+
+/// Click in Focus 1: if old main and clicked window both run, they swap places (`swapped_rest`), nothing else moves.
+/// Across a group border the old main goes to its group's place; if it runs, to the start of the running ones
+/// (suggested by the cross-check, to be checked in practice).
+pub fn status_swap(
+    rest: &[usize],
+    old_main: usize,
+    new_main: usize,
+    windows: &[TermWindow],
+) -> Vec<usize> {
+    let old_runs = !windows[old_main].is_ready();
+    if old_runs && !windows[new_main].is_ready() {
+        return swapped_rest(rest, old_main, new_main);
+    }
+    let others = rest.iter().copied().filter(|&i| i != new_main);
+    if old_runs {
+        std::iter::once(old_main).chain(others).collect()
+    } else {
+        others.chain([old_main]).collect()
+    }
+}
+
+/// Three columns for Focus 1 where two strips do not fit beside the reading width (MacBook): both sides `MIN_CARD_W`
+/// (Warp's minimum width), the middle gets the rest (MacBook: 768 of 1728 pt). `None` below 3 × 480 pt: the middle
+/// would be narrower than Warp allows; there it stays one edge. Returns `(left, main, right)`.
+pub fn three_column_layout(vis: Rect) -> Option<(Rect, Rect, Rect)> {
+    let fits = vis.width() >= 3.0 * MIN_CARD_W;
+    if !fits {
+        return None;
+    }
+    let left = Rect::new(vis.min_x(), vis.min_y(), MIN_CARD_W, vis.height());
+    let right = Rect::new(
+        vis.max_x() - MIN_CARD_W,
+        vis.min_y(),
+        MIN_CARD_W,
+        vis.height(),
+    );
+    let main = Rect::new(
+        left.max_x(),
+        vis.min_y(),
+        right.min_x() - left.max_x(),
+        vis.height(),
+    );
+    Some((left, main, right))
+}
+
+// ---------- Overflow: window or row (plan 1d) ----------
+//
+// If not all fit on a side as windows, the others stand as rows at the bottom of the same side; their windows lie on
+// the main window's frame, behind it ("parked"). Before, they stayed where they were and covered waiting ones.
+
+/// How many windows and rows fit on a side of height `height`? `flexible` (in order) may be windows, `list_only`
+/// always stand as a row (Focus 2: WORKING). Windows = the largest number at which they (at least `MIN_CARD_H` each)
+/// and all rows fit; MacBook, 8 running: 4 × 192 + 28 + 4 × 46 = 980 ≤ 1005. If not even all rows fit, it is cut from
+/// the back, `list_only` first (waiting ones go first, R2-2), and the last row says "+N more (in the menu)". Plan and
+/// list use the same arithmetic.
+pub fn rail_split(height: f64, flexible: usize, list_only: usize) -> RailSplit {
+    for cards in (0..=flexible).rev() {
+        let rows = flexible - cards + list_only;
+        let list = if rows > 0 {
+            LIST_HEADER_H + rows as f64 * LIST_ROW_H
+        } else {
+            0.0
+        };
+        if cards as f64 * MIN_CARD_H + list <= height {
+            return RailSplit {
+                cards,
+                rows,
+                more: 0,
+            };
+        }
+    }
+    let fit = count_at_least_one((height - LIST_HEADER_H) / LIST_ROW_H); // rows including "+N more"
+    RailSplit {
+        cards: 0,
+        rows: fit - 1,
+        more: (flexible + list_only).saturating_sub(fit - 1),
+    }
+}
+
+/// Fill a side: windows one below the other at the top (`strip_stack`), the list below. Header "+N more" (Focus 1) or
+/// "WORKING (N)" (Focus 2, extra waiting ones right above it). The windows of the rows lie on `main_rect`.
+fn fill_side(
+    rail: Rect,
+    flexible: &[usize],
+    list_only: &[usize],
+    main_rect: Rect,
+    out: &mut Arrangement,
+) {
+    let split = rail_split(rail.height(), flexible.len(), list_only.len());
+    let listed: Vec<usize> = flexible[split.cards..]
+        .iter()
+        .chain(list_only)
+        .copied()
+        .collect();
+    let list_h = if listed.is_empty() {
+        0.0
+    } else {
+        LIST_HEADER_H + (split.rows + usize::from(split.more > 0)) as f64 * LIST_ROW_H
+    };
+    let cards = Rect::new(
+        rail.min_x(),
+        rail.min_y() + list_h,
+        rail.width(),
+        rail.height() - list_h,
+    );
+    out.frames
+        .extend(strip_stack(cards, &flexible[..split.cards]));
+    if listed.is_empty() {
+        return;
+    }
+    for &i in &listed {
+        out.frames.insert(i, main_rect);
+        out.parked.insert(i);
+    }
+    let shown = &listed[..split.rows.min(listed.len())];
+    let mut entries: Vec<ListEntry> = vec![];
+    if list_only.is_empty() {
+        entries.push(ListEntry::Header(format!(
+            "+{} {}",
+            listed.len(),
+            tr("weitere", "more")
+        )));
+        entries.extend(shown.iter().map(|&i| ListEntry::Row(i)));
+    } else {
+        entries.extend(
+            shown
+                .iter()
+                .filter(|i| !list_only.contains(i))
+                .map(|&i| ListEntry::Row(i)),
+        );
+        entries.push(ListEntry::Header(format!(
+            "{} ({})",
+            LabelTone::Running.word(),
+            list_only.len()
+        )));
+        entries.extend(
+            shown
+                .iter()
+                .filter(|i| list_only.contains(i))
+                .map(|&i| ListEntry::Row(i)),
+        );
+    }
+    if split.more > 0 {
+        entries.push(ListEntry::More(split.more));
+    }
+    out.lists.push(SideList {
+        rect: Rect::new(rail.min_x(), rail.min_y(), rail.width(), list_h),
+        entries,
+    });
+}
+
+// ---------- Grid: fixed choice (Kevin 2026-09-18) ----------
+
+/// The grids in the menu, in Kevin's order.
+pub const GRID_CHOICES: [GridSpec; 6] = [
+    GridSpec::new(2, 2),
+    GridSpec::new(3, 2),
+    GridSpec::new(4, 2),
+    GridSpec::new(3, 3),
+    GridSpec::new(4, 3),
+    GridSpec::new(5, 2),
+];
+/// As long as Kevin has not chosen one: fits both screens.
+pub const DEFAULT_GRID: GridSpec = GridSpec::new(3, 2);
+
+/// How many columns/rows fit without a tile falling below Warp's minimum size? Below it the window would stand larger
+/// than planned and overlap its neighbours.
+fn grid_limits(vis: Rect) -> (usize, usize) {
+    (
+        count_at_least_one(vis.width() / MIN_CARD_W),
+        count_at_least_one(vis.height() / MIN_CARD_H),
+    )
+}
+
+/// Only what fits the screen is offered (MacBook: at most 3 columns).
+pub fn grid_choices(vis: Rect) -> Vec<GridSpec> {
+    let (cols, rows) = grid_limits(vis);
+    GRID_CHOICES
+        .into_iter()
+        .filter(|g| g.cols <= cols && g.rows <= rows)
+        .collect()
+}
+
+/// Trim the stored choice to the target screen: 5×2 from the LG becomes 3×2 on the MacBook.
+pub fn fitted_grid(g: GridSpec, vis: Rect) -> GridSpec {
+    let (cols, rows) = grid_limits(vis);
+    GridSpec::new(g.cols.min(cols), g.rows.min(rows))
+}
+
+/// Fixed grid (Kevin 2026-09-18: "Fest"): every tile is one place big, however many windows there are; free places
+/// stay free. Slot 0 top-left, then row by row. More windows than places: the others get no place and stay untouched.
+pub fn fixed_grid(vis: Rect, g: GridSpec, ids: &[usize]) -> BTreeMap<usize, Rect> {
+    let cell_w = (vis.width() / g.cols as f64).floor();
+    let cell_h = (vis.height() / g.rows as f64).floor();
+    let cell = |i: usize| {
+        Rect::new(
+            vis.min_x() + (i % g.cols) as f64 * cell_w,
+            vis.max_y() - (i / g.cols + 1) as f64 * cell_h,
+            cell_w,
+            cell_h,
+        )
+    };
+    ids.iter()
+        .take(g.cols.saturating_mul(g.rows))
+        .enumerate()
+        .map(|(i, &id)| (id, cell(i)))
+        .collect()
+}
+
+/// Control-room tiles: columns from the screen width, the extra ones into the mini stack.
+fn grid_arrange(vis: Rect, side: StackSide, ids: &[usize]) -> BTreeMap<usize, Rect> {
+    let (cols, rows) = auto_grid(vis, ids.len());
+    let grid = grid_layout(vis, cols, rows, side, ids);
+    let mut out = grid.frames;
+    out.extend(mini_stack(vis, side, &grid.overflow));
+    out
+}
+
+/// Focus 1 on one screen: `main` centred, the rest by status (`status_sequence`). If two strips fit beside the reading
+/// width (LG), the order fills the left side up to half, then the right one. Otherwise from 1440 pt three columns
+/// (plan 1d): left whoever waits, right what runs, both as real windows. Below that one edge as before.
+fn focus_arrange(
+    vis: Rect,
+    side: StackSide,
+    main: usize,
+    rest: &[usize],
+    windows: &[TermWindow],
+) -> Arrangement {
+    let (main_rect, left, right) = reading_layout(vis, side);
+    if left.is_none() || right.is_none() {
+        if let Some((left, middle, right)) = three_column_layout(vis) {
+            let mut out = Arrangement {
+                frames: BTreeMap::from([(main, middle)]),
+                main: Some(main),
+                ..Default::default()
+            };
+            let (ready, running): (Vec<usize>, Vec<usize>) =
+                rest.iter().partition(|&&i| windows[i].is_ready());
+            fill_side(left, &ready, &[], middle, &mut out);
+            fill_side(right, &running, &[], middle, &mut out);
+            return out;
+        }
+    }
+    let mut out = Arrangement {
+        frames: BTreeMap::from([(main, main_rect)]),
+        main: Some(main),
+        ..Default::default()
+    };
+    let rails: Vec<Rect> = [left, right].into_iter().flatten().collect();
+    let half = if rails.len() == 2 {
+        rest.len().div_ceil(2)
+    } else {
+        rest.len()
+    };
+    for (rail, part) in rails.into_iter().zip([&rest[..half], &rest[half..]]) {
+        fill_side(rail, part, &[], main_rect, &mut out);
+    }
+    out
+}
+
+/// Focus 2 (Kevin 2026-09-18): `main` centred at reading width, LEFT whoever waits for Kevin (`attention_order`), RIGHT
+/// what runs. A session that gets done lands left on the next tick, and right again once it works. If only one strip
+/// fits beside the main window (MacBook), since plan 1d (2026-09-26) only the waiting ones stand there as windows; the
+/// running lie behind the middle and stand in the WORKING list.
+fn focus2_arrange(
+    vis: Rect,
+    side: StackSide,
+    main: usize,
+    others: &[usize],
+    windows: &[TermWindow],
+) -> Arrangement {
+    let (main_rect, left, right) = reading_layout(vis, side);
+    let (ready, running): (Vec<usize>, Vec<usize>) =
+        others.iter().partition(|&&i| windows[i].is_ready());
+    let waiting = by_attention(&ready, windows);
+    let mut out = Arrangement {
+        frames: BTreeMap::from([(main, main_rect)]),
+        main: Some(main),
+        ..Default::default()
+    };
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            fill_side(left, &waiting, &[], main_rect, &mut out);
+            fill_side(right, &running, &[], main_rect, &mut out);
+        }
+        (Some(rail), None) | (None, Some(rail)) => {
+            fill_side(rail, &waiting, &running, main_rect, &mut out)
+        }
+        (None, None) => {}
+    }
+    out
+}
+
+/// Control room (Kevin 2026-09-24: "fertig sollte immer neben aktiv sein"): big screen, middle the active session,
+/// right beside it on `side` whoever waits for Kevin (`attention_order`); the other side stays free for Chrome. The
+/// MacBook shows what runs; waiting ones that do not fit the column queue up on the same side of the MacBook. Follows
+/// the status every tick like Focus 2. The stack side does not apply here.
+fn ready_beside_arrange(
+    work: Rect,
+    control: Rect,
+    side: StackSide,
+    main: usize,
+    rest: &[usize],
+    windows: &[TermWindow],
+) -> BTreeMap<usize, Rect> {
+    let (main_rect, left, right) = reading_layout(work, side);
+    let (ready, running): (Vec<usize>, Vec<usize>) =
+        rest.iter().partition(|&&i| windows[i].is_ready());
+    let waiting = by_attention(&ready, windows);
+    let column = if side == StackSide::Left { left } else { right }
+        .expect("reading_layout always returns the column on `side`");
+    let fits = count_at_least_one(column.height() / MIN_CARD_H).min(waiting.len());
+    let rail_fits = count_at_least_one(control.height() / MIN_CARD_H);
+    let spill = &waiting[fits..];
+    let rail = &spill[..rail_fits.min(spill.len())];
+
+    let mut out = BTreeMap::from([(main, main_rect)]);
+    out.extend(strip_stack(column, &waiting[..fits]));
+    out.extend(mini_stack(control, side, rail));
+    // If the MacBook column is full too, the remaining waiting ones stand first in the grid; left lying they overlapped
+    // where another window goes meanwhile (review quick).
+    let area = if rail.is_empty() {
+        control
+    } else {
+        main_area(control, side, mini_rail_width(control))
+    };
+    let grid_ids: Vec<usize> = spill[rail.len()..]
+        .iter()
+        .chain(&running)
+        .copied()
+        .collect();
+    for (k, r) in grid_arrange(area, side, &grid_ids) {
+        out.entry(k).or_insert(r);
+    }
+    out
+}
+
+/// Control room 3 (Kevin 2026-09-28: "in die andere Richtung"): MacBook = work screen, active session right, whoever
+/// waits for Kevin LEFT beside it (`attention_order`, column `mini_rail_width`). The LG shows what runs in one column
+/// each at its left and right edge (a quarter of the width), the middle (half the screen) stays free for Chrome. Waiting
+/// ones that do not fit the MacBook column stand first in the LG columns. If not all fit there either, the rest gets
+/// the middle as a grid: better cover Chrome than leave windows lying on top of each other (review quick 2026-09-24).
+fn flipped_arrange(
+    work: Rect,
+    control: Rect,
+    main: usize,
+    rest: &[usize],
+    windows: &[TermWindow],
+) -> BTreeMap<usize, Rect> {
+    let (main_rect, column) = focus_layout(work, StackSide::Left);
+    let (ready, running): (Vec<usize>, Vec<usize>) =
+        rest.iter().partition(|&&i| windows[i].is_ready());
+    let waiting = by_attention(&ready, windows);
+    let fits = count_at_least_one(column.height() / MIN_CARD_H).min(waiting.len());
+    let others: Vec<usize> = waiting[fits..].iter().chain(&running).copied().collect();
+
+    let mut out = BTreeMap::from([(main, main_rect)]);
+    out.extend(strip_stack(column, &waiting[..fits]));
+
+    let side_w = MIN_CARD_W.max((control.width() / 4.0).floor()); // Warp allows nothing narrower (review quick)
+    let left = Rect::new(control.min_x(), control.min_y(), side_w, control.height());
+    let right = Rect::new(
+        control.max_x() - side_w,
+        control.min_y(),
+        side_w,
+        control.height(),
+    );
+    let per_side = count_at_least_one(control.height() / MIN_CARD_H);
+    let left_count = per_side.min(others.len().div_ceil(2));
+    let right_count = per_side.min(others.len() - left_count);
+    out.extend(strip_stack(left, &others[..left_count]));
+    out.extend(strip_stack(
+        right,
+        &others[left_count..left_count + right_count],
+    ));
+    let middle = Rect::new(
+        left.max_x(),
+        control.min_y(),
+        right.min_x() - left.max_x(),
+        control.height(),
+    );
+    for (k, r) in grid_arrange(middle, StackSide::Left, &others[left_count + right_count..]) {
+        out.entry(k).or_insert(r);
+    }
+    out
+}
+
+static NO_EXCLUSIONS: BTreeSet<String> = BTreeSet::new();
+
+/// Everything a plan depends on. `PlanInput::new` sets Swift's defaults: no focused window, no remembered order,
+/// `DEFAULT_GRID`, nothing excluded, no worker or lead names, no peeking.
+#[derive(Clone, Copy, Debug)]
+pub struct PlanInput<'a> {
+    pub mode: LayoutMode,
+    pub target: Target,
+    pub windows: &'a [TermWindow],
+    pub screens: &'a [Rect],
+    pub side: StackSide,
+    /// The active session (Swift `focusedIndex`).
+    pub focused: Option<usize>,
+    /// Remembered click order (Focus 1 `status_swap`, control room `swapped_rest`).
+    pub rest_hint: &'a [usize],
+    /// Kevin's grid choice, trimmed to the target screen.
+    pub grid: GridSpec,
+    pub excluded: &'a BTreeSet<String>,
+    /// Parking lot (Kevin 2026-11-06): name parts of worker sessions (`is_worker`).
+    pub worker_names: &'a [String],
+    pub lead_names: &'a [String],
+    /// Show the parking lot: tiled on the largest screen instead of parked behind the main window.
+    pub peek: bool,
+}
+
+impl<'a> PlanInput<'a> {
+    pub fn new(
+        mode: LayoutMode,
+        target: Target,
+        windows: &'a [TermWindow],
+        screens: &'a [Rect],
+        side: StackSide,
+    ) -> PlanInput<'a> {
+        PlanInput {
+            mode,
+            target,
+            windows,
+            screens,
+            side,
+            focused: None,
+            rest_hint: &[],
+            grid: DEFAULT_GRID,
+            excluded: &NO_EXCLUSIONS,
+            worker_names: &[],
+            lead_names: &[],
+            peek: false,
+        }
+    }
+}
+
+/// Target frames for arrangement + target, with parked windows and lists (plan 1d). Only windows with an AI session that
+/// can move and are not excluded get a place; all others stay where they are. Order stable by first sighting; the
+/// active session (`focused`) stands in the middle in Focus and Focus 2 and alone on the work screen in the control
+/// room. The arrangement only applies to `Single`; the control room is fixed.
+///
+/// Parking lot (Kevin 2026-11-06): worker windows that run or watch (`is_worker`, not done, no hidden question; never
+/// the main window) stay out of the arrangement and lie behind the main window without a list row, in `parked` and
+/// `lot`. With `peek` they are tiled on the largest screen instead (only `lot`); whoever gets no tile stays parked. A
+/// single-screen grid has no lot.
+pub fn plan_arrangement(p: &PlanInput) -> Arrangement {
+    let windows = p.windows;
+    let ordered = layout_candidates(windows, p.excluded);
+    let Some(&first) = ordered.first() else {
+        return Arrangement::default();
+    };
+    if p.screens.is_empty() {
+        return Arrangement::default();
+    }
+    let main = p.focused.filter(|f| ordered.contains(f)).unwrap_or(first);
+    let screen = |i: usize| p.screens[i.min(p.screens.len() - 1)];
+    let parks = |&i: &usize| {
+        i != main
+            && is_worker(&windows[i], p.worker_names, p.lead_names)
+            && !windows[i].is_ready()
+            && !windows[i].hidden_question()
+    };
+    let lot: Vec<usize> = ordered.iter().copied().filter(parks).collect();
+    let rest: Vec<usize> = rest_sequence(&ordered, main, p.rest_hint)
+        .into_iter()
+        .filter(|i| !lot.contains(i))
+        .collect();
+
+    let mut out = match p.target {
+        Target::ControlRoom {
+            work,
+            control,
+            flipped: true,
+            ..
+        } => Arrangement {
+            frames: flipped_arrange(screen(work), screen(control), main, &rest, windows),
+            main: Some(main),
+            ..Default::default()
+        },
+        Target::ControlRoom {
+            work,
+            control,
+            ready_side,
+            flipped: false,
+        } => Arrangement {
+            frames: ready_beside_arrange(
+                screen(work),
+                screen(control),
+                ready_side,
+                main,
+                &rest,
+                windows,
+            ),
+            main: Some(main),
+            ..Default::default()
+        },
+        Target::Single(s) => {
+            let vis = screen(s);
+            match p.mode {
+                LayoutMode::Reading => {
+                    focus_arrange(vis, p.side, main, &status_sequence(&rest, windows), windows)
+                }
+                LayoutMode::Focus2 => {
+                    // The sides follow the status, not clicks: the running ones by first sighting.
+                    let others: Vec<usize> = ordered
+                        .iter()
+                        .copied()
+                        .filter(|&i| i != main && !lot.contains(&i))
+                        .collect();
+                    focus2_arrange(vis, p.side, main, &others, windows)
+                }
+                // Fixed and by first sighting: a click rearranges nothing in the grid (Kevin 2026-09-18). No lot.
+                LayoutMode::Grid => {
+                    return Arrangement {
+                        frames: fixed_grid(vis, fitted_grid(p.grid, vis), &ordered),
+                        ..Default::default()
+                    };
+                }
+            }
+        }
+    };
+
+    if let Some(&main_rect) = out.frames.get(&main) {
+        let largest = first_max(0..p.screens.len(), |i| rect_area(p.screens[i]))
+            .map_or(main_rect, |i| p.screens[i]);
+        let tiles = if p.peek {
+            grid_arrange(largest, p.side, &lot)
+        } else {
+            BTreeMap::new()
+        };
+        for &i in &lot {
+            match tiles.get(&i) {
+                Some(&tile) => {
+                    out.frames.insert(i, tile);
+                }
+                None => {
+                    out.frames.insert(i, main_rect);
+                    out.parked.insert(i);
+                }
+            }
+        }
+        out.lot = lot.into_iter().collect();
+    }
+    out
+}
+
+/// Only the frames (`plan_arrangement`).
+pub fn plan_layout(p: &PlanInput) -> BTreeMap<usize, Rect> {
+    plan_arrangement(p).frames
+}
+
+#[cfg(test)]
+mod tests;
