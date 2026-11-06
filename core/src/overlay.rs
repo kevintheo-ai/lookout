@@ -838,7 +838,7 @@ impl MenuRow {
     }
 }
 
-/// The non-empty parts joined by " · ", at most `MENU_SUBTITLE_LIMIT` characters.
+/// The non-empty parts joined by " · ", at most `MENU_SUBTITLE_LIMIT` wide (`width_of`).
 fn one_line<'a>(parts: impl Iterator<Item = &'a String>) -> Option<String> {
     let line = parts
         .filter(|p| !p.is_empty())
@@ -848,14 +848,29 @@ fn one_line<'a>(parts: impl Iterator<Item = &'a String>) -> Option<String> {
     if line.is_empty() {
         return None;
     }
-    if graphemes(&line).count() <= MENU_SUBTITLE_LIMIT {
+    if graphemes(&line).map(width_of).sum::<usize>() <= MENU_SUBTITLE_LIMIT {
         return Some(line);
     }
-    let cut: usize = graphemes(&line)
-        .take(MENU_SUBTITLE_LIMIT - 1)
-        .map(str::len)
-        .sum();
-    Some(format!("{}…", line[..cut].trim_end()))
+    let (mut kept, mut used) = (String::new(), 0);
+    for g in graphemes(&line) {
+        used += width_of(g);
+        if used > MENU_SUBTITLE_LIMIT - 1 {
+            break;
+        }
+        kept.push_str(g);
+    }
+    Some(format!("{}…", kept.trim_end()))
+}
+
+/// Width of a character in Latin letters: East Asian wide letters and emoji take about two (review quick 2026-11-06).
+/// ponytail: the main Unicode blocks, no font metrics in the core; measure in the macOS layer if a script still wraps.
+fn width_of(g: &str) -> usize {
+    let wide = g.chars().next().is_some_and(|c| {
+        matches!(u32::from(c),
+            0x1100..=0x115F | 0x2E80..=0xA4CF | 0xAC00..=0xD7A3 | 0xF900..=0xFAFF | 0xFE30..=0xFE4F
+            | 0xFF00..=0xFF60 | 0xFFE0..=0xFFE6 | 0x1F300..=0x1FAFF | 0x20000..=0x3FFFD)
+    });
+    if wide { 2 } else { 1 }
 }
 
 /// The menu row of a window: the words of its label (`label_content`), arranged for the menu.

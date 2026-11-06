@@ -8,18 +8,20 @@ use std::io::Write;
 pub const LOG_ROTATE_BYTES: u64 = 5 << 20;
 
 /// Appends `message` as one line "yyyy-MM-dd HH:mm:ss  message" (local time; with the date since review 2026-09-25:
-/// without it an endless loop from before v3 looked current). If the file has reached `rotate_at` bytes, a new one
+/// without it an endless loop from before v3 looked current; line breaks in it become spaces, one event stays one line).
+/// Callers write one at a time (`lookout_macos::log` holds a lock). If the file has reached `rotate_at` bytes, a new one
 /// starts first and the old one becomes `.1`. A failed rotation keeps appending to the old file, never overwrites it
 /// (review quick 2026-09-25). Errors are swallowed: logging never stops the app.
 pub fn append_log(message: &str, path: &str, rotate_at: u64) {
     let line = format!(
-        "{}  {message}\n",
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        "{}  {}\n",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+        message.replace(['\n', '\r'], " ")
     );
     if fs::metadata(path).is_ok_and(|m| m.len() >= rotate_at) {
-        let old = format!("{path}.1");
-        let _ = fs::remove_file(&old);
-        let _ = fs::rename(path, &old);
+        // `rename` replaces `.1` in one step (POSIX; Windows with MOVEFILE_REPLACE_EXISTING): if it fails, the old
+        // generation stays. Swift had to remove it first, its moveItem never overwrites.
+        let _ = fs::rename(path, format!("{path}.1"));
     }
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = f.write_all(line.as_bytes());
@@ -82,6 +84,38 @@ mod tests {
             assert!(
                 kept.contains("alt eins") && kept.contains("neu"),
                 "Rotation gescheitert: Historie bleibt, bekam {kept}"
+            );
+        }
+
+        // One event, one line: a line break in a name or title would forge a line of its own (review quick 2026-11-06).
+        let single = dir.join("Single.log").to_string_lossy().into_owned();
+        append_log("eins\nzwei\rdrei", &single, 1 << 20);
+        let text = fs::read_to_string(&single).unwrap();
+        assert!(
+            text.lines().count() == 1 && text.ends_with("  eins zwei drei\n"),
+            "eine Zeile, bekam {text:?}"
+        );
+
+        // The rename fails although the old generation could be removed (the log is immutable): `.1` stays (review
+        // quick 2026-11-06: before, it was removed first and lost).
+        #[cfg(target_os = "macos")]
+        {
+            let locked = dir.join("Locked.log").to_string_lossy().into_owned();
+            fs::write(&locked, "x".repeat(60)).unwrap();
+            fs::write(format!("{locked}.1"), "archiv").unwrap();
+            let flags = |f: &str| {
+                std::process::Command::new("/usr/bin/chflags")
+                    .args([f, &locked])
+                    .status()
+                    .unwrap()
+            };
+            assert!(flags("uchg").success());
+            append_log("neu", &locked, 50);
+            assert!(flags("nouchg").success());
+            assert_eq!(
+                fs::read_to_string(format!("{locked}.1")).unwrap(),
+                "archiv",
+                "die alte Generation bleibt"
             );
         }
         let _ = fs::remove_dir_all(&dir);

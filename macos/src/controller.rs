@@ -264,7 +264,8 @@ pub(crate) struct App {
     pub(crate) arrangement_ids: Vec<u64>,
     /// Where a window stood before Lookout parked it (R2-7), and a way back that rides with the next arrangement.
     park_origin: BTreeMap<u64, Rect>,
-    pending_restore: Option<(u64, Rect)>,
+    /// One way back per excluded window (review quick 2026-11-06: one slot lost the first of two exclusions in a pause).
+    pending_restore: BTreeMap<u64, Rect>,
     /// Last unique window number of the middle (R2-1).
     main_number: Option<(u64, i64)>,
     /// Peek at the parking lot (Ctrl+Opt+4 or the menu, Kevin 2026-11-06): the lot's windows tiled on the largest screen.
@@ -278,6 +279,8 @@ pub(crate) struct App {
     /// Focus reports do not count until that focus is back: raising tiles and moving them back makes a tile the key
     /// window for a moment, and its late report put a worker into the middle (live test 2026-11-06 18:57).
     focus_quiet: bool,
+    /// Counts the quiet periods: a timer ends only its own (`end_focus_quiet_after`).
+    quiet_gen: u64,
     observers: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
 }
 
@@ -447,13 +450,14 @@ impl App {
             arrangement: Arrangement::default(),
             arrangement_ids: vec![],
             park_origin: BTreeMap::new(),
-            pending_restore: None,
+            pending_restore: BTreeMap::new(),
             main_number: None,
             peek: false,
             peek_frozen: false,
             click_monitor: None,
             focus_back: false,
             focus_quiet: false,
+            quiet_gen: 0,
             observers: vec![],
         }
     }
@@ -1105,12 +1109,21 @@ impl App {
     // ---------- Arranging ----------
 
     pub(crate) fn apply_layout(&mut self) {
+        // The pause moves nothing, also not on a screen change (review quick 2026-11-06; Swift arranged there too).
+        if self.paused {
+            return;
+        }
         // During an own ride the remembered frames are wrong: note it and arrange afterwards, else a window jumped back
         // to its start and glided anew (GLM + Kimi 2026-09-25).
         if !self.layout_gate.event(self.self_move) {
             return;
         }
         // The open peek stands still (Kevin 2026-11-06 evening): its tiles were placed once, nothing moves until it ends.
+        // Are its windows all gone, it ends: else it waited without tiles, focus reports ignored (review quick
+        // 2026-11-06).
+        if self.peek && self.peek_frozen && self.lot_indices().is_empty() {
+            self.end_peek(PeekEnd::Only);
+        }
         if !self.trusted || self.windows.is_empty() || (self.peek && self.peek_frozen) {
             return;
         }
@@ -1146,22 +1159,23 @@ impl App {
         // R2-7: a parked window Kevin just excluded rides once to its last visible place, in the same ride (a second one
         // replaced the first). Only while it is excluded: taken back in, it has a planned place; two targets in one
         // ride made it twitch (review quick 2026-09-26, Kimi).
-        if let Some((id, frame)) = self.pending_restore.take()
-            && let Some(idx) = index_of_window(id, &self.windows)
-            && !arr.frames.contains_key(&idx)
-            && frames_differ(
-                self.windows[idx].frame,
-                frame,
-                lookout_core::motion::FRAME_TOLERANCE,
-            )
-        {
-            let w = &self.windows[idx];
-            moves.push(WindowMove {
-                id,
-                origin: ax_origin(&w.bundle_id),
-                from: w.frame,
-                to: frame,
-            });
+        for (id, frame) in std::mem::take(&mut self.pending_restore) {
+            if let Some(idx) = index_of_window(id, &self.windows)
+                && !arr.frames.contains_key(&idx)
+                && frames_differ(
+                    self.windows[idx].frame,
+                    frame,
+                    lookout_core::motion::FRAME_TOLERANCE,
+                )
+            {
+                let w = &self.windows[idx];
+                moves.push(WindowMove {
+                    id,
+                    origin: ax_origin(&w.bundle_id),
+                    from: w.frame,
+                    to: frame,
+                });
+            }
         }
         let focus_back = std::mem::take(&mut self.focus_back);
         let main_id = arr
@@ -1235,9 +1249,12 @@ impl App {
         );
     }
 
-    /// Focus reports count again a moment after the focus is back (`focus_quiet`).
-    fn end_focus_quiet_soon() {
-        on_main_after(0.5, || with_app(|a| a.focus_quiet = false));
+    /// Focus reports wait (`focus_quiet`) from now on. A ride replaced by another never reports its end: they count again
+    /// after 3 s at the latest.
+    fn start_focus_quiet(&mut self) {
+        self.focus_quiet = true;
+        self.quiet_gen += 1;
+        end_focus_quiet_after(self.quiet_gen, 3.0);
     }
 
     /// The ride is over: take the MEASURED frames, not the targets (a clamped window would otherwise glow with a wrong
@@ -1252,7 +1269,7 @@ impl App {
         self.self_move = false;
         self.move_epoch += 1;
         if focus_back {
-            App::end_focus_quiet_soon();
+            end_focus_quiet_after(self.quiet_gen, 0.5);
         }
         for (id, frame) in measured {
             if let Some(idx) = index_of_window(id, &self.windows) {
@@ -1296,6 +1313,7 @@ impl App {
 
     /// A window to the front with focus, without a ride (the peek ended and nothing had to move).
     fn focus_window(&self, id: u64, pid: Pid) {
+        let quiet = self.quiet_gen;
         ax_queue().exec_async(move || {
             ax::raise(id);
             ax::set_main(id);
@@ -1305,7 +1323,7 @@ impl App {
                 vec![pid]
             };
             on_main(move || with_app(move |a| a.activate_refused(&refused)));
-            App::end_focus_quiet_soon();
+            end_focus_quiet_after(quiet, 0.5);
         });
     }
 
@@ -1393,9 +1411,7 @@ impl App {
             return;
         }
         self.focus_back = true;
-        self.focus_quiet = true;
-        // A ride replaced by another never reports its end: the reports count again after 3 s at the latest.
-        on_main_after(3.0, || with_app(|a| a.focus_quiet = false));
+        self.start_focus_quiet();
         match how {
             // The normal click path: it becomes the main window, the old one swaps out; `apply_layout` follows.
             PeekEnd::Into(id) if self.main != Some(id) => self.on_focused(Some(id), None, None),
@@ -1422,13 +1438,29 @@ impl App {
         if !self.peek {
             return;
         }
-        // The planned tiles, not the windows' frames: during the ride onto the tiles the frames are still the old
-        // ones, and parked windows share the middle's frame (a click there picked some worker).
+        // Another app's window under the click took it, even over a tile: Kevin switched to Chrome (review quick
+        // 2026-11-06). Front to back, AX coordinates; Lookout's own panels are click-through.
+        let own = std::process::id() as Pid;
+        let terminals: BTreeSet<Pid> = self.windows.iter().map(|w| w.owner_pid).collect();
+        let y = screens::primary_height() - p.y;
+        let elsewhere = ax::on_screen_windows(None)
+            .and_then(|list| {
+                list.into_iter().find(|w| {
+                    w.pid != own
+                        && p.x >= w.rect.min_x()
+                        && p.x < w.rect.max_x()
+                        && y >= w.rect.min_y()
+                        && y < w.rect.max_y()
+                })
+            })
+            .is_some_and(|w| !terminals.contains(&w.pid));
+        // Terminal windows count by the planned tiles, not their frames: during the ride onto the tiles the frames are
+        // still the old ones, and parked windows share the middle's frame (a click there picked some worker).
         let arr = &self.arrangement;
         let tile = arr
             .lot
             .iter()
-            .filter(|i| !arr.parked.contains(i))
+            .filter(|i| !elsewhere && !arr.parked.contains(i))
             .find(|i| {
                 arr.frames.get(i).is_some_and(|r| {
                     p.x >= r.min_x() && p.x < r.max_x() && p.y >= r.min_y() && p.y < r.max_y()
@@ -1624,7 +1656,7 @@ impl App {
             && (self.parked_indices().contains(&idx) || self.lot_indices().contains(&idx))
             && let Some(&origin) = self.park_origin.get(&self.windows[idx].id)
         {
-            self.pending_restore = Some((self.windows[idx].id, origin));
+            self.pending_restore.insert(self.windows[idx].id, origin);
         }
         if !self.paused {
             self.apply_layout();
@@ -1702,8 +1734,7 @@ impl App {
             self.main = Some(id);
             self.focused = Some(id);
             self.focus_back = true;
-            self.focus_quiet = true;
-            on_main_after(3.0, || with_app(|a| a.focus_quiet = false));
+            self.start_focus_quiet();
         }
         if !self.paused {
             self.apply_layout();
@@ -1966,6 +1997,19 @@ fn tick_work(t: TickInput, engines: &Mutex<Engines>) -> TickOutput {
         trusted,
         epoch: t.epoch,
     }
+}
+
+/// Ends the quiet period `generation` (`focus_quiet`) after `seconds`, unless a newer one started meanwhile (review quick
+/// 2026-11-06: an older timer ended a newer period early, and a late focus report of a tile could put a worker into the
+/// middle). Any thread.
+fn end_focus_quiet_after(generation: u64, seconds: f64) {
+    on_main_after(seconds, move || {
+        with_app(move |a| {
+            if a.quiet_gen == generation {
+                a.focus_quiet = false;
+            }
+        })
+    });
 }
 
 /// The title ping (Mapper.swift `pingMap`, core `Ping`): a unique marker as OSC-0 title on each due process's tty, then

@@ -496,15 +496,17 @@ fn rebuild(a: &mut App) {
         } else {
             String::new()
         };
-        let it = item(a, m.label(), Some(sel!(selectMode:)), &key);
+        let grid = if m == LayoutMode::Grid { vis } else { None };
+        // An item with a submenu only opens it, its action never comes: the grid is chosen in there (review quick
+        // 2026-11-06).
+        let action = grid.is_none().then_some(sel!(selectMode:));
+        let it = item(a, m.label(), action, &key);
         it.setKeyEquivalentModifierMask(ctrl_opt());
         it.setState(on_off(m == a.mode && !control_room));
         it.setEnabled(!control_room);
         show_image(&it, symbol(mode_symbol(m)));
         keyed(&it, &format!("{PREVIEW_MODE}{}", m.raw()));
-        if m == LayoutMode::Grid
-            && let Some(v) = vis
-        {
+        if let Some(v) = grid {
             // The grid in effect stands beside it: Ctrl+Opt+3 takes that one.
             set_badge(&it, &fitted_grid(a.grid, v).label());
             let hotkey = if a.cfg.hotkeys {
@@ -593,9 +595,11 @@ fn add_sessions(a: &App, menu: &NSMenu) {
         }
         let rest = rows.len() - shown;
         if rest > 0 {
-            // The rest of the lot stands in the peek; the others had no room left.
+            // The rest of the lot stands in the peek; the others had no room left. With the peek open the rest is there
+            // already, and a click would close it (review quick 2026-11-06).
             let it = if on_lot {
                 let it = peek_item(a, &more_rows_text(rest), lot.len());
+                it.setEnabled(!a.peek && !a.paused);
                 show_image(&it, dot(a, None));
                 it
             } else {
@@ -698,7 +702,8 @@ fn more_menu(a: &App) -> Retained<NSMenu> {
     let (shown, stale) = windowless_sessions(&a.live_sessions, &in_windows, now());
     if !shown.is_empty() || stale > 0 {
         let list = submenu(a);
-        for s in shown.iter().take(8) {
+        let room = rows_shown(shown.len(), 8);
+        for s in &shown[..room] {
             let mark = if s.waiting {
                 "?"
             } else if s.ready {
@@ -712,6 +717,10 @@ fn more_menu(a: &App) -> Retained<NSMenu> {
                 .and_then(|d| d.name.clone())
                 .unwrap_or_else(|| s.name.clone());
             list.addItem(&disabled(a, &format!("{mark} {}: {name}", s.engine.raw())));
+        }
+        // The badge counts them all: say how many the list leaves out (review quick 2026-11-06).
+        if room < shown.len() {
+            list.addItem(&disabled(a, &more_rows_text(shown.len() - room)));
         }
         if stale > 0 {
             list.addItem(&disabled(

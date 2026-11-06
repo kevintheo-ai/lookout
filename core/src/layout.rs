@@ -1226,14 +1226,17 @@ pub fn plan_arrangement(p: &PlanInput) -> Arrangement {
     if let Some(&main_rect) = out.frames.get(&main) {
         let largest = first_max(0..p.screens.len(), |i| rect_area(p.screens[i]))
             .map_or(main_rect, |i| p.screens[i]);
-        let (tiles, list) = if p.peek {
+        let peeking = p.peek && !lot.is_empty();
+        let (tiles, list) = if peeking {
             peek_layout(largest, p.side, &lot)
         } else {
             (BTreeMap::new(), None)
         };
-        // The peek covers its screen: the arrangement's own lists would lie under the tiles; only the peek's shows.
-        if p.peek {
-            out.lists = list.into_iter().collect();
+        // The peek covers its screen: the arrangement's own lists there would lie under the tiles, only the peek's shows.
+        // Lists on other screens stay, and an empty lot changes nothing (review quick 2026-11-06).
+        if peeking {
+            out.lists.retain(|l| !l.rect.intersects(largest));
+            out.lists.extend(list);
         }
         for &i in &lot {
             match tiles.get(&i) {

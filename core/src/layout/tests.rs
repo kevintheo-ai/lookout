@@ -2003,6 +2003,46 @@ fn parking_focus2_mac_book_one_rail() {
     assert_roles(&a, 11, MACBOOK);
 }
 
+/// The peek covers only its own screen (review quick 2026-11-06): the arrangement's list on the MacBook stays while the
+/// tiles stand on the LG, and with an empty lot the plan is the same with or without the peek.
+#[test]
+fn parking_peek_keeps_lists_it_does_not_cover() {
+    let mut w = eleven_sessions();
+    for i in [3, 4] {
+        w[i].sessions[0].name = format!("worker-{i}");
+    }
+    let workers = names(&["Worker"]);
+    let base = PlanInput {
+        focused: Some(0),
+        worker_names: &workers,
+        ..input(Focus2, Single(1), &w, Right)
+    };
+    let parked = plan_arrangement(&base);
+    let peek = plan_arrangement(&PlanInput { peek: true, ..base });
+    assert!(
+        peek.lot.len() == 2 && peek.lot.iter().all(|i| OLED.contains(peek.frames[i])),
+        "the two workers as tiles on the LG"
+    );
+    assert!(
+        !parked.lists.is_empty() && peek.lists == parked.lists,
+        "the MacBook's list stays: {:?}",
+        entries(&peek)
+    );
+    let nobody = names(&["nobody"]);
+    let quiet = PlanInput {
+        worker_names: &nobody,
+        ..base
+    };
+    assert_eq!(
+        plan_arrangement(&PlanInput {
+            peek: true,
+            ..quiet
+        }),
+        plan_arrangement(&quiet),
+        "an empty lot changes nothing"
+    );
+}
+
 #[test]
 fn parking_peek_tiles_the_largest_screen() {
     let t0 = 1000.0;

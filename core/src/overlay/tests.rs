@@ -776,6 +776,18 @@ fn test_menu_row() {
             && graphemes(&sub).count() <= MENU_SUBTITLE_LIMIT,
         "{sub}"
     );
+    // Chinese or Japanese letters are about twice as wide: half as many fit (review quick 2026-11-06).
+    let wide = MenuRow {
+        name: "x".into(),
+        project: None,
+        state: vec!["汉".repeat(40)],
+        duration: None,
+        tone: LabelTone::Running,
+    };
+    assert_eq!(
+        wide.subtitle(&[]).as_deref(),
+        Some(format!("{}…", "汉".repeat(22)).as_str())
+    );
 }
 
 /// Sections of the menu (design A): fixed order, empty ones left out, the count in the head (AppKit draws no badge on

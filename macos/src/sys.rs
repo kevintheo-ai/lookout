@@ -123,14 +123,37 @@ pub fn process_alive(pid: Pid) -> bool {
 /// `O_NOCTTY` beyond Swift: Lookout has no terminal of its own, and opening one without it may make it Lookout's
 /// controlling terminal (its hangup would then end Lookout). std adds `O_CLOEXEC`: other threads start commands.
 pub fn write_osc_title(tty: &str, title: &str) -> bool {
-    use std::io::Write;
+    use std::io::{ErrorKind, Write};
+    use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
+    let Ok(mut f) = std::fs::OpenOptions::new()
         .write(true)
         .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
         .open(format!("/dev/{tty}"))
-        .and_then(|mut f| f.write(format!("\x1b]0;{title}\x07").as_bytes()))
-        .is_ok_and(|n| n > 0)
+    else {
+        return false;
+    };
+    let seq = format!("\x1b]0;{title}\x07");
+    let mut rest = seq.as_bytes();
+    // A full output queue may take only a part: then wait briefly for room and write the rest, else the terminal would
+    // read the program's next output as title text up to the next BEL (review quick 2026-11-06; Swift wrote once).
+    // Nothing taken at all is harmless: false. ponytail: 5 × 20 ms at most, on the work queue.
+    for _ in 0..5 {
+        match f.write(rest) {
+            Ok(n) if n == rest.len() => return true,
+            Ok(n) => rest = &rest[n..],
+            Err(e) if e.kind() == ErrorKind::WouldBlock && rest.len() < seq.len() => {}
+            Err(_) => return false,
+        }
+        let mut pfd = libc::pollfd {
+            fd: f.as_raw_fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd for an open descriptor; waits at most 20 ms.
+        unsafe { libc::poll(&mut pfd, 1, 20) };
+    }
+    false
 }
 
 /// Screen locked (`CGSessionCopyCurrentDictionary`, key `CGSSessionScreenIsLocked`)? Then AX still lists the terminal
