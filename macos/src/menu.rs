@@ -516,8 +516,10 @@ fn rebuild(a: &mut App) {
         }
         menu.addItem(&it);
     }
-    // Parking lot (Kevin 2026-11-06), only with worker names; also in the control room. Check mark = peeking.
+    // Parking lot (Kevin 2026-11-06), only with worker names; also in the control room. Check mark = peeking. Its own
+    // block, as in the draft.
     if a.has_lot() {
+        menu.addItem(&NSMenuItem::separatorItem(a.mtm));
         let n = a.lot_indices().len();
         let it = peek_item(a, tr("Parkplatz anzeigen", "Show parking lot"), n);
         it.setState(on_off(a.peek));
