@@ -216,7 +216,7 @@ pub fn run_command(
                 Some(s) => s
                     .code()
                     .filter(|c| accept.contains(c))
-                    .and_then(|_| std::fs::read(&out_path).ok()),
+                    .and_then(|_| read_capped(&out_path, path, args, log)),
                 None => {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -236,6 +236,33 @@ pub fn run_command(
     };
     let _ = std::fs::remove_file(&out_path);
     result
+}
+
+/// Most output a command may give: `claude agents`, `nettop` and `lsof` give kilobytes (review quick 2026-11-06,
+/// Codex: it was read without a limit).
+const MAX_OUTPUT: u64 = 16 << 20;
+
+fn read_capped(
+    out_path: &std::path::Path,
+    path: &str,
+    args: &[&str],
+    log: &mut dyn FnMut(&str),
+) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut data = vec![];
+    std::fs::File::open(out_path)
+        .ok()?
+        .take(MAX_OUTPUT + 1)
+        .read_to_end(&mut data)
+        .ok()?;
+    if data.len() as u64 > MAX_OUTPUT {
+        log(&format!(
+            "Watcher: {path} {} lieferte mehr als 16 MB — verworfen",
+            args.join(" ")
+        ));
+        return None;
+    }
+    Some(data)
 }
 
 /// A fresh output file only this user can read (session lists are private), created exclusively so nobody can plant a

@@ -4206,6 +4206,27 @@ fn run_command_limits_and_exit_codes() {
     assert!(lines[0].starts_with("Watcher: /nonexistent/x nicht startbar — "));
 }
 
+/// review quick 2026-11-06 (Codex): the output was read without a limit; a command that floods it is a failure now.
+#[test]
+fn run_command_refuses_a_flood() {
+    let none: BTreeMap<String, String> = BTreeMap::new();
+    let mut lines = vec![];
+    let out = run_command(
+        "/bin/sh",
+        &["-c", "head -c 17000000 /dev/zero"],
+        &none,
+        &[],
+        10.0,
+        &[0],
+        &mut |l| lines.push(l.to_owned()),
+    );
+    assert!(out.is_none(), "over 16 MB: no result");
+    assert_eq!(
+        lines,
+        ["Watcher: /bin/sh -c head -c 17000000 /dev/zero lieferte mehr als 16 MB — verworfen"]
+    );
+}
+
 /// review quick 2026-11-06 (GLM): a grandchild that inherits the output kept a pipe open after the command ended; the
 /// reading blocked, the run counted as a timeout, and its reader thread leaked for good.
 #[test]
