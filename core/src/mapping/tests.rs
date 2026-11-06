@@ -914,3 +914,29 @@ fn restored_titles_carry_no_control_characters() {
         "the folder fallback too"
     );
 }
+
+/// review quick 2026-11-06 (Muse): a process the name matching found kept the retry entry of an earlier miss and was
+/// pinged again when that came due; its tab title flashed the marker although the matching had settled.
+#[test]
+fn mapped_processes_leave_the_ping_queue() {
+    let t = 1_000_000.0;
+    let missed = BTreeMap::from([(
+        7,
+        PingState {
+            attempts: 1,
+            last_try: t - 100.0,
+        },
+    )]);
+    let s = ping_schedule(&[7], &BTreeSet::from([7]), &missed, false, t, true, true);
+    assert!(
+        s.due.is_empty() && s.pending.is_empty(),
+        "matched by name: no more pings"
+    );
+    let s = ping_schedule(&[7], &BTreeSet::from([7]), &missed, true, t, true, true);
+    assert_eq!(
+        s.due,
+        BTreeSet::from([7]),
+        "a new window still checks it again"
+    );
+    assert_eq!(s.pending[&7].attempts, 1, "keeping its count of misses");
+}

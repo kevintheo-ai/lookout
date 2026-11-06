@@ -135,7 +135,8 @@ pub fn last_path_component(path: &str) -> &str {
 }
 
 /// AI CLI with a real terminal? Only such a process can stand in a terminal window. The name is the last path part of
-/// the command as ps shows it (bare name, path or whole command line).
+/// `row.comm`, which is the executable's path or bare name, never a command line with arguments: the platform layer fills
+/// it from the process's own path (review quick 2026-11-06, Codex: with arguments "tail -f /tmp/claude" would count).
 pub fn engine_of(row: &PsRow) -> Option<Engine> {
     if row.tty.starts_with("ttys") {
         Engine::from_raw(last_path_component(&row.comm))
@@ -265,9 +266,11 @@ pub fn ping_schedule(
     windows_readable: bool,
 ) -> PingSchedule {
     let live: BTreeSet<Pid> = pids.iter().copied().collect();
+    // A process matched in the meantime (by name) leaves the queue; it kept its retry entry and was pinged again,
+    // flashing the marker in a settled tab (review quick 2026-11-06, Muse; Swift kept it).
     let mut next: BTreeMap<Pid, PingState> = pending
         .iter()
-        .filter(|(pid, _)| live.contains(pid))
+        .filter(|(pid, _)| live.contains(pid) && (new_window || !mapped.contains(pid)))
         .map(|(pid, s)| (*pid, *s))
         .collect();
     for &pid in pids {

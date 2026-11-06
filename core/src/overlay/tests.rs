@@ -1455,4 +1455,15 @@ fn glow_breathes_and_fades() {
             && alpha(dying + GLOW_FADE_OUT + 0.01, Some(dying), 0.0).is_none(),
         "faded out after GLOW_FADE_OUT: gone"
     );
+    // review quick 2026-11-06 (Muse): the wall clock can step back (manual or network time correction). Smoothstep
+    // below 0 gave a frame brighter than ever (t = -1: 5x), the fade-out above its start.
+    assert_eq!(
+        alpha(born - 0.3, None, 0.0),
+        Some(0.0),
+        "clock back while fading in"
+    );
+    assert!(
+        alpha(dying - 0.3, Some(dying), 0.0).unwrap() <= GLOW_ALPHA_BASE + GLOW_ALPHA_SWING,
+        "clock back while fading out: never above the breath"
+    );
 }

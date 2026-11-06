@@ -40,8 +40,10 @@ pub fn glow_alpha(now: Time, born_at: Time, dying_at: Option<Time>, phase: f64) 
     let breath = GLOW_ALPHA_BASE
         + GLOW_ALPHA_SWING
             * (((now - REFERENCE_DATE) / GLOW_BREATH_PERIOD + phase) * 2.0 * PI).sin();
+    // Both clamped below at 0: the wall clock can step back, and smoothstep below 0 is brighter than ever (review quick
+    // 2026-11-06, Muse; Swift clamped only above).
     if let Some(dying_at) = dying_at {
-        let t = (now - dying_at) / GLOW_FADE_OUT;
+        let t = ((now - dying_at) / GLOW_FADE_OUT).max(0.0);
         return if t >= 1.0 {
             None
         } else {
@@ -49,7 +51,7 @@ pub fn glow_alpha(now: Time, born_at: Time, dying_at: Option<Time>, phase: f64) 
         };
     }
     // Soft fade-in (smoothstep), no linear jolt.
-    let t = ((now - born_at) / GLOW_FADE_IN).min(1.0);
+    let t = ((now - born_at) / GLOW_FADE_IN).clamp(0.0, 1.0);
     Some(breath * t * t * (3.0 - 2.0 * t))
 }
 
