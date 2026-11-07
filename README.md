@@ -7,6 +7,8 @@ app for exactly that.
 It sits in the menu bar, lines up the terminal windows of your Claude Code, Codex, Grok and Kimi sessions in
 Warp or Ghostty, and shows which session is working, which one is done and which one is waiting for you.
 
+Background story: [Why I run my company with AI agents](https://kevintheo.com/field-report/)
+
 ![Lookout in action: a finished session gets a mint frame and glides to the left, a session with a question box gets an amber frame and goes first, one click brings it to the middle, and a session that only waits for its CI run turns grey](docs/lookout-demo.gif)
 
 *Animation with demo sessions. It follows Lookout's real rules, just faster.*
@@ -341,3 +343,5 @@ Bedienungshilfen freigeben). Die Sprache folgt dem Mac; fest auf Deutsch mit `{"
 
 MIT, see [LICENSE](LICENSE). Lookout is an independent project and not affiliated with Anthropic, OpenAI,
 xAI, Moonshot AI, Warp or Ghostty. All product names are trademarks of their respective owners.
+
+Kevin Theo ([LinkedIn](https://www.linkedin.com/in/kevintheo) · [kevintheo.com](https://kevintheo.com))
