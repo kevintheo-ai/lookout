@@ -2102,6 +2102,135 @@ fn test_lead_done_read() {
     );
 }
 
+/// Kevin 2026-11-07 (screenshot 12:42, X-Redaktion): "? … Repost und Like (Karten bereit)" is done on the card page,
+/// not in the window: it waits for Kevin until he has read it, then the window watches again (a worker parks).
+#[test]
+fn test_ask_until_read() {
+    let names = ["Kartenseite".to_owned()];
+    let answered = 1_790_700_000.0;
+    let read = BTreeMap::from([("claude:x".to_owned(), answered + 30.0)]);
+    let unread = BTreeMap::new();
+    let card = "Zwei Karten liegen bereit.\n? Lookout: Bitte Repost und Like (Kartenseite)";
+    let marked = |text: &str, seen: &BTreeMap<String, Time>| {
+        let mut s = vec![background_session(
+            "claude:x",
+            "AgentOperator · X-Redaktion",
+            text,
+            false,
+        )];
+        s[0].digest.as_mut().unwrap().answer_at = Some(answered);
+        mark_read_asks(&mut s, &names, &[], seen);
+        s.remove(0)
+    };
+    let status = |s: &Session| s.digest.as_ref().unwrap().line(&[]).map(|l| l.status);
+    assert_eq!(
+        status(&marked(card, &unread)),
+        Some(LineStatus::Ask),
+        "unread: asks"
+    );
+    assert_eq!(
+        status(&marked(card, &read)),
+        Some(LineStatus::Nothing),
+        "read: needs nothing"
+    );
+    assert_eq!(
+        status(&marked(
+            "? Lookout: Bitte hier entscheiden, dann Kartenseite",
+            &read
+        )),
+        Some(LineStatus::Ask),
+        "'here': still a request in this window"
+    );
+    assert_eq!(
+        status(&marked("? Lookout: Bitte entscheiden (A oder B)", &read)),
+        Some(LineStatus::Ask),
+        "a request without the card page stays, read or not"
+    );
+    // review quick 2026-11-07 (Grok), real lines of the last days: only "(Kartenseite)" at the end counts.
+    for here in [
+        "? Lookout: Bitte die Kartenseite freigeben",
+        "? Lookout: Bitte Kartenseite mit k.theobald@eliant-int.com als Editor teilen und 1, 2 oder 3 für Postiz wählen",
+        "? Lookout: Bitte die offenen Karten auf der Kartenseite posten",
+    ] {
+        assert_eq!(
+            status(&marked(here, &read)),
+            Some(LineStatus::Ask),
+            "{here}: the card page only mentioned, stays"
+        );
+    }
+    for there in [
+        "? Lookout: Bitte die Antwort an Christopher Owen posten (Kartenseite)",
+        "? Lookout: Bitte Repost (kartenseite) ",
+        "? Lookout: Bitte (Kartenseite)",
+    ] {
+        assert_eq!(
+            status(&marked(there, &read)),
+            Some(LineStatus::Nothing),
+            "{there}: ends with the card page, read"
+        );
+    }
+    // review quick 2026-11-07 (GLM): in the window named in `other_window_names` itself a request stays a request.
+    let mut key = vec![background_session(
+        "claude:x",
+        "Ultivor · Key account",
+        "? Lookout: Bitte Freigabe im Key account, dann Like (Kartenseite)",
+        false,
+    )];
+    key[0].digest.as_mut().unwrap().answer_at = Some(answered);
+    let others = ["key account".to_owned()];
+    key[0].digest.as_mut().unwrap().name = Some("Ultivor · Key account".into());
+    mark_read_asks(&mut key, &names, &others, &read);
+    assert_eq!(
+        key[0]
+            .digest
+            .as_ref()
+            .unwrap()
+            .line(&others)
+            .map(|l| l.status),
+        Some(LineStatus::Ask),
+        "the key account's own request stays, read or not"
+    );
+    let mut again = marked(card, &read);
+    mark_read_asks(std::slice::from_mut(&mut again), &names, &[], &unread);
+    assert_eq!(
+        status(&again),
+        Some(LineStatus::Ask),
+        "decided anew each tick"
+    );
+    let mut early = marked(card, &read);
+    early.digest.as_mut().unwrap().answer_at = Some(answered + 60.0);
+    mark_read_asks(std::slice::from_mut(&mut early), &names, &[], &read);
+    assert_eq!(
+        status(&early),
+        Some(LineStatus::Ask),
+        "seen before this answer: not read"
+    );
+
+    // The whole tick order: watcher, then the line pass.
+    let rows = background_fixture();
+    let t0 = answered + 10.0;
+    let mut watch = watch_with(
+        fixed(Some(BTreeMap::new())),
+        fixed(Some(pids(&[542]))),
+        &[],
+        silent(),
+    );
+    let mut tick = |seen: &BTreeMap<String, Time>, dt: f64| {
+        let s = marked(card, seen);
+        let out = watch.adjust(&[s], &rows, t0 + dt, 90.0, seen);
+        apply_lookout_lines(out, &[]).remove(0)
+    };
+    tick(&unread, 0.0);
+    tick(&unread, 96.0);
+    let before = tick(&unread, 99.0);
+    assert!(before.waiting && before.ready, "unread: waits for you");
+    let after = tick(&read, 102.0);
+    assert!(
+        after.watching && !after.ready && !after.waiting,
+        "read: watching again, the radar runs"
+    );
+}
+
 /// Kevin 2026-10-04 (screenshot 22:38): the answer to Kevin's own message is done until he had its window in front of
 /// him once after it; then it counts like an answer he did not start (watching, if it wants nothing from him).
 #[test]

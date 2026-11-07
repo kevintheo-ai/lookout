@@ -3,9 +3,11 @@
 //! 2026-10-10). The patterns are copied verbatim from Watcher.swift; the measurements behind them are in the comments
 //! there and in docs/TECH.md (R11-R13).
 
+use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use super::regex::{Regex, escape};
+use super::watch::answer_seen;
 use crate::model::{
     Digest, Engine, LineStatus, LookoutLine, Session, Time, drop_first_character, fold_case,
     is_whitespace, trim_ws,
@@ -178,16 +180,14 @@ impl Digest {
             return None;
         }
         let l = lookout_line(self.text.as_deref()?)?;
-        // Foundation's `range(of:options: .caseInsensitive)`; an empty name is never found.
-        let named = |s: &str| {
-            other_window_names
-                .iter()
-                .any(|n| !n.is_empty() && fold_case(s).contains(&fold_case(n)))
-        };
-        if l.status != LineStatus::Ask
-            || !named(&l.reason)
-            || has(&HERE, &l.reason)
-            || named(self.name.as_deref().unwrap_or(""))
+        let named = |s: &str| names_in(other_window_names, s);
+        // A read request for a place outside the terminal (`mark_read_asks`) needs nothing here any more.
+        let read_elsewhere = l.status == LineStatus::Ask && self.ask_read;
+        if !read_elsewhere
+            && (l.status != LineStatus::Ask
+                || !named(&l.reason)
+                || has(&HERE, &l.reason)
+                || named(self.name.as_deref().unwrap_or("")))
         {
             return Some(l);
         }
@@ -195,6 +195,51 @@ impl Digest {
             status: LineStatus::Nothing,
             reason: l.reason,
         })
+    }
+}
+
+/// Foundation's `range(of:options: .caseInsensitive)` for any of `names`; an empty name is never found.
+fn names_in(names: &[String], s: &str) -> bool {
+    names
+        .iter()
+        .any(|n| !n.is_empty() && fold_case(s).contains(&fold_case(n)))
+}
+
+/// Does the reason end with one of `names` in brackets ("… (Kartenseite)"), or is it just the name (the whole bracket)?
+/// Only that, any case: "Bitte die Kartenseite freigeben" or "Kartenseite teilen und 1, 2 oder 3 wählen" are requests
+/// here (real lines of 2026-11-0x, review quick 2026-11-07, Grok).
+fn ends_with_place(names: &[String], reason: &str) -> bool {
+    let r = fold_case(trim_ws(reason));
+    names.iter().filter(|n| !n.is_empty()).any(|n| {
+        let n = fold_case(n);
+        r == n || r.ends_with(&format!("({n})"))
+    })
+}
+
+/// Kevin 2026-11-07 (screenshot 12:42, X-Redaktion: "? … Repost und Like … (Karten bereit)"): a "?" that sends Kevin
+/// to a place outside the terminal (ends with `ask_until_read_names` in brackets, e.g. "(Kartenseite)"; not with "here")
+/// waits for him only until he has had the window in front after the answer, then counts as "needs nothing": watching,
+/// a worker parks.
+/// Runs before `BackgroundWatch`, `Standby` and `apply_lookout_lines`, so all of them and the label see the same line.
+pub fn mark_read_asks(
+    sessions: &mut [Session],
+    ask_until_read_names: &[String],
+    other_window_names: &[String],
+    seen: &BTreeMap<String, Time>,
+) {
+    for s in sessions.iter_mut() {
+        let seen_at = seen.get(&s.id).copied();
+        let Some(d) = s.digest.as_mut() else {
+            continue;
+        };
+        d.ask_read = false;
+        // A "?" that still names an `other_window_names` window is that window's own request (`line`): it stays.
+        d.ask_read = d.line(other_window_names).is_some_and(|l| {
+            l.status == LineStatus::Ask
+                && ends_with_place(ask_until_read_names, &l.reason)
+                && !has(&HERE, &l.reason)
+                && !names_in(other_window_names, &l.reason)
+        }) && answer_seen(d, seen_at);
     }
 }
 

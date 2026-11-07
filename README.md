@@ -172,6 +172,7 @@ Lookout (it reads the file once at start), for example:
 | `labels` | `true` | whether labels show at first start; after that, your choice in the menu is used |
 | `leadNames` | `[]` | own names (`claude --name …` or `/rename`) of sessions that lead other sessions, written exactly the same; an automatic topic title does not count (see "Watching" below); these sessions never park |
 | `otherWindowNames` | `[]` | parts of window names where you answer for other sessions (for example `"front desk"`, any case); a `?` status line that only sends you there does not bring this window forward (see "The session's own status line") |
+| `askUntilReadNames` | `[]` | parts of names of places outside the terminal where you handle a request (for example `"card page"`, any case); a `?` status line that ends with one of them in brackets, like `(card page)`, shows WAITING FOR YOU only until you have had its tab in front (see "The session's own status line") |
 | `workerNames` | `[]` | parts of session names (any case) that mark worker windows for the parking lot, for example `"Worker · "`; without them there is no parking lot |
 
 The menu remembers your choice of screen, layout, grid, control room screens, excluded windows and labels, and
@@ -265,6 +266,11 @@ lines, Lookout takes that instead of the rules above:
 - `?` shows **WAITING FOR YOU**, like an open question, also when only background commands are left. If the
   text in brackets only sends you to a window named in `otherWindowNames` ("approve the plan in the front desk",
   without "here" or "this window"), it counts as `◌`: you answer there, not here. In that window itself it stays `?`.
+- If a `?` line ends with the name of a place outside the terminal in brackets, for example `(card page)`, and
+  that name is in `askUntilReadNames`, the window shows **WAITING FOR YOU** only until you have had its tab in
+  front after the answer. After that the line counts like `◌`: the window shows **WATCHING** again if something
+  wakes it on its own, and a worker window goes back to the parking lot. A `?` line without such an ending, or
+  one that says "here", stays **WAITING FOR YOU**, read or not.
 - `◌` shows **WATCHING** only if something will wake the session on its own (a resting background command,
   another session it talks to, a timer); without that it stays **DONE**, because nothing would continue it.
 - `✓` shows **DONE**, even if the answer says "nothing needed".

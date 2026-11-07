@@ -50,7 +50,7 @@ use lookout_core::overlay::{
 };
 use lookout_core::status::{
     BackgroundWatch, ClaudeStatus, LogSessionFinder, Standby, TAIL_BYTES, TranscriptReader,
-    apply_lookout_lines, fetch_agents, launch_corrected,
+    apply_lookout_lines, fetch_agents, launch_corrected, mark_read_asks,
 };
 
 use crate::animator::{Animator, WindowMove};
@@ -304,6 +304,7 @@ struct TickInput {
     front_pid: Option<Pid>,
     screen_h: f64,
     other_window_names: Vec<String>,
+    ask_until_read_names: Vec<String>,
 }
 
 /// What it brings back to main.
@@ -588,6 +589,7 @@ impl App {
             front_pid: frontmost_pid(),
             screen_h: screens::primary_height(),
             other_window_names: self.cfg.other_window_names.clone(),
+            ask_until_read_names: self.cfg.ask_until_read_names.clone(),
         };
         let engines = Arc::clone(&self.engines);
         work_queue().exec_async(move || {
@@ -1934,6 +1936,13 @@ fn tick_work(t: TickInput, engines: &Mutex<Engines>) -> TickOutput {
             .map(|s| s.id.strip_prefix("claude:").unwrap_or(&s.id).to_owned())
             .collect();
         e.transcripts.forget(&alive);
+        // A read "?" for a place outside the terminal (card page) counts as "needs nothing" from here on.
+        mark_read_asks(
+            &mut raw,
+            &t.ask_until_read_names,
+            &t.other_window_names,
+            &seen,
+        );
         // Plan 1e: `busy`, answer finished, background resting since readyThresholdSec -> done.
         let raw = e
             .background

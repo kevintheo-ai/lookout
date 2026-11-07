@@ -158,6 +158,8 @@ pub struct Digest {
     pub wakeups: BTreeMap<String, Option<Time>>,
     /// No message from the user since the last answer text (prompt or attachment mid-turn).
     pub text_current: bool,
+    /// Its "?" names an `ask_until_read_names` place and Kevin has read the answer (`mark_read_asks`, set per tick).
+    pub ask_read: bool,
 }
 
 impl Default for Digest {
@@ -182,6 +184,7 @@ impl Default for Digest {
             partners: BTreeSet::new(),
             wakeups: BTreeMap::new(),
             text_current: true,
+            ask_read: false,
         }
     }
 }

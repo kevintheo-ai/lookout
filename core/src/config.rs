@@ -34,6 +34,9 @@ pub struct AppConfig {
     /// Name parts of windows where Kevin answers OTHER sessions' questions: a "?" Lookout line that only sends him there
     /// does not bring this window forward (Kevin 2026-10-13).
     pub other_window_names: Vec<String>,
+    /// Name parts of places outside the terminal where Kevin handles a request (a card page): a "?" Lookout line naming
+    /// one waits for him only until he has read it, then counts as "needs nothing" (Kevin 2026-11-07).
+    pub ask_until_read_names: Vec<String>,
     /// Name parts of worker sessions: running or watching, their windows go to the parking lot behind the main window
     /// (Kevin 2026-11-06).
     pub worker_names: Vec<String>,
@@ -57,6 +60,7 @@ impl AppConfig {
             claude_config_dirs: vec![format!("{home}/.claude")],
             lead_names: vec![],
             other_window_names: vec![],
+            ask_until_read_names: vec![],
             worker_names: vec![],
         }
     }
@@ -128,6 +132,7 @@ pub fn parse_config(obj: &Map<String, Value>, home: &str) -> AppConfig {
     }
     c.lead_names = names(obj, "leadNames");
     c.other_window_names = names(obj, "otherWindowNames");
+    c.ask_until_read_names = names(obj, "askUntilReadNames");
     c.worker_names = names(obj, "workerNames");
     c
 }
@@ -328,6 +333,12 @@ mod tests {
                 && parse(json!({"otherWindowNames": [" front desk ", "", 7]})).other_window_names
                     == ["front desk"],
             "other windows: edges trimmed, empty and unreadable dropped"
+        );
+        assert!(
+            d.ask_until_read_names.is_empty()
+                && parse(json!({"askUntilReadNames": [" card page ", "", 7]})).ask_until_read_names
+                    == ["card page"],
+            "ask until read: edges trimmed, empty and unreadable dropped"
         );
         // GP 14: the key wins over the Mac's language.
         use crate::i18n::prefers_german;
