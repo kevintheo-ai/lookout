@@ -12,6 +12,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - run: /usr/bin/python3 hooks/test_lookout_line.py
 
   core-on-linux:
     # The core crate has no operating system calls; this keeps it that way.

@@ -285,11 +285,46 @@ lines, Lookout takes that instead of the rules above:
 - Only the last non-empty line counts, and only for the turn it was written in. The sign decides, not the words, so
   any language works. The text in brackets goes on the label.
 
-To have your sessions write the line, give interactive sessions an instruction such as: "End every reply that ends
-your turn with exactly one final line for Lookout: `◌ Lookout: nothing needed (…)` only when I have nothing to do
-and something else wakes you, `? Lookout: request (…)` when I should do anything, otherwise `✓ Lookout: done (…)`."
-I add it with a `SessionStart` and `UserPromptSubmit` hook (`additionalContext`) that skips background runs
-(`claude -p`), because scripts read their output. A line in `CLAUDE.md` would reach those runs too.
+To have your sessions write the line, copy the hook template `hooks/lookout_line.py`. It is Python, standard library
+only. It gives every interactive Claude Code session the instruction as `additionalContext`: at every session start
+(new session, resume, `/clear` and `/compact`) and with every prompt you send.
+
+It skips background runs (`claude -p` and Agent SDK runs), because scripts read their output and an extra line can
+break them. A line in `CLAUDE.md` would reach those runs too, so I use a hook.
+
+The instruction is the constant `LOOKOUT_LINE` at the top of the file. It is the English version of the instruction my
+own hook gives my sessions, without my name and my window names. My own hook does more: it also names my sessions, and
+most of my sessions get the instruction in German. The template contains only the Lookout part.
+
+It runs with Apple's `/usr/bin/python3` (Python 3.9 or newer). That comes with the Xcode Command Line Tools, and
+those are needed to build Lookout anyway. No extra packages.
+
+Setup, from the `lookout` folder:
+
+```sh
+mkdir -p ~/.claude/hooks && cp hooks/lookout_line.py ~/.claude/hooks/
+```
+
+Then add this to `~/.claude/settings.json`. If the file already has a `"hooks"` block, add the two entries to it:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "/usr/bin/python3 ~/.claude/hooks/lookout_line.py" }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "/usr/bin/python3 ~/.claude/hooks/lookout_line.py" }] }
+    ]
+  }
+}
+```
+
+Every Claude Code configuration folder (`CLAUDE_CONFIG_DIR`, for example `~/.claude-work`) has its own
+`settings.json`. Add the same block there too. After a Lookout update (`git pull`), copy the file again.
+
+You can change the text of `LOOKOUT_LINE`, for example translate it. Keep each of the three signs followed by a space
+and `Lookout:`. The sign decides, not the words.
 
 ## The parking lot (optional)
 
