@@ -9,7 +9,7 @@ use super::words::{
     asks_nothing, opens_with_nothing_needed, promises_report, waits_with_nothing_needed,
 };
 use crate::mapping::last_path_component;
-use crate::model::{Digest, Engine, LineStatus, Pid, PsRow, Session, Time};
+use crate::model::{Digest, Engine, LineStatus, LookoutLine, Pid, PsRow, Session, Time};
 
 /// Did Kevin have the window in front of him after the last answer (Kevin 2026-10-04, screenshot 22:38)? Then he read
 /// what came on his message; the answer needs him only if it wants something itself. Without the answer's time: when in
@@ -21,12 +21,39 @@ pub fn answer_seen(d: &Digest, seen_at: Option<Time>) -> bool {
     }
 }
 
+/// A lead session (`lead_names`): its name from the status file or its own name from the transcript (the menu's).
+fn is_lead(leads: &BTreeSet<String>, s: &Session) -> bool {
+    leads.contains(&s.name)
+        || s.digest
+            .as_ref()
+            .and_then(|d| d.name.as_ref())
+            .is_some_and(|n| leads.contains(n))
+}
+
+/// Kevin 2026-11-07 (screenshots 11:44 and 11:46, both team leads): a lead's "✓" that Kevin has read no longer needs
+/// him; it counts as "nothing needed" while the lead waits for its watcher or workers. Workers keep "done" (the list
+/// Kevin closes windows from), "?" always stays with Kevin.
+fn lead_done_read(
+    leads: &BTreeSet<String>,
+    s: &Session,
+    line: &LookoutLine,
+    seen: &BTreeMap<String, Time>,
+) -> bool {
+    line.status == LineStatus::Done
+        && is_lead(leads, s)
+        && s.digest
+            .as_ref()
+            .is_some_and(|d| answer_seen(d, seen.get(&s.id).copied()))
+}
+
 // ---------- Waits for another session or a wake-up (Kevin 2026-09-27) ----------
 
 /// Done Claude sessions that only wait for another running session or their own timer and say so explicitly:
 /// "watching" instead of done (as the watcher in plan 1e+, same display). Everything else stays as it is.
 pub struct Standby {
     other_window_names: Vec<String>,
+    /// Names of sessions that lead other sessions (`lead_names`), for `lead_done_read`.
+    leads: BTreeSet<String>,
     report: Report,
     /// Sessions that count as waiting right now (id -> name), for one log line per change.
     quiet: BTreeMap<String, String>,
@@ -36,10 +63,15 @@ impl Standby {
     /// A timer counts as pending until 5 minutes after its time: firing and the new turn take a moment.
     pub const WAKE_GRACE: Time = 300.0;
 
-    /// `other_window_names` from the configuration.
-    pub fn new(other_window_names: Vec<String>, report: Report) -> Standby {
+    /// `other_window_names` and `leads` (`lead_names`) from the configuration.
+    pub fn new(
+        other_window_names: Vec<String>,
+        leads: BTreeSet<String>,
+        report: Report,
+    ) -> Standby {
         Standby {
             other_window_names,
+            leads,
             report,
             quiet: BTreeMap::new(),
         }
@@ -92,8 +124,15 @@ impl Standby {
             // The Lookout line goes before the word list (Kevin 2026-10-12): "needs nothing" holds, also on Kevin's
             // message.
             let line = d.line(&self.other_window_names);
+            let read_done = line
+                .as_ref()
+                .is_some_and(|l| lead_done_read(&self.leads, s, l, seen));
+            let line_nothing = read_done
+                || line
+                    .as_ref()
+                    .is_some_and(|l| l.status == LineStatus::Nothing);
             let nothing = match &line {
-                Some(l) => l.status == LineStatus::Nothing,
+                Some(_) => line_nothing,
                 None => {
                     (d.user_turn != Some(true) || answer_seen(d, seen.get(&s.id).copied()))
                         && d.text.as_deref().is_some_and(waits_with_nothing_needed)
@@ -103,9 +142,6 @@ impl Standby {
                 continue;
             }
             // A successor with the same name (new lead session) counts too, even if the checked pid has ended.
-            let line_nothing = line
-                .as_ref()
-                .is_some_and(|l| l.status == LineStatus::Nothing);
             let peer = d.peer_pid.is_some_and(|p| peer_alive(p, d.peer_at))
                 || d.peer_name.as_deref().is_some_and(|n| names.contains(n))
                 || (line_nothing && d.partners.iter().any(|p| names.contains(p.as_str())));
@@ -116,7 +152,9 @@ impl Standby {
             if !(peer || wake) {
                 continue;
             }
-            let why = if line.is_some() {
+            let why = if read_done {
+                " (Lead, ✓ gelesen)"
+            } else if line.is_some() {
                 " (Lookout-Zeile)"
             } else if d.user_turn == Some(true) {
                 " (Antwort gesehen)"
@@ -495,13 +533,14 @@ impl BackgroundWatch {
     /// readable answer text, when in doubt yes. On Kevin's message a promise to report back is enough (Kevin 2026-10-03);
     /// once he had the window in front after the answer, his message no longer counts (Kevin 2026-10-04).
     fn answer_for_user(&self, s: &Session, seen: &BTreeMap<String, Time>) -> bool {
-        // The Lookout line goes before the word list (Kevin 2026-10-12).
+        // The Lookout line goes before the word list (Kevin 2026-10-12); a lead's read "✓" needs Kevin no more.
         if let Some(line) = s
             .digest
             .as_ref()
             .and_then(|d| d.line(&self.other_window_names))
         {
-            return line.status != LineStatus::Nothing;
+            return line.status != LineStatus::Nothing
+                && !lead_done_read(&self.leads, s, &line, seen);
         }
         let Some((d, text)) = s
             .digest
@@ -516,7 +555,7 @@ impl BackgroundWatch {
         // Kevin 2026-10-09: a lead session reports on OTHER windows ("two windows wait for you"); the word list took that
         // for requests (6 days of a team lead: 211 of 523 turn ends DONE). For it only a question counts. Name from the
         // status file or the one in the menu (own name in the transcript, `/rename`; review quick 2026-10-09).
-        if self.leads.contains(&s.name) || d.name.as_ref().is_some_and(|n| self.leads.contains(n)) {
+        if is_lead(&self.leads, s) {
             return text.contains('?');
         }
         !(asks_nothing(text, false) || opens_with_nothing_needed(text))

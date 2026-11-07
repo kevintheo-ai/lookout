@@ -1965,6 +1965,143 @@ fn test_lead_reports_on_other_windows() {
     );
 }
 
+/// Kevin 2026-11-07 (screenshots 11:44 Ultivor with its watcher, 11:46 AgentOperator waiting for its workers): a lead
+/// said "✓", Kevin read it, the lead waits for its watcher or workers again: watching. Unread, "?" or a worker: done.
+#[test]
+fn test_lead_done_read() {
+    let done = "Merged.\n✓ Lookout: fertig (merged as #745)";
+    let ask = "Merged.\n? Lookout: Bitte (Go für #12)";
+    let answered = 1_790_600_000.0;
+    let read = BTreeMap::from([("claude:lead".to_owned(), answered + 60.0)]);
+    let unread = BTreeMap::from([("claude:lead".to_owned(), answered - 60.0)]);
+
+    // Own watcher (`BackgroundWatch`), the turn started by Kevin's message.
+    let rows = background_fixture();
+    let t0 = answered + 10.0;
+    let mut watch = watch_with(
+        fixed(Some(BTreeMap::new())),
+        fixed(Some(pids(&[542]))),
+        &["Beta · Lead"],
+        silent(),
+    );
+    let bg = |text: &str, name: &str| {
+        let mut s = background_session("claude:lead", name, text, true);
+        s.digest.as_mut().unwrap().answer_at = Some(answered);
+        s
+    };
+    for dt in [0.0, 96.0] {
+        watch.adjust(&[bg(done, "Beta · Lead")], &rows, t0 + dt, 90.0, &unread);
+    }
+    let mut judge = |s: Session, dt: f64, seen: &BTreeMap<String, Time>| {
+        watch.adjust(&[s], &rows, t0 + dt, 90.0, seen)[0].clone()
+    };
+    assert!(
+        judge(bg(done, "Beta · Lead"), 99.0, &unread).ready,
+        "watcher, unread: done"
+    );
+    let w = judge(bg(done, "Beta · Lead"), 102.0, &read);
+    assert!(w.watching && !w.ready, "watcher, read: watching");
+    assert!(
+        judge(bg(ask, "Beta · Lead"), 105.0, &read).ready,
+        "watcher, '?': stays with Kevin"
+    );
+    assert!(
+        judge(bg(done, "Beta · #9"), 108.0, &read).ready,
+        "watcher, a worker: done (Kevin closes it)"
+    );
+
+    // No own watcher, waits for its workers (`Standby`); the status file says "beta-ad", the menu "Beta · Lead".
+    let now = answered + 300.0;
+    let session = |text: &str, own_name: &str| Session {
+        digest: Some(Digest {
+            text: Some(text.into()),
+            last: LastBlock::Text,
+            turn_ended: true,
+            user_turn: Some(true),
+            answer_at: Some(answered),
+            name: Some(own_name.into()),
+            partners: BTreeSet::from(["Beta · #8".to_owned()]),
+            ..Digest::default()
+        }),
+        ..Session::new(
+            "claude:lead",
+            Engine::Claude,
+            Some(53833),
+            "beta-ad",
+            "/x",
+            true,
+            true,
+        )
+    };
+    let worker = Session::new(
+        "claude:w8",
+        Engine::Claude,
+        Some(61143),
+        "Beta · #8",
+        "/x",
+        false,
+        true,
+    );
+    let (log, report) = recorder();
+    let mut standby = Standby::new(vec![], BTreeSet::from(["Beta · Lead".to_owned()]), report);
+    let mut judge = |s: Session, with_worker: bool, seen: &BTreeMap<String, Time>| {
+        let mut all = vec![s];
+        if with_worker {
+            all.push(worker.clone());
+        }
+        standby.adjust(&all, now, seen)[0].clone()
+    };
+    assert!(
+        judge(session(done, "Beta · Lead"), true, &unread).ready,
+        "workers, unread: done"
+    );
+    let w = judge(session(done, "Beta · Lead"), true, &read);
+    assert!(w.watching && !w.ready, "workers, read: watching");
+    assert!(
+        said(&log).iter().any(|l| l.contains("(Lead, ✓ gelesen)")),
+        "the log names the reason, got {:?}",
+        said(&log)
+    );
+    assert!(
+        judge(session(done, "Beta · Lead"), false, &read).ready,
+        "no worker runs any more: done, nothing wakes it"
+    );
+    assert!(
+        judge(session(ask, "Beta · Lead"), true, &read).ready,
+        "workers, '?': stays with Kevin"
+    );
+    assert!(
+        judge(session(done, "Beta · #9"), true, &read).ready,
+        "a worker that talks with another one: done"
+    );
+    // Same wake sources as "◌" (review quick 2026-11-07, Grok): the last peer by its socket pid, an own timer.
+    let mut by_pid = session(done, "Beta · Lead");
+    let d = by_pid.digest.as_mut().unwrap();
+    d.partners.clear();
+    d.peer_pid = Some(61143);
+    assert!(
+        judge(by_pid, true, &read).watching,
+        "the last peer (socket pid) still runs: watching"
+    );
+    let timer = |at: Time| {
+        let mut s = session(done, "Beta · Lead");
+        s.digest
+            .as_mut()
+            .unwrap()
+            .wakeups
+            .insert("loop".into(), Some(at));
+        s
+    };
+    assert!(
+        judge(timer(now + 60.0), false, &read).watching,
+        "an own timer is due: watching"
+    );
+    assert!(
+        judge(timer(now - 400.0), false, &read).ready,
+        "the timer is long past: done"
+    );
+}
+
 /// Kevin 2026-10-04 (screenshot 22:38): the answer to Kevin's own message is done until he had its window in front of
 /// him once after it; then it counts like an answer he did not start (watching, if it wants nothing from him).
 #[test]
@@ -3212,7 +3349,7 @@ fn test_standby() {
     );
     let none = BTreeMap::new();
     let (log, report) = recorder();
-    let mut standby = Standby::new(vec![], report);
+    let mut standby = Standby::new(vec![], BTreeSet::new(), report);
     let out = standby.adjust(&[worker("a", w()), lead.clone()], now, &none);
     assert!(
         out[0].watching && !out[0].ready,
@@ -3234,7 +3371,7 @@ fn test_standby() {
         "same state: no new line"
     );
 
-    let mut s = Standby::new(vec![], silent());
+    let mut s = Standby::new(vec![], BTreeSet::new(), silent());
     let mut first = |sessions: &[Session], seen: &BTreeMap<String, Time>| {
         s.adjust(sessions, now, seen)[0].clone()
     };
@@ -3532,7 +3669,7 @@ fn test_standby() {
         "seen, the other session no longer runs: done"
     );
     let (seen_log, report) = recorder();
-    Standby::new(vec![], report).adjust(
+    Standby::new(vec![], BTreeSet::new(), report).adjust(
         &[worker("p", kevin_answered()), lead.clone()],
         now,
         &seen("p", now),
@@ -3547,7 +3684,7 @@ fn test_standby() {
 
     // Back to done: one line.
     let (log, report) = recorder();
-    let mut fresh = Standby::new(vec![], report);
+    let mut fresh = Standby::new(vec![], BTreeSet::new(), report);
     fresh.adjust(&[worker("a", w()), lead.clone()], now, &none);
     fresh.adjust(
         &[
@@ -3827,7 +3964,7 @@ fn test_lookout_line() {
     );
     let none = BTreeMap::new();
     let (log, report) = recorder();
-    let mut s = Standby::new(vec![], report);
+    let mut s = Standby::new(vec![], BTreeSet::new(), report);
     let grau = s.adjust(
         &[
             session(

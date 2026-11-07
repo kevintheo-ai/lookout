@@ -175,7 +175,11 @@ impl Engines {
                 Box::new(sys::process_start),
                 Box::new(|l: &str| log(l)),
             ),
-            standby: Standby::new(cfg.other_window_names.clone(), Box::new(|l: &str| log(l))),
+            standby: Standby::new(
+                cfg.other_window_names.clone(),
+                cfg.lead_names.iter().cloned().collect(),
+                Box::new(|l: &str| log(l)),
+            ),
         }
     }
 }

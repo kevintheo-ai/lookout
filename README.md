@@ -268,6 +268,11 @@ lines, Lookout takes that instead of the rules above:
 - `◌` shows **WATCHING** only if something will wake the session on its own (a resting background command,
   another session it talks to, a timer); without that it stays **DONE**, because nothing would continue it.
 - `✓` shows **DONE**, even if the answer says "nothing needed".
+- For a lead session (named in `leadNames`), `✓` counts like `◌` once you have had its tab in front after the
+  answer. The lead then shows **WATCHING** again, but only while something wakes it on its own: a resting
+  background command that is not a server, another running session it talks to, or its own timer that is due;
+  otherwise it stays DONE. Worker sessions keep showing DONE so you see which windows can be closed, and `?`
+  always stays with you, read or not.
 - Only the last non-empty line counts, and only for the turn it was written in. The sign decides, not the words, so
   any language works. The text in brackets goes on the label.
 
