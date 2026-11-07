@@ -2119,7 +2119,7 @@ fn test_ask_until_read() {
             false,
         )];
         s[0].digest.as_mut().unwrap().answer_at = Some(answered);
-        mark_read_asks(&mut s, &names, &[], seen);
+        mark_read_asks(&mut s, &names, &[], &[], seen);
         s.remove(0)
     };
     let status = |s: &Session| s.digest.as_ref().unwrap().line(&[]).map(|l| l.status);
@@ -2179,7 +2179,7 @@ fn test_ask_until_read() {
     key[0].digest.as_mut().unwrap().answer_at = Some(answered);
     let others = ["key account".to_owned()];
     key[0].digest.as_mut().unwrap().name = Some("Ultivor · Key account".into());
-    mark_read_asks(&mut key, &names, &others, &read);
+    mark_read_asks(&mut key, &names, &others, &[], &read);
     assert_eq!(
         key[0]
             .digest
@@ -2191,7 +2191,7 @@ fn test_ask_until_read() {
         "the key account's own request stays, read or not"
     );
     let mut again = marked(card, &read);
-    mark_read_asks(std::slice::from_mut(&mut again), &names, &[], &unread);
+    mark_read_asks(std::slice::from_mut(&mut again), &names, &[], &[], &unread);
     assert_eq!(
         status(&again),
         Some(LineStatus::Ask),
@@ -2199,7 +2199,7 @@ fn test_ask_until_read() {
     );
     let mut early = marked(card, &read);
     early.digest.as_mut().unwrap().answer_at = Some(answered + 60.0);
-    mark_read_asks(std::slice::from_mut(&mut early), &names, &[], &read);
+    mark_read_asks(std::slice::from_mut(&mut early), &names, &[], &[], &read);
     assert_eq!(
         status(&early),
         Some(LineStatus::Ask),
@@ -2228,6 +2228,59 @@ fn test_ask_until_read() {
     assert!(
         after.watching && !after.ready && !after.waiting,
         "read: watching again, the radar runs"
+    );
+}
+
+/// Kevin 2026-11-07 (screenshot 18:36, AgentOperator · Team-Lead): "wenn er eine frage hat muss es dialog sein sonst
+/// sehe ich es nicht". A lead's text "?" waits only until Kevin has read it; its dialog (open question) still waits.
+#[test]
+fn test_lead_ask_read() {
+    let leads = ["AgentOperator · Team-Lead".to_owned()];
+    let answered = 1_790_700_000.0;
+    let read = BTreeMap::from([("claude:l".to_owned(), answered + 30.0)]);
+    let unread = BTreeMap::new();
+    let ask =
+        "Willst du ihm antworten?\n? Lookout: Bitte hier antworten: Antwort-Karte, ja oder nein?";
+    let marked = |name: &str, own: Option<&str>, seen: &BTreeMap<String, Time>| {
+        let mut s = vec![background_session("claude:l", name, ask, false)];
+        let d = s[0].digest.as_mut().unwrap();
+        d.answer_at = Some(answered);
+        d.name = own.map(str::to_owned);
+        mark_read_asks(&mut s, &[], &[], &leads, seen);
+        s.remove(0)
+    };
+    let status = |s: &Session| s.digest.as_ref().unwrap().line(&[]).map(|l| l.status);
+    let lead = "AgentOperator · Team-Lead";
+    assert_eq!(
+        status(&marked(lead, None, &unread)),
+        Some(LineStatus::Ask),
+        "unread: asks"
+    );
+    assert_eq!(
+        status(&marked(lead, None, &read)),
+        Some(LineStatus::Nothing),
+        "read: needs nothing, 'here' or not"
+    );
+    assert_eq!(
+        status(&marked("agentoperator-ad", Some(lead), &read)),
+        Some(LineStatus::Nothing),
+        "the lead's own name from the transcript counts too"
+    );
+    assert_eq!(
+        status(&marked("AgentOperator · X-Redaktion", None, &read)),
+        Some(LineStatus::Ask),
+        "not a lead: the read '?' stays with Kevin"
+    );
+    let line_pass = |s: Session| apply_lookout_lines(vec![s], &[]).remove(0);
+    assert!(
+        !line_pass(marked(lead, None, &read)).waiting,
+        "read text '?': not waiting"
+    );
+    let mut dialog = marked(lead, None, &read);
+    dialog.waiting = true;
+    assert!(
+        line_pass(dialog).waiting,
+        "an open dialog still waits for Kevin"
     );
 }
 

@@ -269,16 +269,19 @@ lines, Lookout takes that instead of the rules above:
 - If a `?` line ends with the name of a place outside the terminal in brackets, for example `(card page)`, and
   that name is in `askUntilReadNames`, the window shows **WAITING FOR YOU** only until you have had its tab in
   front after the answer. After that the line counts like `◌`: the window shows **WATCHING** again if something
-  wakes it on its own, and a worker window goes back to the parking lot. A `?` line without such an ending, or
-  one that says "here", stays **WAITING FOR YOU**, read or not.
+  wakes it on its own, and a worker window goes back to the parking lot. Lead sessions are the exception, see below. For all other sessions, a `?` line without such an ending, or one
+  that says "here", stays **WAITING FOR YOU**, read or not.
 - `◌` shows **WATCHING** only if something will wake the session on its own (a resting background command,
   another session it talks to, a timer); without that it stays **DONE**, because nothing would continue it.
 - `✓` shows **DONE**, even if the answer says "nothing needed".
-- For a lead session (named in `leadNames`), `✓` counts like `◌` once you have had its tab in front after the
-  answer. The lead then shows **WATCHING** again, but only while something wakes it on its own: a resting
+- For a lead session (named in `leadNames`), `✓` and `?` count like `◌` once you have had its tab in front after
+  the answer. The lead then shows **WATCHING** again, but only while something wakes it on its own: a resting
   background command that is not a server, another running session it talks to, or its own timer that is due;
-  otherwise it stays DONE. Worker sessions keep showing DONE so you see which windows can be closed, and `?`
-  always stays with you, read or not.
+  otherwise it stays DONE. This holds for `?` whether or not the line says "here". A lead should ask its
+  questions in a dialog (Claude Code's question dialog, AskUserQuestion). An open dialog is a real open
+  question in the session status and keeps showing **WAITING FOR YOU** until you answer it. A question
+  written as plain text at the end of a reply is easy to miss. Worker sessions keep showing DONE after `✓`
+  so you see which windows can be closed.
 - Only the last non-empty line counts, and only for the turn it was written in. The sign decides, not the words, so
   any language works. The text in brackets goes on the label.
 

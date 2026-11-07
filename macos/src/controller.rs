@@ -305,6 +305,7 @@ struct TickInput {
     screen_h: f64,
     other_window_names: Vec<String>,
     ask_until_read_names: Vec<String>,
+    lead_names: Vec<String>,
 }
 
 /// What it brings back to main.
@@ -590,6 +591,7 @@ impl App {
             screen_h: screens::primary_height(),
             other_window_names: self.cfg.other_window_names.clone(),
             ask_until_read_names: self.cfg.ask_until_read_names.clone(),
+            lead_names: self.cfg.lead_names.clone(),
         };
         let engines = Arc::clone(&self.engines);
         work_queue().exec_async(move || {
@@ -1941,6 +1943,7 @@ fn tick_work(t: TickInput, engines: &Mutex<Engines>) -> TickOutput {
             &mut raw,
             &t.ask_until_read_names,
             &t.other_window_names,
+            &t.lead_names,
             &seen,
         );
         // Plan 1e: `busy`, answer finished, background resting since readyThresholdSec -> done.

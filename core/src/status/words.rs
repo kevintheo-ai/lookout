@@ -220,25 +220,36 @@ fn ends_with_place(names: &[String], reason: &str) -> bool {
 /// to a place outside the terminal (ends with `ask_until_read_names` in brackets, e.g. "(Kartenseite)"; not with "here")
 /// waits for him only until he has had the window in front after the answer, then counts as "needs nothing": watching,
 /// a worker parks.
+/// Kevin 2026-11-07 (screenshot 18:36, AgentOperator · Team-Lead: "? … Antwort-Karte für @EnvolDev, ja oder nein?"):
+/// "wenn er eine frage hat muss es dialog sein sonst sehe ich es nicht". A lead (`lead_names`) asks Kevin in a dialog
+/// (that shows as an open question, not through this line); its read text "?" counts as "needs nothing", "here" or not.
 /// Runs before `BackgroundWatch`, `Standby` and `apply_lookout_lines`, so all of them and the label see the same line.
 pub fn mark_read_asks(
     sessions: &mut [Session],
     ask_until_read_names: &[String],
     other_window_names: &[String],
+    lead_names: &[String],
     seen: &BTreeMap<String, Time>,
 ) {
     for s in sessions.iter_mut() {
         let seen_at = seen.get(&s.id).copied();
+        let lead = |d: &Digest| {
+            lead_names
+                .iter()
+                .any(|n| *n == s.name || d.name.as_ref() == Some(n))
+        };
         let Some(d) = s.digest.as_mut() else {
             continue;
         };
         d.ask_read = false;
+        let lead = lead(d);
         // A "?" that still names an `other_window_names` window is that window's own request (`line`): it stays.
         d.ask_read = d.line(other_window_names).is_some_and(|l| {
             l.status == LineStatus::Ask
-                && ends_with_place(ask_until_read_names, &l.reason)
-                && !has(&HERE, &l.reason)
-                && !names_in(other_window_names, &l.reason)
+                && (lead
+                    || ends_with_place(ask_until_read_names, &l.reason)
+                        && !has(&HERE, &l.reason)
+                        && !names_in(other_window_names, &l.reason))
         }) && answer_seen(d, seen_at);
     }
 }
