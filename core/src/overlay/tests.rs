@@ -1843,43 +1843,25 @@ fn test_inbox_read_card_leaves_until_a_new_answer() {
     assert!(lines.contains(&ListLine::Group("Fertig".into())));
 }
 
-/// Longer than the window: the rest goes into "+N".
+/// Longer than the window (Kevin 2026-11-10: "das soll scrollbar sein"): every card of every group is listed, each group
+/// under its heading, and nothing goes into "+N"; the window scrolls below the tabs.
 #[test]
-fn test_inbox_overflow() {
-    let w: Vec<TermWindow> = (0..20)
-        .map(|i| inbox_window(i, false, "A · B", None))
+fn test_inbox_lists_every_card() {
+    let mut w: Vec<TermWindow> = (0..12)
+        .map(|i| inbox_window(i, true, "A · B", Some("Ja?")))
         .collect();
+    w.extend((12..20).map(|i| inbox_window(i, false, "A · C", None)));
     let rows: Vec<usize> = (0..20).collect();
     let lines = inbox_lines(&w, &inbox_list(&rows, 500.0), None, &ReadAnswers::new());
     let cards = lines
         .iter()
         .filter(|l| matches!(l, ListLine::Card(_)))
         .count();
-    let more = lines.iter().find_map(|l| match l {
-        ListLine::More(n) => Some(*n),
-        _ => None,
-    });
-    assert_eq!(Some(20 - cards), more);
-    let total: f64 = lines.iter().map(ListLine::height).sum();
-    assert!(total <= 500.0, "{total}");
-}
-
-/// The last card needs no room for a "+N" after it.
-#[test]
-fn test_inbox_last_card_fits_without_more() {
-    let w: Vec<TermWindow> = (0..5)
-        .map(|i| inbox_window(i, false, "A · B", None))
-        .collect();
-    let rows: Vec<usize> = (0..5).collect();
-    let lines = inbox_lines(&w, &inbox_list(&rows, 452.0), None, &ReadAnswers::new());
-    let cards = lines
-        .iter()
-        .filter(|l| matches!(l, ListLine::Card(_)))
-        .count();
-    assert_eq!(cards, 5);
+    assert_eq!(cards, 20);
+    assert!(lines.contains(&ListLine::Group("Fertig".into())));
     assert!(!lines.iter().any(|l| matches!(l, ListLine::More(_))));
     let total: f64 = lines.iter().map(ListLine::height).sum();
-    assert!(total <= 452.0, "{total}");
+    assert!(total > 500.0, "taller than the window: {total}");
 }
 
 /// A question over several lines of its own is one text: the card counts and shows it wrapped, not by its line ends.
@@ -1890,21 +1872,6 @@ fn test_inbox_question_with_line_ends() {
     let c = card(&lines[2]);
     assert_eq!(c.what.as_deref(), Some("Eins Zwei Drei"));
     assert_eq!(c.lines, 1);
-}
-
-/// A group whose first card does not fit gets no heading: it would push "+N" past the window's end.
-#[test]
-fn test_inbox_no_heading_without_a_card() {
-    let mut w: Vec<TermWindow> = (0..6)
-        .map(|i| inbox_window(i, true, "A · B", Some("Ja?")))
-        .collect();
-    w.extend((6..8).map(|i| inbox_window(i, false, "A · C", None)));
-    let rows: Vec<usize> = (0..8).collect();
-    let lines = inbox_lines(&w, &inbox_list(&rows, 584.0), None, &ReadAnswers::new());
-    assert!(!lines.contains(&ListLine::Group("Fertig".into())));
-    assert!(lines.contains(&ListLine::More(2)));
-    let total: f64 = lines.iter().map(ListLine::height).sum();
-    assert!(total <= 584.0, "{total}");
 }
 
 #[test]
@@ -2327,6 +2294,15 @@ fn test_inbox_pin_outweighs_a_park_that_joins_later() {
 
     set_pinned(&w[0], &mut pinned, &mut snoozed, &mut read, false);
     assert!(snoozed.is_empty(), "unpinning ends it too");
+}
+
+/// The cards scroll, and with "Show scroll bars: Always" the scroller takes room from their text (review quick
+/// 2026-11-10): a question that just fills the line without it gets a second line rather than losing its end.
+#[test]
+fn test_inbox_open_card_leaves_room_for_a_scroller() {
+    let w = vec![inbox_window(0, true, "A · B", Some(&"a".repeat(41)))];
+    let lines = inbox_lines(&w, &inbox_list(&[0], 900.0), Some(0), &ReadAnswers::new());
+    assert_eq!(card(&lines[2]).lines, 2);
 }
 
 /// A long question gets more lines on the open card, a short one stays at one, and it never grows without end.

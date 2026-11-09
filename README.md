@@ -43,6 +43,9 @@ Background story: [Why I run my company with AI agents](https://kevintheo.com/fi
     screen the terminal gets what is left. All other AI windows wait behind the terminal. Inbox has no hotkey. You
     choose it in the menu. It applies to all windows on one screen. In the control room the layout is fixed. The
     list shows only while labels are on. Three tabs at the top show a count each: Waiting, Running and Parked.
+    Every card is shown, and if there are more than fit, the list below the tabs scrolls with the normal macOS
+    scrolling. The tabs stay at the top, and a tab you switch to starts at the top of its list. The scroll bar
+    follows the macOS setting, and with "Always" the cards get narrower so nothing is cut off on the right.
     Waiting lists the sessions that want something from you, questions first, then done ones. Cards you pinned
     stand above all of them. Within each of the two groups, whoever has waited longest stands on top, and a click
     on a card does not change the order. Running lists the sessions at work, then the parking lot if you use one.

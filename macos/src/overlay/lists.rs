@@ -2,16 +2,16 @@
 //! window stands there as a row; a click brings the session to the middle. An own panel kind: the label panels are
 //! click-through and lie on every desktop.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSBezierPath, NSColor, NSEvent, NSLineBreakMode, NSMenu, NSMenuItem, NSMutableParagraphStyle,
-    NSPanel, NSResponder, NSTextAlignment, NSView,
+    NSPanel, NSResponder, NSScrollElasticity, NSScrollView, NSTextAlignment, NSView,
 };
-use objc2_foundation::{NSObject, NSPoint, NSRect, NSString};
+use objc2_foundation::{NSObject, NSPoint, NSRect, NSSize, NSString};
 
 use lookout_core::geom::Rect;
 use lookout_core::i18n::tr;
@@ -62,6 +62,8 @@ struct ListIvars {
     on_plus: Rc<dyn Fn()>,
     /// The card a right-click menu was opened on.
     menu_card: RefCell<Option<InboxCard>>,
+    /// The inbox's cards inside their scroll view: no ground of their own, the tabs view behind them draws it.
+    bare: bool,
 }
 
 fn paragraph(alignment: NSTextAlignment, wrap: bool) -> Retained<NSMutableParagraphStyle> {
@@ -258,7 +260,9 @@ define_class!(
             } else {
                 black(LABEL_BG_ALPHA).setFill();
             }
-            NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(bounds, 8.0, 8.0).fill();
+            if !self.ivars().bare {
+                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(bounds, 8.0, 8.0).fill();
+            }
             let width = core_rect(bounds).width();
             let para = tail_truncating();
             let text = |s: &str, y: f64, size: f64, weight: FontWeight, color: &NSColor| {
@@ -415,6 +419,7 @@ impl ListView {
         on_button: Rc<dyn Fn(CardButton, Vec<String>)>,
         on_tab: Rc<dyn Fn(InboxTab)>,
         on_plus: Rc<dyn Fn()>,
+        bare: bool,
     ) -> Retained<ListView> {
         let this = ListView::alloc(mtm).set_ivars(ListIvars {
             lines: RefCell::default(),
@@ -424,6 +429,7 @@ impl ListView {
             on_tab,
             on_plus,
             menu_card: RefCell::default(),
+            bare,
         });
         // SAFETY: NSView's designated initializer; Swift's `ListView()` ends there with a zero frame.
         unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
@@ -473,6 +479,7 @@ impl ListView {
 pub struct ListOverlay {
     mtm: MainThreadMarker,
     panels: RefCell<Vec<(Retained<NSPanel>, Retained<ListView>)>>,
+    inbox: RefCell<Option<InboxPanel>>,
     tints: RefCell<Tints>,
     on_click: Rc<dyn Fn(Vec<String>)>,
     on_button: Rc<dyn Fn(CardButton, Vec<String>)>,
@@ -493,6 +500,7 @@ impl ListOverlay {
         ListOverlay {
             mtm,
             panels: RefCell::default(),
+            inbox: RefCell::default(),
             tints: RefCell::new(Tints {
                 ready: NSColor::whiteColor(),
                 waiting: NSColor::whiteColor(),
@@ -511,37 +519,117 @@ impl ListOverlay {
         };
     }
 
-    /// Panels beyond the targets are ordered out; changed lines or tints redraw.
+    fn view(&self, tints: &Tints, bare: bool) -> Retained<ListView> {
+        ListView::new(
+            self.mtm,
+            tints.clone(),
+            Rc::clone(&self.on_click),
+            Rc::clone(&self.on_button),
+            Rc::clone(&self.on_tab),
+            Rc::clone(&self.on_plus),
+            bare,
+        )
+    }
+
+    /// Panels beyond the targets are ordered out; changed lines or tints redraw. The inbox (the target that starts with its
+    /// tabs) has a panel of its own that scrolls.
     pub fn update(&self, targets: &[ListTarget], stack: Option<&[OnScreenWindow]>) {
+        let (inbox, lists): (Vec<&ListTarget>, Vec<&ListTarget>) = targets
+            .iter()
+            .partition(|t| matches!(t.lines.first(), Some(ListLine::InboxTabs { .. })));
+        self.update_inbox(inbox.first().copied(), stack);
         let mut panels = self.panels.borrow_mut();
         let tints = self.tints.borrow();
-        while panels.len() < targets.len() {
-            let view = ListView::new(
-                self.mtm,
-                tints.clone(),
-                Rc::clone(&self.on_click),
-                Rc::clone(&self.on_button),
-                Rc::clone(&self.on_tab),
-                Rc::clone(&self.on_plus),
-            );
+        while panels.len() < lists.len() {
+            let view = self.view(&tints, false);
             let panel = make_list_panel(self.mtm);
             panel.setContentView(Some(&view));
             panels.push((panel, view));
         }
-        for (t, (panel, view)) in targets.iter().zip(panels.iter()) {
+        for (t, (panel, view)) in lists.iter().zip(panels.iter()) {
             view.show(&t.lines, &tints);
             place(panel, t.rect, Some(t.window_number), stack);
         }
-        for (panel, _) in &panels[targets.len()..] {
+        for (panel, _) in &panels[lists.len()..] {
             if panel.isVisible() {
                 panel.orderOut(None);
             }
         }
     }
 
+    /// The inbox (Kevin 2026-11-10: "das soll scrollbar sein", no "+N more"): the tabs view is the whole panel and draws
+    /// the ground; below the tabs lies a scroll view whose document view holds every card. The tabs stay, the cards scroll.
+    /// Another tab starts at its top.
+    fn update_inbox(&self, target: Option<&ListTarget>, stack: Option<&[OnScreenWindow]>) {
+        let mut slot = self.inbox.borrow_mut();
+        let Some(t) = target else {
+            if let Some(p) = slot.as_ref()
+                && p.panel.isVisible()
+            {
+                p.panel.orderOut(None);
+            }
+            return;
+        };
+        let tints = self.tints.borrow();
+        let p = slot.get_or_insert_with(|| {
+            let (tabs, cards) = (self.view(&tints, false), self.view(&tints, true));
+            let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(self.mtm), NSRect::ZERO);
+            scroll.setDrawsBackground(false);
+            scroll.setHasVerticalScroller(true);
+            scroll.setAutohidesScrollers(true);
+            scroll.setHorizontalScrollElasticity(NSScrollElasticity::None);
+            scroll.setDocumentView(Some(&cards));
+            tabs.addSubview(&scroll);
+            let panel = make_list_panel(self.mtm);
+            panel.setContentView(Some(&tabs));
+            InboxPanel {
+                panel,
+                tabs,
+                scroll,
+                cards,
+                tab: Cell::new(None),
+            }
+        });
+        let (head, body) = t.lines.split_at(1);
+        p.tabs.show(head, &tints);
+        p.cards.show(body, &tints);
+        let top = head[0].height();
+        let shown = NSSize::new(t.rect.width(), (t.rect.height() - top).max(0.0));
+        p.scroll
+            .setFrame(NSRect::new(NSPoint::new(0.0, top), shown));
+        let tall: f64 = body.iter().map(ListLine::height).sum();
+        // As wide as what the scroller leaves: with "Show scroll bars: Always" it takes room (review quick 2026-11-10).
+        let room = p.scroll.contentSize();
+        let size = NSSize::new(room.width, tall.max(room.height));
+        let now = p.cards.frame().size;
+        if now.width != size.width || now.height != size.height {
+            p.cards.setFrameSize(size);
+            p.cards.setNeedsDisplay(true);
+        }
+        if let ListLine::InboxTabs { tab, .. } = &head[0]
+            && p.tab.replace(Some(*tab)) != Some(*tab)
+        {
+            let clip = p.scroll.contentView();
+            clip.scrollToPoint(NSPoint::new(0.0, 0.0));
+            p.scroll.reflectScrolledClipView(&clip);
+        }
+        place(&p.panel, t.rect, Some(t.window_number), stack);
+    }
+
     pub fn hide_all(&self) {
         self.update(&[], None);
     }
+}
+
+/// The inbox's panel (`ListOverlay::update_inbox`): the tabs view as content, the scroll view under the tabs, the cards
+/// as its document view.
+struct InboxPanel {
+    panel: Retained<NSPanel>,
+    tabs: Retained<ListView>,
+    scroll: Retained<NSScrollView>,
+    cards: Retained<ListView>,
+    /// The tab shown last.
+    tab: Cell<Option<InboxTab>>,
 }
 
 impl Drop for ListOverlay {

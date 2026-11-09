@@ -11,9 +11,9 @@ use std::rc::{Rc, Weak};
 use objc2::MainThreadMarker;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2_app_kit::{
-    NSApplication, NSColor, NSEvent, NSEventModifierFlags, NSEventType, NSFloatingWindowLevel,
-    NSNormalWindowLevel, NSScreen, NSView, NSWindow, NSWindowAnimationBehavior,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSApplication, NSBorderType, NSColor, NSEvent, NSEventModifierFlags, NSEventType,
+    NSFloatingWindowLevel, NSNormalWindowLevel, NSScreen, NSScrollView, NSScrollerStyle, NSView,
+    NSWindow, NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_foundation::{NSDate, NSPoint, NSRect, NSRunLoop, NSSize};
 
@@ -42,7 +42,7 @@ fn main() {
     };
     let mtm = MainThreadMarker::new().expect("tests run on the main thread");
     let _ = NSApplication::sharedApplication(mtm);
-    let tests: [Test; 8] = [
+    let tests: [Test; 9] = [
         (
             "overlay_panels_do_not_animate",
             overlay_panels_do_not_animate,
@@ -54,6 +54,7 @@ fn main() {
         ("glow_follows_gliding_window", glow_follows_gliding_window),
         ("list_panel_takes_clicks", list_panel_takes_clicks),
         ("list_click_reaches_on_click", list_click_reaches_on_click),
+        ("inbox_scrolls_below_its_tabs", inbox_scrolls_below_its_tabs),
         ("every_panel_kind_draws", every_panel_kind_draws),
         ("fades_end_off_screen", fades_end_off_screen),
         (
@@ -311,6 +312,136 @@ fn list_click_reaches_on_click(mtm: MainThreadMarker) {
         Some(&vec!["a".to_owned(), "b".to_owned()]),
         "the first row's ids"
     );
+}
+
+/// Kevin 2026-11-10: the inbox scrolls below its tabs instead of "+N more". Every card stands in the scroll view's
+/// document (it is as tall as they are); scrolled to the end, a click near the bottom reaches the last card and one on
+/// the tabs still reaches the tabs; another tab starts at its top.
+fn inbox_scrolls_below_its_tabs(mtm: MainThreadMarker) {
+    let card = |k: usize| {
+        ListLine::Card(InboxCard {
+            ids: vec![format!("c{k}")],
+            name: format!("card {k}"),
+            project: None,
+            since: None,
+            what: None,
+            tone: LabelTone::Ready,
+            open: false,
+            lines: 1,
+            menu: vec![CardButton::Park],
+            pinned: false,
+        })
+    };
+    let at = Rect::new(200.0, 200.0, 430.0, 300.0);
+    let target_of = |tab, cards: usize| {
+        let mut lines = vec![
+            ListLine::InboxTabs {
+                tab,
+                waiting: cards,
+                working: 0,
+                parked: 0,
+            },
+            ListLine::Group("Fertig".into()),
+        ];
+        lines.extend((0..cards).map(card));
+        ListTarget {
+            rect: at,
+            lines,
+            window_number: 0,
+        }
+    };
+    let target = |tab| target_of(tab, 10);
+    let clicks: Rc<RefCell<Vec<Vec<String>>>> = Rc::default();
+    let tabs: Rc<RefCell<Vec<InboxTab>>> = Rc::default();
+    let lists = {
+        let (clicks, tabs) = (Rc::clone(&clicks), Rc::clone(&tabs));
+        ListOverlay::new(
+            mtm,
+            Box::new(move |ids| clicks.borrow_mut().push(ids)),
+            Box::new(|_, _| {}),
+            Box::new(move |tab| tabs.borrow_mut().push(tab)),
+            Box::new(|| {}),
+        )
+    };
+    lists.update(&[target(InboxTab::Waiting)], None);
+    let panel = window_at(mtm, at);
+    let content = panel.contentView().expect("content view");
+    let scroll = content
+        .subviews()
+        .firstObject()
+        .expect("a view under the tabs")
+        .downcast::<NSScrollView>()
+        .expect("a scroll view");
+    let tall = 28.0 + 10.0 * 76.0;
+    let document = scroll.documentView().expect("the cards");
+    assert_eq!(document.frame().size.height, tall, "every card, no +N");
+    assert_eq!(
+        rect(scroll.frame()).height(),
+        300.0 - 44.0,
+        "below the tabs"
+    );
+
+    let clip = scroll.contentView();
+    clip.scrollToPoint(NSPoint::new(0.0, tall - (300.0 - 44.0)));
+    scroll.reflectScrolledClipView(&clip);
+    let click = |from_top: f64| {
+        let location = NSPoint::new(40.0, rect(panel.frame()).height() - from_top);
+        let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            NSEventType::LeftMouseDown,
+            location,
+            NSEventModifierFlags::empty(),
+            0.0,
+            panel.windowNumber(),
+            None,
+            0,
+            1,
+            1.0,
+        )
+        .expect("mouse event");
+        panel.sendEvent(&event);
+    };
+    click(290.0);
+    assert_eq!(
+        clicks.borrow().last(),
+        Some(&vec!["c9".to_owned()]),
+        "the last card, scrolled into view"
+    );
+    click(20.0);
+    assert_eq!(
+        *tabs.borrow(),
+        [InboxTab::Waiting],
+        "the tabs stay where they are"
+    );
+    // No frame and no ground of their own: the inbox's ground shows behind the cards (review quick 2026-11-10).
+    assert_eq!(scroll.borderType(), NSBorderType::NoBorder);
+    assert!(!scroll.drawsBackground() && !scroll.contentView().drawsBackground());
+    // Scrolled to the end and the list shrinks on the same tab (review quick 2026-11-10): what is left stays in view.
+    assert!(
+        scroll.contentView().bounds().origin.y > 0.0,
+        "still scrolled down"
+    );
+    lists.update(&[target_of(InboxTab::Waiting, 1)], None);
+    assert_eq!(
+        scroll.contentView().bounds().origin.y,
+        0.0,
+        "back up to what is left"
+    );
+    lists.update(&[target(InboxTab::Waiting)], None);
+
+    lists.update(&[target(InboxTab::Working)], None);
+    assert_eq!(
+        scroll.contentView().bounds().origin.y,
+        0.0,
+        "another tab starts at its top"
+    );
+
+    // With "Show scroll bars: Always" the scroller takes room: the cards are as wide as what is left (review quick
+    // 2026-11-10), so nothing is cut off on the right and nothing scrolls sideways.
+    scroll.setScrollerStyle(NSScrollerStyle::Legacy);
+    lists.update(&[target(InboxTab::Working)], None);
+    let left = scroll.contentSize().width;
+    assert!(left < 430.0, "the scroller takes room: {left}");
+    assert_eq!(document.frame().size.width, left);
 }
 
 /// What `view` paints at (x, y), its points from the bottom left, drawn into a bitmap at the window's scale.

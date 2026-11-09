@@ -1216,11 +1216,15 @@ pub struct InboxInput<'a> {
     pub pinned: &'a [String],
 }
 
-/// Lines of the question on the open card.
+/// Room a scroller that takes space leaves out of the cards ("Show scroll bars: Always", measured 17 pt on macOS 27).
+const INBOX_SCROLLER_ROOM: f64 = 17.0;
+
+/// Lines of the question on the open card, counted as if the scroller took its room: an overlay scroller does not,
+/// then the card may get a line more than it needs, never one less (review quick 2026-11-10).
 /// ponytail: an average character width, no font metrics in the core; measure in the macOS layer if text gets clipped.
 fn open_lines(what: &str, panel_w: f64) -> usize {
     let chars: usize = graphemes(what).map(width_of).sum();
-    let wide = (panel_w - INBOX_TEXT_X - INBOX_MARGIN).max(1.0);
+    let wide = (panel_w - INBOX_TEXT_X - INBOX_MARGIN - INBOX_SCROLLER_ROOM).max(1.0);
     ((chars as f64 * INBOX_OPEN_CHAR_W / wide).ceil() as usize).clamp(1, INBOX_OPEN_LINES_MAX)
 }
 
@@ -1283,7 +1287,8 @@ fn inbox_card(i: usize, panel_w: f64, o: &InboxInput) -> Vec<ListLine> {
 
 /// The inbox window, one tab at a time: what Kevin pinned, questions, then done; or what works, then the parking lot; or
 /// what Kevin parked and what he marked read. Every tab counts, whichever is shown. Group by the state right now, not the
-/// plan's: between two plans a session can have got an answer. Cards that do not fit the window go into "+N".
+/// plan's: between two plans a session can have got an answer. Every card is listed, however many: below the tabs the
+/// window scrolls (Kevin 2026-11-10: "scrollbar", no "+N more (in the menu)").
 ///
 /// Pinned (Kevin 2026-11-09): on top of Waiting in the order he pinned them, whatever the session does; never parked or
 /// read while pinned (`set_pinned`), and one that works is listed under Running too. "Wartet" counts only those that
@@ -1357,7 +1362,6 @@ pub fn inbox_target(list: &SideList, o: &InboxInput, window_number: i64) -> List
         working: working.len() + lot.len(),
         parked: snoozed.len() + read.len(),
     };
-    let room = list.rect.height() - tabs.height();
     let mut lines = vec![tabs];
     let (groups, nobody): (Vec<(&str, &Vec<usize>)>, &str) = match o.tab {
         InboxTab::Waiting => (
@@ -1383,39 +1387,14 @@ pub fn inbox_target(list: &SideList, o: &InboxInput, window_number: i64) -> List
             tr("Nichts geparkt.", "Nothing parked."),
         ),
     };
-    let mut left: usize = groups.iter().map(|(_, g)| g.len()).sum();
-    if left == 0 {
+    if groups.iter().all(|(_, g)| g.is_empty()) {
         lines.push(ListLine::Empty(nobody.to_owned()));
     }
-    let (mut used, mut more) = (0.0, 0);
-    for (label, group) in groups {
-        if group.is_empty() {
-            continue;
+    for (label, group) in groups.into_iter().filter(|(_, g)| !g.is_empty()) {
+        lines.push(ListLine::Group(label.to_owned()));
+        for &i in group {
+            lines.extend(inbox_card(i, list.rect.width(), o));
         }
-        if more > 0 {
-            more += group.len();
-            continue;
-        }
-        // The heading goes in with the group's first card, never alone.
-        let mut head = Some(ListLine::Group(label.to_owned()));
-        for (k, &i) in group.iter().enumerate() {
-            let card = inbox_card(i, list.rect.width(), o);
-            let h = head.as_ref().map_or(0.0, ListLine::height)
-                + card.iter().map(ListLine::height).sum::<f64>();
-            // Room for "+N" only if a card would follow this one.
-            let reserve = if left > 1 { LIST_ROW_H } else { 0.0 };
-            if used + h + reserve > room {
-                more = group.len() - k;
-                break;
-            }
-            used += h;
-            left -= 1;
-            lines.extend(head.take());
-            lines.extend(card);
-        }
-    }
-    if more > 0 {
-        lines.push(ListLine::More(more));
     }
     ListTarget {
         rect: list.rect,
