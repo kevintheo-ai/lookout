@@ -21,7 +21,7 @@ use lookout_core::status::{parse_lsof_pids, parse_nettop, run_command};
 /// `sleep` started from a shell is `sleep` in ps, its exec path `/bin/sleep`). A program that rewrites its argv[0] shows
 /// the new text, in ps as here (node's process title: `npm exec @playwright/mcp@0.0.79 …`). NOT `proc_pidpath`: it
 /// resolves symlinks, and Claude runs as `~/.local/bin/claude` -> `~/.local/share/claude/versions/2.1.319`, whose last
-/// path part is no engine name (core `engine_of`; measured 2026-11-06: ps comm `/Users/kevin/.local/bin/claude`,
+/// path part is no engine name (core `engine_of`; measured 2026-11-06: ps comm `/Users/me/.local/bin/claude`,
 /// proc_pidpath `.../versions/2.1.319`). Not readable (another user's process) -> the short name `kp_proc.p_comm`.
 /// pid 0 (kernel_task, ppid 0) is in the list, ps leaves it out. ~8 ms for 1440 processes, the first call ~25 ms
 /// (devname, see `tty_name`; measured 2026-11-06, `/bin/ps` took 120 ms). `None` = the list could not be read: the

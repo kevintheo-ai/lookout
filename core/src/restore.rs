@@ -272,12 +272,12 @@ mod tests {
     #[test]
     fn the_folder_decides_the_command() {
         let templates = BTreeMap::from([(
-            "/u/.claude-ultivor".to_owned(),
-            "/x/launch ultivor claude --resume {id}".to_owned(),
+            "/u/.claude-acme".to_owned(),
+            "/x/launch acme claude --resume {id}".to_owned(),
         )]);
         assert_eq!(
-            resume_command(&templates, "/u/.claude-ultivor", "abc"),
-            "/x/launch ultivor claude --resume abc"
+            resume_command(&templates, "/u/.claude-acme", "abc"),
+            "/x/launch acme claude --resume abc"
         );
         assert_eq!(
             resume_command(&templates, "/u/.claude", "abc"),

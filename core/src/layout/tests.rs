@@ -949,7 +949,7 @@ fn test_inbox_stays_when_nobody_waits() {
 #[test]
 fn test_inbox_counts_the_parking_lot() {
     let w = lot_windows(); // 1 and 2 park, 3 done, 4 runs, 5 question
-    let (workers, leads) = (names(&["Worker"]), names(&["Ultivor · Team lead"]));
+    let (workers, leads) = (names(&["Worker"]), names(&["Acme · Team lead"]));
     let a = plan_arrangement(&PlanInput {
         focused: Some(0),
         worker_names: &workers,
@@ -2065,9 +2065,9 @@ fn names(list: &[&str]) -> Vec<String> {
 fn lot_windows() -> Vec<TermWindow> {
     let t0 = 1000.0;
     let mut w = vec![
-        named("Ultivor · Team lead", false, t0),
-        named("Ultivor · Worker 1", false, t0 + 1.0),
-        named("Ultivor · Worker 2", false, t0 + 2.0),
+        named("Acme · Team lead", false, t0),
+        named("Acme · Worker 1", false, t0 + 1.0),
+        named("Acme · Worker 2", false, t0 + 2.0),
         named("Shop", true, t0 + 3.0),
         named("Docs", false, t0 + 4.0),
         fake_window_with(true, t0 + 5.0, None, true, true),
@@ -2079,7 +2079,7 @@ fn lot_windows() -> Vec<TermWindow> {
 #[test]
 fn parking_running_and_watching_workers_park_on_main() {
     let w = lot_windows();
-    let (workers, leads) = (names(&["Worker"]), names(&["Ultivor · Team lead"]));
+    let (workers, leads) = (names(&["Worker"]), names(&["Acme · Team lead"]));
     let p = PlanInput {
         focused: Some(0),
         worker_names: &workers,
@@ -2254,7 +2254,7 @@ fn parking_needs_a_visible_session() {
 fn parking_matches_case_insensitively_and_by_transcript_name() {
     let workers = names(&["Worker"]);
     assert!(
-        is_worker(&named("ultivor · WORKER 3", false, 1.0), &workers, &[]),
+        is_worker(&named("acme · WORKER 3", false, 1.0), &workers, &[]),
         "case-insensitive"
     );
     let mut by_transcript = named("2f9c-uuid", false, 1.0);
@@ -2609,7 +2609,7 @@ fn plan_log_line_like_swift() {
 #[test]
 fn parking_by_hand_like_a_worker() {
     let w = lot_windows();
-    let (workers, leads) = (names(&["Worker"]), names(&["Ultivor · Team lead"]));
+    let (workers, leads) = (names(&["Worker"]), names(&["Acme · Team lead"]));
     let by_hand: BTreeSet<String> = [&w[0], &w[3], &w[4]]
         .iter()
         .map(|x| x.sessions[0].id.clone())
@@ -2659,7 +2659,7 @@ fn parking_by_hand_like_a_worker() {
 #[test]
 fn parking_kept_by_hand_stays() {
     let w = lot_windows();
-    let (workers, leads) = (names(&["Worker"]), names(&["Ultivor · Team lead"]));
+    let (workers, leads) = (names(&["Worker"]), names(&["Acme · Team lead"]));
     let kept: BTreeSet<String> = BTreeSet::from([w[1].sessions[0].id.clone()]);
     let none = BTreeSet::new();
     let p = PlanInput {

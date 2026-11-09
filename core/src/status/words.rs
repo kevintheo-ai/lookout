@@ -172,7 +172,7 @@ fn closes_at_end(s: &str) -> bool {
 impl Digest {
     /// What the session says about itself at the end of its last answer (`lookout_line`). Not after Kevin's next
     /// message: the old line would stand on the label, say over an approval question. A request that only sends Kevin
-    /// to another window (`other_window_names`, without "here") counts as "needs nothing": Ultivor sessions wrote "? …
+    /// to another window (`other_window_names`, without "here") counts as "needs nothing": sessions wrote "? …
     /// in the key account" despite the instruction (Kevin 2026-10-13, 28 of 32 such lines did not need him here). In
     /// the named window itself it stays a request.
     pub fn line(&self, other_window_names: &[String]) -> Option<LookoutLine> {
@@ -216,11 +216,11 @@ fn ends_with_place(names: &[String], reason: &str) -> bool {
     })
 }
 
-/// Kevin 2026-11-07 (screenshot 12:42, X-Redaktion: "? … Repost und Like … (Karten bereit)"): a "?" that sends Kevin
+/// Kevin 2026-11-07 (screenshot 12:42: "? … (Karten bereit)"): a "?" that sends Kevin
 /// to a place outside the terminal (ends with `ask_until_read_names` in brackets, e.g. "(Kartenseite)"; not with "here")
 /// waits for him only until he has had the window in front after the answer, then counts as "needs nothing": watching,
 /// a worker parks.
-/// Kevin 2026-11-07 (screenshot 18:36, AgentOperator · Team-Lead: "? … Antwort-Karte für @EnvolDev, ja oder nein?"):
+/// Kevin 2026-11-07 (screenshot 18:36, a lead session: "? … Antwort-Karte, ja oder nein?"):
 /// "wenn er eine frage hat muss es dialog sein sonst sehe ich es nicht". A lead (`lead_names`) asks Kevin in a dialog
 /// (that shows as an open question, not through this line); its read text "?" counts as "needs nothing", "here" or not.
 /// Runs before `BackgroundWatch`, `Standby` and `apply_lookout_lines`, so all of them and the label see the same line.

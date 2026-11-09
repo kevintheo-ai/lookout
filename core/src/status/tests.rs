@@ -1965,7 +1965,7 @@ fn test_lead_reports_on_other_windows() {
     );
 }
 
-/// Kevin 2026-11-07 (screenshots 11:44 Ultivor with its watcher, 11:46 AgentOperator waiting for its workers): a lead
+/// Kevin 2026-11-07 (screenshots 11:44 one session with its watcher, 11:46 another waiting for its workers): a lead
 /// said "✓", Kevin read it, the lead waits for its watcher or workers again: watching. Unread, "?" or a worker: done.
 #[test]
 fn test_lead_done_read() {
@@ -2102,7 +2102,7 @@ fn test_lead_done_read() {
     );
 }
 
-/// Kevin 2026-11-07 (screenshot 12:42, X-Redaktion): "? … Repost und Like (Karten bereit)" is done on the card page,
+/// Kevin 2026-11-07 (screenshot 12:42): "? … (Karten bereit)" is done on the card page,
 /// not in the window: it waits for Kevin until he has read it, then the window watches again (a worker parks).
 #[test]
 fn test_ask_until_read() {
@@ -2114,7 +2114,7 @@ fn test_ask_until_read() {
     let marked = |text: &str, seen: &BTreeMap<String, Time>| {
         let mut s = vec![background_session(
             "claude:x",
-            "AgentOperator · X-Redaktion",
+            "Studio · X-Redaktion",
             text,
             false,
         )];
@@ -2146,10 +2146,10 @@ fn test_ask_until_read() {
         Some(LineStatus::Ask),
         "a request without the card page stays, read or not"
     );
-    // review quick 2026-11-07 (Grok), real lines of the last days: only "(Kartenseite)" at the end counts.
+    // Only "(Kartenseite)" at the end counts.
     for here in [
         "? Lookout: Bitte die Kartenseite freigeben",
-        "? Lookout: Bitte Kartenseite mit k.theobald@eliant-int.com als Editor teilen und 1, 2 oder 3 für Postiz wählen",
+        "? Lookout: Bitte Kartenseite mit someone@example.com als Editor teilen und 1, 2 oder 3 für Postiz wählen",
         "? Lookout: Bitte die offenen Karten auf der Kartenseite posten",
     ] {
         assert_eq!(
@@ -2159,7 +2159,7 @@ fn test_ask_until_read() {
         );
     }
     for there in [
-        "? Lookout: Bitte die Antwort an Christopher Owen posten (Kartenseite)",
+        "? Lookout: Bitte die Antwort an Sam Doe posten (Kartenseite)",
         "? Lookout: Bitte Repost (kartenseite) ",
         "? Lookout: Bitte (Kartenseite)",
     ] {
@@ -2172,13 +2172,13 @@ fn test_ask_until_read() {
     // review quick 2026-11-07 (GLM): in the window named in `other_window_names` itself a request stays a request.
     let mut key = vec![background_session(
         "claude:x",
-        "Ultivor · Key account",
+        "Acme · Key account",
         "? Lookout: Bitte Freigabe im Key account, dann Like (Kartenseite)",
         false,
     )];
     key[0].digest.as_mut().unwrap().answer_at = Some(answered);
     let others = ["key account".to_owned()];
-    key[0].digest.as_mut().unwrap().name = Some("Ultivor · Key account".into());
+    key[0].digest.as_mut().unwrap().name = Some("Acme · Key account".into());
     mark_read_asks(&mut key, &names, &others, &[], &read);
     assert_eq!(
         key[0]
@@ -2231,7 +2231,7 @@ fn test_ask_until_read() {
     );
 }
 
-/// Kevin 2026-11-09 (screenshot 02:42, AgentOperator · Team-Lead: "◌ … (Wochenauswertung am Montag)", 36 min FERTIG): a
+/// Kevin 2026-11-09 (screenshot 02:42, a lead session: "◌ … (Wochenauswertung am Montag)", 36 min FERTIG): a
 /// lead whose read line needs nothing rests, even with nothing due to wake it. Unread, "✓", another window: done.
 #[test]
 fn test_lead_rests_without_a_waker() {
@@ -2287,11 +2287,11 @@ fn test_lead_rests_without_a_waker() {
     );
 }
 
-/// Kevin 2026-11-07 (screenshot 18:36, AgentOperator · Team-Lead): "wenn er eine frage hat muss es dialog sein sonst
+/// Kevin 2026-11-07 (screenshot 18:36, a lead session): "wenn er eine frage hat muss es dialog sein sonst
 /// sehe ich es nicht". A lead's text "?" waits only until Kevin has read it; its dialog (open question) still waits.
 #[test]
 fn test_lead_ask_read() {
-    let leads = ["AgentOperator · Team-Lead".to_owned()];
+    let leads = ["Studio · Team-Lead".to_owned()];
     let answered = 1_790_700_000.0;
     let read = BTreeMap::from([("claude:l".to_owned(), answered + 30.0)]);
     let unread = BTreeMap::new();
@@ -2306,7 +2306,7 @@ fn test_lead_ask_read() {
         s.remove(0)
     };
     let status = |s: &Session| s.digest.as_ref().unwrap().line(&[]).map(|l| l.status);
-    let lead = "AgentOperator · Team-Lead";
+    let lead = "Studio · Team-Lead";
     assert_eq!(
         status(&marked(lead, None, &unread)),
         Some(LineStatus::Ask),
@@ -2318,12 +2318,12 @@ fn test_lead_ask_read() {
         "read: needs nothing, 'here' or not"
     );
     assert_eq!(
-        status(&marked("agentoperator-ad", Some(lead), &read)),
+        status(&marked("studio-ad", Some(lead), &read)),
         Some(LineStatus::Nothing),
         "the lead's own name from the transcript counts too"
     );
     assert_eq!(
-        status(&marked("AgentOperator · X-Redaktion", None, &read)),
+        status(&marked("Studio · X-Redaktion", None, &read)),
         Some(LineStatus::Ask),
         "not a lead: the read '?' stays with Kevin"
     );

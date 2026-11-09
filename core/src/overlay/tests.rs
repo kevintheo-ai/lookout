@@ -662,7 +662,7 @@ fn test_menu_row() {
     let fragt = Session {
         waiting: true,
         digest: Some(Digest {
-            name: some("Ultivor · #8 Rules page build"),
+            name: some("Acme · #8 Rules page build"),
             question: some("Mergen?"),
             ..Digest::default()
         }),
@@ -670,8 +670,8 @@ fn test_menu_row() {
             "claude:m1",
             Engine::Claude,
             Some(1),
-            "ultivor-m1",
-            "/Users/test/AI/Ultivor",
+            "acme-m1",
+            "/Users/test/AI/Acme",
             true,
             true,
         )
@@ -691,7 +691,7 @@ fn test_menu_row() {
         ),
         (
             "#8 Rules page build",
-            Some("Ultivor"),
+            Some("Acme"),
             Some("10 Min."),
             LabelTone::Waiting
         ),
@@ -699,14 +699,14 @@ fn test_menu_row() {
     );
     assert_eq!(
         row.subtitle(&["minimiert (im Dock)".to_owned()]).as_deref(),
-        Some("Ultivor · minimiert (im Dock) · „Mergen?“")
+        Some("Acme · minimiert (im Dock) · „Mergen?“")
     );
     assert_eq!(
         row.project_line(&["Arbeiter".to_owned()]).as_deref(),
-        Some("Ultivor · Arbeiter"),
+        Some("Acme · Arbeiter"),
         "submenus: project and note, the dot shows the state"
     );
-    assert_eq!(row.compact(), "#8 Rules page build · Ultivor");
+    assert_eq!(row.compact(), "#8 Rules page build · Acme");
 
     // Without an own name the folder is the name; a watching one says so below it (it stands with the working ones).
     let wacht = Session {
@@ -753,8 +753,8 @@ fn test_menu_row() {
     // AppKit wraps a subtitle at about 290 pt whatever the menu's width: one line, cut with an ellipsis.
     let lang = Session {
         digest: Some(Digest {
-            name: some("AgentOperator · Team-Lead X und Labor"),
-            step: some("Labor fragt nach dem LongCat-Konto und dem Wochenplan"),
+            name: some("Studio · Team-Lead X und Labor"),
+            step: some("Labor fragt nach dem Test-Konto und dem Wochenplan"),
             ..Digest::default()
         }),
         ..Session::new(
@@ -762,7 +762,7 @@ fn test_menu_row() {
             Engine::Claude,
             Some(4),
             "ao-m4",
-            "/Users/test/AI/AgentOperator",
+            "/Users/test/AI/Studio",
             false,
             true,
         )
@@ -771,7 +771,7 @@ fn test_menu_row() {
         .subtitle(&[])
         .unwrap();
     assert!(
-        sub.starts_with("AgentOperator · jetzt: Labor fragt")
+        sub.starts_with("Studio · jetzt: Labor fragt")
             && sub.ends_with('…')
             && graphemes(&sub).count() <= MENU_SUBTITLE_LIMIT,
         "{sub}"
@@ -1652,13 +1652,8 @@ fn inbox_window(id: u64, waiting: bool, name: &str, question: Option<&str>) -> T
 
 fn inbox_windows() -> Vec<TermWindow> {
     vec![
-        inbox_window(
-            0,
-            true,
-            "MixFino · Italien",
-            Some("Pausieren oder halbieren?"),
-        ),
-        inbox_window(1, false, "MixFino · Spanien", None),
+        inbox_window(0, true, "Shop · Italien", Some("Pausieren oder halbieren?")),
+        inbox_window(1, false, "Shop · Spanien", None),
     ]
 }
 
@@ -1747,7 +1742,7 @@ fn test_inbox_groups_and_open_card() {
     let question = card(&lines[2]);
     assert!(question.open && question.tone == LabelTone::Waiting);
     assert_eq!(question.name, "Italien");
-    assert_eq!(question.project.as_deref(), Some("MixFino"));
+    assert_eq!(question.project.as_deref(), Some("Shop"));
     assert_eq!(question.what.as_deref(), Some("Pausieren oder halbieren?"));
     assert_eq!(
         lines[3],
@@ -1944,9 +1939,9 @@ fn running_window(id: u64, name: &str) -> TermWindow {
 fn test_inbox_working_tab() {
     let w = vec![
         running_window(0, "Lookout · Eingang"),
-        running_window(1, "MixFino · PPC"),
-        running_window(2, "Ultivor · #9"),
-        inbox_window(3, true, "MixFino · Italien", Some("Ja?")),
+        running_window(1, "Shop · PPC"),
+        running_window(2, "Acme · #9"),
+        inbox_window(3, true, "Shop · Italien", Some("Ja?")),
     ];
     let list = SideList {
         rect: Rect::new(0.0, 0.0, 430.0, 900.0),

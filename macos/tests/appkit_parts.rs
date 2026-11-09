@@ -63,7 +63,7 @@ mod parts {
         let bundle = NSBundle::mainBundle()
             .bundleIdentifier()
             .map(|s| s.to_string());
-        assert_ne!(bundle.as_deref(), Some("com.eliant.lookout"));
+        assert_ne!(bundle.as_deref(), Some("io.github.kevintheo-ai.lookout"));
         // ponytail: with the key removed, cfprefsd still leaves an empty plist in ~/Library/Preferences, one per test
         // binary name appkit_parts-<hash> (measured 2026-11-06; deleting the domain does not remove it); a fixed test
         // bundle id (embedded Info.plist) would keep it to one file.
