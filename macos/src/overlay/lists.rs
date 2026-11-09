@@ -11,7 +11,7 @@ use objc2_app_kit::{
     NSBezierPath, NSColor, NSEvent, NSLineBreakMode, NSMenu, NSMenuItem, NSMutableParagraphStyle,
     NSPanel, NSResponder, NSTextAlignment, NSView,
 };
-use objc2_foundation::{NSObject, NSRect, NSString};
+use objc2_foundation::{NSObject, NSPoint, NSRect, NSString};
 
 use lookout_core::geom::Rect;
 use lookout_core::i18n::tr;
@@ -78,6 +78,42 @@ fn fill_rounded(r: Rect, radius: f64, color: &NSColor) {
     NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(ns_rect(r), radius, radius).fill();
 }
 
+/// The pin before the name of a pinned card, as in the preview Kevin chose from (2026-11-09): a push pin, its outline in
+/// a 24-point box, drawn `PIN_SIZE` wide.
+const PIN_OUTLINE: [(f64, f64); 14] = [
+    (14.5, 2.5),
+    (21.5, 9.5),
+    (18.9, 10.4),
+    (15.5, 13.8),
+    (15.8, 18.5),
+    (13.9, 20.4),
+    (9.7, 16.2),
+    (4.4, 21.5),
+    (3.0, 20.1),
+    (8.3, 14.8),
+    (4.1, 10.6),
+    (6.0, 8.7),
+    (10.7, 9.0),
+    (14.1, 5.6),
+];
+const PIN_SIZE: f64 = 13.0;
+
+fn draw_pin(x: f64, y: f64, color: &NSColor) {
+    let path = NSBezierPath::bezierPath();
+    let scale = PIN_SIZE / 24.0;
+    for (k, &(px, py)) in PIN_OUTLINE.iter().enumerate() {
+        let p = NSPoint::new(x + px * scale, y + py * scale);
+        if k == 0 {
+            path.moveToPoint(p);
+        } else {
+            path.lineToPoint(p);
+        }
+    }
+    path.closePath();
+    color.setFill();
+    path.fill();
+}
+
 /// One card of the inbox, `block` high with the line that belongs to it. Top-down, like the view.
 fn draw_card(c: &InboxCard, y: f64, width: f64, block: f64, tints: &Tints) {
     let left = paragraph(NSTextAlignment::Left, false);
@@ -100,9 +136,15 @@ fn draw_card(c: &InboxCard, y: f64, width: f64, block: f64, tints: &Tints) {
         &centre,
     );
     let text_w = width - INBOX_TEXT_X - INBOX_MARGIN;
+    let pin_w = if c.pinned {
+        draw_pin(INBOX_TEXT_X, y + 11.0, &tints.color(LabelTone::Waiting));
+        PIN_SIZE + 5.0
+    } else {
+        0.0
+    };
     line(
         &c.name,
-        Rect::new(INBOX_TEXT_X, y + 8.0, text_w - 106.0, 20.0),
+        Rect::new(INBOX_TEXT_X + pin_w, y + 8.0, text_w - 106.0 - pin_w, 20.0),
         15.0,
         FontWeight::Semibold,
         &NSColor::whiteColor(),
@@ -154,6 +196,8 @@ fn button_title(button: CardButton) -> &'static str {
         ),
         CardButton::Park => tr("Parken", "Park"),
         CardButton::Unpark => tr("Zurückholen", "Bring back"),
+        CardButton::Pin => tr("Anheften", "Pin"),
+        CardButton::Unpin => tr("Lösen", "Unpin"),
     }
 }
 

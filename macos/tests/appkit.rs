@@ -391,6 +391,8 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
             open,
             lines: 2,
             menu: vec![CardButton::Park],
+            // The open card is the pinned one: its pin is probed below.
+            pinned: open,
         })
     };
     let ib = Rect::new(60.0, 200.0, 430.0, 500.0);
@@ -466,6 +468,15 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
         red > green && green > blue,
         "waiting tint: {red} {green} {blue}"
     );
+    // The pin before the name of the pinned card (tabs 44, group 28, then the card) takes the waiting tint; the same
+    // place on the card that is not pinned shows the inbox's ground.
+    let inbox_view = window_at(mtm, ib).contentView().expect("content view");
+    let amber = |y: f64| {
+        let c = painted(&inbox_view, 57.6, y);
+        c.redComponent() > c.greenComponent() && c.greenComponent() > c.blueComponent()
+    };
+    assert!(amber(500.0 - 89.5), "pin on the pinned card");
+    assert!(!amber(500.0 - 220.5), "no pin on the other card");
 }
 
 /// The fades run: the glow's ticker breathes a new frame in and a dropped one out until it leaves the screen, a label's

@@ -30,7 +30,7 @@ use lookout_core::i18n::{is_german, prefers_german, set_german};
 use lookout_core::layout::{
     DEFAULT_GRID, PlanInput, ReadAnswers, attention_order, first_ready_time, is_worker,
     layout_candidates, lot_member, plan_arrangement, plan_log_line, press_button, resolve_target,
-    rest_sequence, status_swap, swapped_rest, unique_screen_ids,
+    rest_sequence, set_pinned, status_swap, swapped_rest, unique_screen_ids, walk_skips,
 };
 use lookout_core::mapping::{
     PING_POLL, PING_ROUNDS, PING_WAIT, Ping, PingState, attach_processes, index_of_window,
@@ -79,6 +79,8 @@ pub(crate) const DEFAULTS_PARKED: &str = "lookout.parked";
 pub(crate) const DEFAULTS_KEPT: &str = "lookout.kept";
 /// Sessions Kevin parked in the inbox.
 pub(crate) const DEFAULTS_SNOOZED: &str = "lookout.snoozed";
+/// Sessions Kevin pinned in the inbox, in the order he pinned them.
+pub(crate) const DEFAULTS_PINNED: &str = "lookout.pinned";
 /// Control-room screens, chosen in the menu from three screens on (Kevin 2026-10-01).
 pub(crate) const DEFAULTS_PAIR_WORK: &str = "lookout.leitstand.work";
 pub(crate) const DEFAULTS_PAIR_CONTROL: &str = "lookout.leitstand.control";
@@ -243,6 +245,9 @@ pub(crate) struct App {
     pub(crate) hand_kept: BTreeSet<String>,
     /// Session ids Kevin parked in the inbox (`is_snoozed`). ponytail: never thinned out either, like `excluded`.
     snoozed: BTreeSet<String>,
+    /// Session ids Kevin pinned in the inbox, in the order he pinned them (`pin_rank`). ponytail: never thinned out
+    /// either; a session that comes back with its id (`claude --resume`) is pinned again.
+    pinned: Vec<String>,
     /// The session that came to the front last, with when it was seen before that (`seen_outside_front`).
     in_front: Option<(String, Option<Time>)>,
     /// What Kevin marked read in the inbox.
@@ -449,6 +454,7 @@ impl App {
             restoring_since: BTreeMap::new(),
             restore_unsaved: false,
             snoozed,
+            pinned: prefs::string_array(DEFAULTS_PINNED).unwrap_or_default(),
             in_front: None,
             read_answers: ReadAnswers::new(),
             inbox_tab: InboxTab::default(),
@@ -1070,6 +1076,7 @@ impl App {
             main: self.main_index(),
             tab: self.inbox_tab,
             snoozed: &self.snoozed,
+            pinned: &self.pinned,
         };
         Some(
             self.arrangement
@@ -1914,7 +1921,7 @@ impl App {
     }
 
     /// A button on the inbox's open card (Kevin 2026-11-09): the session leaves the list, and the next one comes to the
-    /// terminal's place, the same way as a click on its row; bringing back moves nothing.
+    /// terminal's place, the same way as a click on its row; bringing back moves nothing, nor does pinning.
     fn list_button(&mut self, button: CardButton, ids: &[String]) {
         let Some(w) = self
             .windows
@@ -1923,16 +1930,28 @@ impl App {
         else {
             return;
         };
-        let main = self.main_index();
-        let next = press_button(
-            button,
-            &self.windows,
-            &self.excluded,
-            main,
-            w,
-            &mut self.read_answers,
-            &mut self.snoozed,
-        );
+        let next = if matches!(button, CardButton::Pin | CardButton::Unpin) {
+            set_pinned(
+                &self.windows[w],
+                &mut self.pinned,
+                &mut self.snoozed,
+                &mut self.read_answers,
+                button == CardButton::Pin,
+            );
+            prefs::set_string_array(DEFAULTS_PINNED, &self.pinned);
+            None
+        } else {
+            let main = self.main_index();
+            press_button(
+                button,
+                &self.windows,
+                &walk_skips(&self.excluded, &self.pinned),
+                main,
+                w,
+                &mut self.read_answers,
+                &mut self.snoozed,
+            )
+        };
         prefs::set_string_array(
             DEFAULTS_SNOOZED,
             &self.snoozed.iter().cloned().collect::<Vec<_>>(),

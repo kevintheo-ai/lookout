@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 use crate::i18n::set_german;
-use crate::layout::{PlanInput, ReadAnswers, mark_read, plan_arrangement};
+use crate::layout::{PlanInput, ReadAnswers, mark_read, plan_arrangement, set_pinned};
 use crate::model::LayoutMode::Reading;
 use crate::model::StackSide::Right;
 use crate::model::Target::Single;
@@ -1672,7 +1672,7 @@ fn inbox_lines_of(
     read: &ReadAnswers,
     tab: InboxTab,
 ) -> Vec<ListLine> {
-    inbox_lines_full(w, list, main, read, tab, &BTreeSet::new())
+    inbox_lines_full(w, list, main, read, tab, &BTreeSet::new(), &[])
 }
 
 fn inbox_lines_full(
@@ -1682,6 +1682,7 @@ fn inbox_lines_full(
     read: &ReadAnswers,
     tab: InboxTab,
     snoozed: &BTreeSet<String>,
+    pinned: &[String],
 ) -> Vec<ListLine> {
     let (since, lookout) = (BTreeMap::new(), BTreeMap::new());
     let planned: Vec<u64> = w.iter().map(|x| x.id).collect();
@@ -1697,6 +1698,7 @@ fn inbox_lines_full(
             main,
             tab,
             snoozed,
+            pinned,
         },
         7,
     )
@@ -1773,7 +1775,10 @@ fn test_inbox_done_card_has_a_right_click_and_no_button() {
     let top: f64 = lines[..k].iter().map(ListLine::height).sum();
     let hit = card_at(&lines, top + 5.0).unwrap();
     assert_eq!(hit.ids, [w[1].sessions[0].id.clone()]);
-    assert_eq!(hit.menu, [CardButton::Park, CardButton::ReadNext]);
+    assert_eq!(
+        hit.menu,
+        [CardButton::Pin, CardButton::Park, CardButton::ReadNext]
+    );
     assert_eq!(card_at(&lines, 5.0), None, "the tabs are no card");
 }
 
@@ -1791,6 +1796,7 @@ fn test_inbox_parked_card_button_is_hit() {
         &ReadAnswers::new(),
         InboxTab::Parked,
         &snoozed,
+        &[],
     );
     let k = lines
         .iter()
@@ -2134,7 +2140,7 @@ fn test_inbox_parked_tab() {
             })
             .collect()
     };
-    let parked = inbox_lines_full(&w, &list, Some(1), &read, InboxTab::Parked, &snoozed);
+    let parked = inbox_lines_full(&w, &list, Some(1), &read, InboxTab::Parked, &snoozed, &[]);
     assert_eq!(
         parked[0],
         ListLine::InboxTabs {
@@ -2156,17 +2162,17 @@ fn test_inbox_parked_tab() {
     );
     assert!(parked.contains(&ListLine::Group("Gelesen".into())));
 
-    let waiting = inbox_lines_full(&w, &list, None, &read, InboxTab::Waiting, &snoozed);
+    let waiting = inbox_lines_full(&w, &list, None, &read, InboxTab::Waiting, &snoozed, &[]);
     assert_eq!(
         names(&waiting),
         ["Fragt trotzdem"],
         "a parked session that asks still comes"
     );
-    let working = inbox_lines_full(&w, &list, None, &read, InboxTab::Working, &snoozed);
+    let working = inbox_lines_full(&w, &list, None, &read, InboxTab::Working, &snoozed, &[]);
     assert_eq!(names(&working), ["Laeuft"]);
 }
 
-/// Parking is offered everywhere: on a running card and on a question too.
+/// Parking and pinning are offered everywhere: on a running card and on a question too.
 #[test]
 fn test_inbox_park_on_every_card() {
     let w = vec![running_window(0, "A · B")];
@@ -2176,12 +2182,151 @@ fn test_inbox_park_on_every_card() {
         inbox: true,
     };
     let lines = inbox_lines_of(&w, &list, None, &ReadAnswers::new(), InboxTab::Working);
-    assert_eq!(card(&lines[2]).menu, [CardButton::Park]);
+    assert_eq!(card(&lines[2]).menu, [CardButton::Pin, CardButton::Park]);
     let asks = vec![inbox_window(0, true, "A · B", Some("Ja?"))];
     let list = inbox_list(&[0], 900.0);
     let lines = inbox_lines(&asks, &list, Some(0), &ReadAnswers::new());
-    assert_eq!(card(&lines[2]).menu, [CardButton::Park]);
+    assert_eq!(card(&lines[2]).menu, [CardButton::Pin, CardButton::Park]);
     assert!(!lines.iter().any(|l| matches!(l, ListLine::Buttons { .. })));
+}
+
+/// Kevin 2026-11-09: a pinned card stands in its own group on top of Waiting, in the order he pinned them, whatever its
+/// session does, until he unpins it. Below it all stays as it was. One that works is listed under Running too; "Wartet"
+/// counts only who waits.
+#[test]
+fn test_inbox_pinned_on_top() {
+    let w = vec![
+        inbox_window(0, true, "Shop · Italien", Some("Ja?")),
+        inbox_window(1, false, "Shop · Spanien", None),
+        running_window(2, "Acme · Vertrag"),
+        inbox_window(3, false, "Studio · Ton", None),
+    ];
+    let id = |i: usize| w[i].sessions[0].id.clone();
+    let list = SideList {
+        rect: Rect::new(0.0, 0.0, 430.0, 900.0),
+        entries: vec![
+            ListEntry::Row(0),
+            ListEntry::Row(1),
+            ListEntry::Row(3),
+            ListEntry::Working(2),
+        ],
+        inbox: true,
+    };
+    let names = |lines: &[ListLine]| -> Vec<String> {
+        lines
+            .iter()
+            .filter_map(|l| match l {
+                ListLine::Card(c) => Some(c.name.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let none = BTreeSet::new();
+    let read = ReadAnswers::new();
+    let tab = |which, snoozed: &BTreeSet<String>, pinned: &[String]| {
+        inbox_lines_full(&w, &list, None, &read, which, snoozed, pinned)
+    };
+
+    let lines = tab(InboxTab::Waiting, &none, &[id(2), id(3)]);
+    assert_eq!(
+        lines[0],
+        ListLine::InboxTabs {
+            tab: InboxTab::Waiting,
+            waiting: 3,
+            working: 1,
+            parked: 0
+        },
+        "the pinned one that works is not counted as waiting"
+    );
+    assert_eq!(lines[1], ListLine::Group("Angeheftet".into()));
+    assert_eq!(lines[4], ListLine::Group("Fragen an dich".into()));
+    assert_eq!(lines[6], ListLine::Group("Fertig".into()));
+    assert_eq!(names(&lines), ["Vertrag", "Ton", "Italien", "Spanien"]);
+    let (pin, other) = (card(&lines[2]), card(&lines[5]));
+    assert!(pin.pinned && !other.pinned);
+    assert_eq!(pin.menu, [CardButton::Unpin], "only unpinning");
+    assert_eq!(other.menu, [CardButton::Pin, CardButton::Park]);
+
+    let lines = tab(InboxTab::Waiting, &none, &[id(3), id(2)]);
+    assert_eq!(
+        names(&lines)[..2],
+        ["Ton", "Vertrag"],
+        "in the order pinned"
+    );
+
+    let lines = tab(InboxTab::Working, &none, &[id(2)]);
+    assert_eq!(names(&lines), ["Vertrag"]);
+    assert!(card(&lines[2]).pinned);
+}
+
+/// Review quick 2026-11-09: pinning ends an old park, like "Bring back". A parked session that asked again and was pinned
+/// there stays under Running once it works again, and after unpinning it does not drop back to Parked.
+#[test]
+fn test_inbox_pin_ends_a_park() {
+    let w = vec![running_window(0, "Acme · Postfach")];
+    let id = w[0].sessions[0].id.clone();
+    let mut snoozed = BTreeSet::from([id.clone()]);
+    let mut read = ReadAnswers::new();
+    mark_read(&w[0], &mut read);
+    let mut pinned = vec![];
+    set_pinned(&w[0], &mut pinned, &mut snoozed, &mut read, true);
+    let list = SideList {
+        rect: Rect::new(0.0, 0.0, 430.0, 900.0),
+        entries: vec![ListEntry::Working(0)],
+        inbox: true,
+    };
+    let lines = inbox_lines_full(&w, &list, None, &read, InboxTab::Working, &snoozed, &pinned);
+    assert_eq!(card(&lines[2]).name, "Postfach", "still under Running");
+    assert!(card(&lines[2]).pinned);
+
+    set_pinned(&w[0], &mut pinned, &mut snoozed, &mut read, false);
+    let lines = inbox_lines_full(&w, &list, None, &read, InboxTab::Parked, &snoozed, &pinned);
+    assert_eq!(lines[1], ListLine::Empty("Nichts geparkt.".into()));
+    assert!(read.is_empty(), "no old read mark left either");
+}
+
+/// Review quick 2026-11-09, round 2: a tab with an old park that joins a pinned window later changes nothing while it is
+/// pinned (still under Running, not under Parked, no way-back button on the open card), and unpinning ends that park.
+#[test]
+fn test_inbox_pin_outweighs_a_park_that_joins_later() {
+    let mut w = vec![running_window(0, "Acme · Postfach")];
+    let mut joined = w[0].sessions[0].clone();
+    joined.id = "claude:joined".into();
+    let mut snoozed = BTreeSet::from([joined.id.clone()]);
+    let mut read = ReadAnswers::new();
+    let mut pinned = vec![];
+    set_pinned(&w[0], &mut pinned, &mut snoozed, &mut read, true);
+    w[0].sessions.push(joined);
+    let list = SideList {
+        rect: Rect::new(0.0, 0.0, 430.0, 900.0),
+        entries: vec![ListEntry::Working(0)],
+        inbox: true,
+    };
+    let running = inbox_lines_full(
+        &w,
+        &list,
+        Some(0),
+        &read,
+        InboxTab::Working,
+        &snoozed,
+        &pinned,
+    );
+    assert_eq!(running[1], ListLine::Group("Arbeitet".into()));
+    assert!(
+        matches!(running.get(2), Some(ListLine::Card(c)) if c.pinned && c.menu == [CardButton::Unpin]),
+        "still under Running, pinned"
+    );
+    assert!(
+        !running
+            .iter()
+            .any(|l| matches!(l, ListLine::Buttons { .. })),
+        "no way-back button on a pinned card"
+    );
+    let parked = inbox_lines_full(&w, &list, None, &read, InboxTab::Parked, &snoozed, &pinned);
+    assert_eq!(parked[1], ListLine::Empty("Nichts geparkt.".into()));
+
+    set_pinned(&w[0], &mut pinned, &mut snoozed, &mut read, false);
+    assert!(snoozed.is_empty(), "unpinning ends it too");
 }
 
 /// A long question gets more lines on the open card, a short one stays at one, and it never grows without end.

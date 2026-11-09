@@ -13,7 +13,9 @@ use std::f64::consts::PI;
 
 use crate::geom::{Rect, Size};
 use crate::i18n::tr;
-use crate::layout::{LIST_HEADER_H, LIST_ROW_H, ReadAnswers, is_read, is_snoozed, screen_index};
+use crate::layout::{
+    LIST_HEADER_H, LIST_ROW_H, ReadAnswers, is_read, is_snoozed, pin_rank, screen_index,
+};
 use crate::mapping::{index_of_window, last_path_component};
 use crate::model::{
     Arrangement, CardButton, Engine, LabelTone, LastBlock, ListEntry, LookoutLine, OnScreenWindow,
@@ -982,6 +984,8 @@ pub struct InboxCard {
     pub lines: usize,
     /// What a right-click offers.
     pub menu: Vec<CardButton>,
+    /// Pinned by Kevin (`pin_rank`): a pin before the name.
+    pub pinned: bool,
 }
 
 /// A list line, ready to draw. `ids`: the sessions of the window (for the click). The first three are the side lists,
@@ -1208,6 +1212,8 @@ pub struct InboxInput<'a> {
     pub tab: InboxTab,
     /// Session ids Kevin parked (`is_snoozed`).
     pub snoozed: &'a BTreeSet<String>,
+    /// Session ids Kevin pinned, in the order he pinned them (`pin_rank`).
+    pub pinned: &'a [String],
 }
 
 /// Lines of the question on the open card.
@@ -1233,14 +1239,18 @@ fn inbox_card(i: usize, panel_w: f64, o: &InboxInput) -> Vec<ListLine> {
     });
     let open = Some(i) == o.main;
     let ids: Vec<String> = w.sessions.iter().map(|s| s.id.clone()).collect();
-    let parked =
-        is_snoozed(w, o.snoozed, o.read) || (c.tone == LabelTone::Ready && is_read(w, o.read));
-    let menu = if parked {
+    // A pinned card stays until unpinned: parking or hiding it is not offered, and an old mark does not count.
+    let pinned = pin_rank(w, o.pinned).is_some();
+    let parked = !pinned
+        && (is_snoozed(w, o.snoozed, o.read) || (c.tone == LabelTone::Ready && is_read(w, o.read)));
+    let menu = if pinned {
+        vec![CardButton::Unpin]
+    } else if parked {
         vec![CardButton::Unpark]
     } else if c.tone == LabelTone::Ready {
-        vec![CardButton::Park, CardButton::ReadNext]
+        vec![CardButton::Pin, CardButton::Park, CardButton::ReadNext]
     } else {
-        vec![CardButton::Park]
+        vec![CardButton::Pin, CardButton::Park]
     };
     let mut out = vec![ListLine::Card(InboxCard {
         ids: ids.clone(),
@@ -1252,6 +1262,7 @@ fn inbox_card(i: usize, panel_w: f64, o: &InboxInput) -> Vec<ListLine> {
         tone: c.tone,
         open,
         menu,
+        pinned,
     })];
     if open && parked {
         out.push(ListLine::Buttons {
@@ -1270,9 +1281,13 @@ fn inbox_card(i: usize, panel_w: f64, o: &InboxInput) -> Vec<ListLine> {
     out
 }
 
-/// The inbox window, one tab at a time: questions, then done; or what works, then the parking lot; or what Kevin parked
-/// and what he marked read. Every tab counts, whichever is shown. Group by the state right now, not the plan's: between
-/// two plans a session can have got an answer. Cards that do not fit the window go into "+N".
+/// The inbox window, one tab at a time: what Kevin pinned, questions, then done; or what works, then the parking lot; or
+/// what Kevin parked and what he marked read. Every tab counts, whichever is shown. Group by the state right now, not the
+/// plan's: between two plans a session can have got an answer. Cards that do not fit the window go into "+N".
+///
+/// Pinned (Kevin 2026-11-09): on top of Waiting in the order he pinned them, whatever the session does; never parked or
+/// read while pinned (`set_pinned`), and one that works is listed under Running too. "Wartet" counts only those that
+/// wait, a pinned one among them: the amber tab says that somebody waits.
 pub fn inbox_target(list: &SideList, o: &InboxInput, window_number: i64) -> ListTarget {
     // Every planned window with whether it is on the lot, sorted into the groups by its state now.
     let planned: Vec<(usize, bool)> = list
@@ -1287,66 +1302,81 @@ pub fn inbox_target(list: &SideList, o: &InboxInput, window_number: i64) -> List
             Some((current_index(o.planned, i, o.windows)?, on_lot))
         })
         .collect();
+    let is_pin = |i: usize| pin_rank(&o.windows[i], o.pinned).is_some();
+    // A pinned card is neither parked nor read here, also not through a tab that joined it with an old mark.
+    let parked = |i: usize| !is_pin(i) && is_snoozed(&o.windows[i], o.snoozed, o.read);
+    // "Read" is about a done card; a session that works again stays on its tab.
+    let read_done = |i: usize| {
+        !is_pin(i)
+            && window_tone(&o.windows[i]) == LabelTone::Ready
+            && is_read(&o.windows[i], o.read)
+    };
     let group = |tones: &[LabelTone], lot: Option<bool>| -> Vec<usize> {
         planned
             .iter()
             .filter(|(i, on_lot)| {
-                let tone = window_tone(&o.windows[*i]);
-                tones.contains(&tone)
+                tones.contains(&window_tone(&o.windows[*i]))
                     && lot.is_none_or(|l| l == *on_lot)
-                    && !is_snoozed(&o.windows[*i], o.snoozed, o.read)
-                    // "Read" is about a done card; a session that works again stays on its tab.
-                    && (tone != LabelTone::Ready || !is_read(&o.windows[*i], o.read))
+                    && !parked(*i)
+                    && !read_done(*i)
             })
             .map(|(i, _)| *i)
             .collect()
     };
+    let mut pins: Vec<usize> = planned
+        .iter()
+        .map(|(i, _)| *i)
+        .filter(|&i| is_pin(i))
+        .collect();
+    pins.sort_by_key(|&i| pin_rank(&o.windows[i], o.pinned));
+    let unpinned =
+        |g: Vec<usize>| -> Vec<usize> { g.into_iter().filter(|&i| !is_pin(i)).collect() };
     let snoozed: Vec<usize> = planned
         .iter()
         .map(|(i, _)| *i)
-        .filter(|&i| is_snoozed(&o.windows[i], o.snoozed, o.read))
+        .filter(|&i| parked(i))
         .collect();
     let read: Vec<usize> = planned
         .iter()
         .map(|(i, _)| *i)
-        .filter(|&i| {
-            let w = &o.windows[i];
-            window_tone(w) == LabelTone::Ready
-                && is_read(w, o.read)
-                && !is_snoozed(w, o.snoozed, o.read)
-        })
+        .filter(|&i| read_done(i) && !parked(i))
         .collect();
     let running = [LabelTone::Running, LabelTone::Watching];
     let (asks, done) = (
-        group(&[LabelTone::Waiting], None),
-        group(&[LabelTone::Ready], None),
+        unpinned(group(&[LabelTone::Waiting], None)),
+        unpinned(group(&[LabelTone::Ready], None)),
     );
     let (working, lot) = (group(&running, Some(false)), group(&running, Some(true)));
+    let pins_waiting = pins
+        .iter()
+        .filter(|&&i| !running.contains(&window_tone(&o.windows[i])))
+        .count();
     let tabs = ListLine::InboxTabs {
         tab: o.tab,
-        waiting: asks.len() + done.len(),
+        waiting: pins_waiting + asks.len() + done.len(),
         working: working.len() + lot.len(),
         parked: snoozed.len() + read.len(),
     };
     let room = list.rect.height() - tabs.height();
     let mut lines = vec![tabs];
-    let (groups, nobody) = match o.tab {
+    let (groups, nobody): (Vec<(&str, &Vec<usize>)>, &str) = match o.tab {
         InboxTab::Waiting => (
-            [
+            vec![
+                (tr("Angeheftet", "Pinned"), &pins),
                 (tr("Fragen an dich", "Questions for you"), &asks),
                 (tr("Fertig", "Done"), &done),
             ],
             tr("Niemand wartet auf dich.", "Nobody is waiting for you."),
         ),
         InboxTab::Working => (
-            [
+            vec![
                 (tr("Arbeitet", "Working"), &working),
                 (tr("Auf dem Parkplatz", "In the parking lot"), &lot),
             ],
             tr("Gerade arbeitet niemand.", "Nobody is working right now."),
         ),
         InboxTab::Parked => (
-            [
+            vec![
                 (tr("Von dir geparkt", "Parked by you"), &snoozed),
                 (tr("Gelesen", "Read"), &read),
             ],

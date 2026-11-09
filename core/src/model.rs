@@ -696,12 +696,14 @@ pub struct RailSplit {
     pub more: usize,
 }
 
-/// The buttons on an open card of the inbox.
+/// What can be done with a card of the inbox: in its right-click menu, and as buttons on the open card.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CardButton {
     ReadNext,
     Park,
     Unpark,
+    Pin,
+    Unpin,
 }
 
 /// List entry: header, window (index in `windows`) or "+N more (in the menu)". `Working` and `Lot` are windows for the

@@ -1108,6 +1108,49 @@ pub fn is_snoozed(w: &TermWindow, snoozed: &BTreeSet<String>, read: &ReadAnswers
     is_excluded(w, snoozed) && (!w.is_waiting() || (last_answer(w).is_some() && stamped(w, read)))
 }
 
+/// Pinned by Kevin (Kevin 2026-11-09): the card stands on top of Waiting, whatever its session does,
+/// until he unpins it. `pinned` keeps the order he pinned in, the first one on top: a new pin goes below, so no pinned
+/// card ever moves (no sorting by hand, Kevin 2026-11-09). Returns where the window stands among the pins.
+pub fn pin_rank(w: &TermWindow, pinned: &[String]) -> Option<usize> {
+    w.sessions
+        .iter()
+        .filter_map(|s| pinned.iter().position(|p| *p == s.id))
+        .min()
+}
+
+/// Pins every session of `w`, after the pins there are, or unpins them. Both end a park and a read mark like "Bring
+/// back": a card Kevin pins is one he wants to see, and once he unpins it, it goes back to where its state puts it, not
+/// to an old park (review quick 2026-11-09: a parked session that asked again, pinned, then worked again dropped out of
+/// Running). A mark on a tab that joins the window while it is pinned counts for nothing then (`inbox_target`).
+pub fn set_pinned(
+    w: &TermWindow,
+    pinned: &mut Vec<String>,
+    snoozed: &mut BTreeSet<String>,
+    read: &mut ReadAnswers,
+    on: bool,
+) {
+    pinned.retain(|p| !w.sessions.iter().any(|s| s.id == *p));
+    if on {
+        pinned.extend(w.sessions.iter().map(|s| s.id.clone()));
+    }
+    unpark(w, snoozed, read);
+}
+
+/// Every tab's marks go, not only the first one's: a read mark stays under the tab that stood first when it was set,
+/// and comes back once the tabs before it close (review quick 2026-11-09, round 2).
+fn unpark(w: &TermWindow, snoozed: &mut BTreeSet<String>, read: &mut ReadAnswers) {
+    for s in &w.sessions {
+        snoozed.remove(&s.id);
+        read.remove(&s.id);
+    }
+}
+
+/// Whom "read, next" passes over (`next_waiting`'s `excluded`): what Kevin excluded, and the pinned cards. Those stand on
+/// top outside the queue below, and a pinned card offers no "read" to walk on with (review quick 2026-11-09, round 3).
+pub fn walk_skips(excluded: &BTreeSet<String>, pinned: &[String]) -> BTreeSet<String> {
+    excluded.iter().chain(pinned).cloned().collect()
+}
+
 /// Who comes to the middle after "read, next": the next in the waiting list after `main`, from the end back to the top;
 /// the top one if `main` does not wait. Stepping past `main` is what walks the list: "the most urgent other one" would
 /// only swap the top two, as a session Kevin looked at without answering stays where it was. `None`: nobody else waits.
@@ -1136,7 +1179,7 @@ pub fn next_waiting(
 /// A command on the card of window `w`; returns who comes to the middle next, only if `w` was in the middle: a right-click
 /// on another card moves nothing. Who comes next is decided while `w` still stands in the list, then it leaves: the other
 /// way round every click would start again at the top of the list instead of going down it (review quick 2026-11-09).
-/// Bringing back moves nothing.
+/// Bringing back moves nothing. Pin and Unpin are not for here: they go to `set_pinned`.
 pub fn press_button(
     button: CardButton,
     windows: &[TermWindow],
@@ -1148,12 +1191,7 @@ pub fn press_button(
 ) -> Option<usize> {
     let window = &windows[w];
     if button == CardButton::Unpark {
-        for s in &window.sessions {
-            snoozed.remove(&s.id);
-        }
-        if let Some(s) = window.sessions.first() {
-            read.remove(&s.id);
-        }
+        unpark(window, snoozed, read);
         return None;
     }
     let next =

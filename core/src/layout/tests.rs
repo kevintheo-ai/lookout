@@ -1133,6 +1133,74 @@ fn test_attention_order_is_stable_on_a_tie() {
     assert_eq!(ids(&one), ids(&two));
 }
 
+/// Pinning (Kevin 2026-11-09) keeps his order: a new pin goes below the others, unpinning takes every tab of the window
+/// out, and a window counts as pinned through any of its sessions. It ends the read mark of every tab, also one kept
+/// under a tab that stood first when it was marked (review quick 2026-11-09, round 2).
+#[test]
+fn test_pin_order_and_unpin() {
+    let (a, mut b) = (fake_window(true, 1000.0), fake_window(true, 1001.0));
+    let mut tab = b.sessions[0].clone();
+    tab.id = "claude:tab-2".into();
+    b.sessions.push(tab);
+    let (mut snoozed, mut read) = (BTreeSet::new(), ReadAnswers::new());
+    let mut flipped = b.clone();
+    flipped.sessions.reverse();
+    mark_read(&flipped, &mut read);
+    let mut set = |w: &TermWindow, pinned: &mut Vec<String>, on| {
+        set_pinned(w, pinned, &mut snoozed, &mut read, on);
+    };
+    let mut pinned = vec![];
+    set(&b, &mut pinned, true);
+    set(&a, &mut pinned, true);
+    assert_eq!(
+        (pin_rank(&b, &pinned), pin_rank(&a, &pinned)),
+        (Some(0), Some(2))
+    );
+    let mut only_tab = b.clone();
+    only_tab.sessions.remove(0);
+    assert_eq!(
+        pin_rank(&only_tab, &pinned),
+        Some(1),
+        "through its second tab"
+    );
+    set(&b, &mut pinned, false);
+    assert_eq!(pinned, [a.sessions[0].id.clone()]);
+    assert_eq!(pin_rank(&b, &pinned), None);
+    set(&b, &mut pinned, true);
+    assert_eq!(pin_rank(&b, &pinned), Some(1), "pinned again: below");
+    assert!(read.is_empty(), "no read mark left under any tab");
+}
+
+/// Review quick 2026-11-09, round 3: "read, next" passes over pinned cards. They stand on top outside the queue, and a
+/// pinned card offers no "read" to walk on with.
+#[test]
+fn test_walk_passes_over_pinned() {
+    let mut w = spread_windows(); // 0 runs, 1 done, 2 question, 3 runs: the list is 2, 1
+    w.push(fake_window(true, 1010.0)); // 5 done after 1
+    let pinned = [w[1].sessions[0].id.clone()];
+    let skip = walk_skips(&BTreeSet::new(), &pinned);
+    let (none, no_read) = (BTreeSet::new(), ReadAnswers::new());
+    assert_eq!(
+        next_waiting(&w, &skip, &none, Some(2), &no_read),
+        Some(5),
+        "past the pinned one"
+    );
+    let (mut read, mut snoozed) = (ReadAnswers::new(), BTreeSet::new());
+    assert_eq!(
+        press_button(
+            CardButton::Park,
+            &w,
+            &skip,
+            Some(2),
+            2,
+            &mut read,
+            &mut snoozed
+        ),
+        Some(5),
+        "parking the front card walks on past the pinned one"
+    );
+}
+
 /// Parked by hand (Kevin 2026-11-09, a session that watches a mailbox all day): out of the walk, also when it is done
 /// again, until it asks something; then it counts as waiting, and rests again once answered.
 #[test]

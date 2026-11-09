@@ -40,30 +40,37 @@ Background story: [Why I run my company with AI agents](https://kevintheo.com/fi
     status changes, and a click doesn't change the order.
   - **Inbox:** A window of 430 points holds a list of sessions, and the active terminal sits right beside it at
     reading width. The pair is centred on the screen, and the rest of a wide screen stays free. On a narrower
-    screen the terminal gets what is left. All other AI windows wait behind the terminal. Inbox has no hotkey.
-    You choose it in the menu. It applies to all windows on one screen. In the control room the layout is fixed.
-    The list shows only while labels are on. Three tabs at the top show a count each:
-    Waiting, Running and Parked. Waiting lists the sessions that want something from you, questions first,
-    then done ones. Within each of the two groups, whoever has waited longest stands on top, and a click on a card
-    does not change the order. Running lists the sessions at work, then the parking lot if you use one.
+    screen the terminal gets what is left. All other AI windows wait behind the terminal. Inbox has no hotkey. You
+    choose it in the menu. It applies to all windows on one screen. In the control room the layout is fixed. The
+    list shows only while labels are on. Three tabs at the top show a count each: Waiting, Running and Parked.
+    Waiting lists the sessions that want something from you, questions first, then done ones. Cards you pinned
+    stand above all of them. Within each of the two groups, whoever has waited longest stands on top, and a click
+    on a card does not change the order. Running lists the sessions at work, then the parking lot if you use one.
     Parked has two groups, "Parked by you" and "Read". If something waits for you while you are on another tab,
-    the word Waiting turns amber. Lookout starts on the Waiting tab. The card of the terminal in front is open
-    and shows the whole question, up to 6 lines. A click on a card brings that session into the terminal.
-    You answer in the terminal as usual. A session counts as seen only once you move on to another card, not when
-    you click it. So a card does not leave the list under your mouse. A right-click on any card offers Park. On a
-    done card it also offers "Read: hide until the next answer". On a card in the Parked tab it offers
-    "Bring back". The open card in the Parked tab also has a "Bring back" button. There are no other buttons
-    on the cards. Parking is for a session you do not want to follow, for example one that watches a mailbox
-    all day. A parked session stays in the Parked tab whatever it does. If it then asks something new, it comes to
-    Waiting, and it goes back to Parked once answered. You can park a card with an open question too. It leaves
-    Waiting until the session asks something else. For sessions with no answer time in their transcript
-    (Codex, Grok) the question stays under Waiting, because a later question could not be told apart.
-    Parking stays through a restart of Lookout. An open question you parked shows under Waiting again after such
-    a restart. If you park the card in front or mark it read, the next waiting session comes to the terminal.
-    Doing the same on another card moves nothing. What you marked read is kept in memory only:
-    after quitting Lookout those cards are back. A + right of the tabs opens a new empty window of the terminal
-    in front: Warp in your home folder, or Ghostty. If no terminal is in front, it opens Warp. Ghostty needs
-    version 1.3 or later for this.
+    the word Waiting turns amber. Lookout starts on the Waiting tab. The card of the terminal in front is open and
+    shows the whole question, up to 6 lines. A click on a card brings that session into the terminal. You answer
+    in the terminal as usual. A session counts as seen only once you move on to another card, not when you click
+    it. So a card does not leave the list under your mouse. A right-click on a card offers Pin, next to Park. On a
+    done card it also offers "Read: hide until the next answer". On a card in the Parked tab it offers "Bring
+    back", not Pin. On a pinned card it offers only Unpin. The open card in the Parked tab also has a "Bring back"
+    button. There are no other buttons on the cards. Parking is for a session you do not want to follow, for
+    example one that watches a mailbox all day. A parked session stays in the Parked tab whatever it does. If it
+    then asks something new, it comes to Waiting, and it goes back to Parked once answered. You can park a card
+    with an open question too. It leaves Waiting until the session asks something else. For sessions with no
+    answer time in their transcript (Codex, Grok) the question stays under Waiting, because a later question could
+    not be told apart. A pinned card stands in its own group, Pinned, at the top of the Waiting tab, with a pin
+    before its name. Pinned cards stand in the order you pinned them. The first one is on top, a new one goes
+    below. A pinned card stays there whatever its session does, whether it asks, is done or works, until you
+    choose Unpin. Below the Pinned group, Waiting stays as before: questions first, then done ones, whoever has
+    waited longest on top. A pinned session that is working is also listed under Running. The count on the Waiting
+    tab counts a pinned session only while it waits for you. Pinning or unpinning a card ends an earlier park or
+    read mark of that card. Pinning moves no window. There is no reordering by dragging. Parking and pins stay
+    through a restart of Lookout. An open question you parked shows under Waiting again after such a restart. If
+    you park the card in front or mark it read, the next waiting session comes to the terminal. Pinned cards are
+    skipped there. Doing the same on another card moves nothing. What you marked read is kept in memory only:
+    after quitting Lookout those cards are back. A + right of the tabs opens a new empty window of the terminal in
+    front: Warp in your home folder, or Ghostty. If no terminal is in front, it opens Warp. Ghostty needs version
+    1.3 or later for this.
 - **Control room:** with two or more screens, your active session and the windows that need you are on one
   screen, the busy ones on the other. There are three variants in the menu. The layout is fixed there, so the
   hotkeys don't apply.
@@ -213,7 +220,7 @@ Lookout (it reads the file once at start), for example:
 
 The menu remembers your choice of screen, layout, grid, control room screens, excluded windows and labels, and
 also which windows you sent to the parking lot or took off it by hand.
-Lookout also remembers which sessions you parked in the Inbox, across restarts.
+Lookout also remembers which sessions you parked or pinned in the Inbox, across restarts.
 Pause and the side of the strip (*More > Strip on the right/left*) start fresh after a restart.
 
 ## What Lookout does on your Mac
@@ -434,9 +441,11 @@ neu geschrieben. Mit der Einstellung `workerNames` warten die Fenster von Worker
 Session (Parkplatz); Ctrl+Opt+4 zeigt sie.
 Der neue «Eingang» ist ein viertes Layout: Er zeigt deine Sessions in einer Liste mit den Reitern «Wartet»,
 «Läuft» und «Geparkt», direkt neben dem aktiven Terminal. Mit «Parken» im Rechtsklick-Menü einer Karte parkst du
-eine Session, der du nicht folgen willst; im Reiter «Geparkt» holst du sie mit «Zurückholen» wieder. Nach einem
-Absturz, einem Herunterfahren oder wenn Warp beendet wurde, zeigt das Menü «Sessions wiederherstellen»; jede
-Claude-Code-Session öffnet sich dann in einem eigenen Warp-Fenster und startet `claude --resume`.
+eine Session, der du nicht folgen willst; im Reiter «Geparkt» holst du sie mit «Zurückholen» wieder. Mit «Anheften»
+im Rechtsklick-Menü einer Karte stellst du die Session in die Gruppe «Angeheftet» ganz oben im Reiter «Wartet»;
+dort bleibt sie, bis du «Lösen» wählst. Nach einem Absturz, einem Herunterfahren oder wenn Warp beendet wurde,
+zeigt das Menü «Sessions wiederherstellen»; jede Claude-Code-Session öffnet sich dann in einem eigenen Warp-Fenster
+und startet `claude --resume`.
 Installation wie oben (`git clone`, `./build.sh`,
 Bedienungshilfen freigeben). Die Sprache folgt dem Mac; fest auf Deutsch mit `{"language": "de"}` in
 `~/.config/lookout.json`. Die Schilder zeigen Text aus deinen Sessions: vor dem Bildschirmteilen unter
