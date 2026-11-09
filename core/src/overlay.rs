@@ -13,11 +13,11 @@ use std::f64::consts::PI;
 
 use crate::geom::{Rect, Size};
 use crate::i18n::tr;
-use crate::layout::{LIST_HEADER_H, LIST_ROW_H, screen_index};
+use crate::layout::{LIST_HEADER_H, LIST_ROW_H, ReadAnswers, is_read, is_snoozed, screen_index};
 use crate::mapping::{index_of_window, last_path_component};
 use crate::model::{
-    Arrangement, Engine, LabelTone, LastBlock, ListEntry, LookoutLine, OnScreenWindow, Pid,
-    Session, SideList, TermWindow, Time, graphemes, title_glyph, trim_ws,
+    Arrangement, CardButton, Engine, LabelTone, LastBlock, ListEntry, LookoutLine, OnScreenWindow,
+    Pid, Session, SideList, TermWindow, Time, graphemes, title_glyph, trim_ws,
 };
 use crate::motion::{WARP_BID, ax_origin, cocoa_to_ax, glide_path};
 
@@ -968,7 +968,24 @@ pub fn more_rows_text(n: usize) -> String {
     format!("… {} {n} {}", tr("und", "and"), tr("weitere", "more"))
 }
 
-/// A list line, ready to draw. `ids`: the sessions of the window (for the click).
+/// One session in the inbox (Kevin 2026-11-09, preview "Eingang"). `open`: its terminal is the one in front, so it shows
+/// the whole question over `lines` lines.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InboxCard {
+    pub ids: Vec<String>,
+    pub name: String,
+    pub project: Option<String>,
+    pub since: Option<String>,
+    pub what: Option<String>,
+    pub tone: LabelTone,
+    pub open: bool,
+    pub lines: usize,
+    /// What a right-click offers.
+    pub menu: Vec<CardButton>,
+}
+
+/// A list line, ready to draw. `ids`: the sessions of the window (for the click). The first three are the side lists,
+/// the others the inbox.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ListLine {
     Header(String),
@@ -979,14 +996,67 @@ pub enum ListLine {
         tone: LabelTone,
     },
     More(usize),
+    InboxTabs {
+        tab: InboxTab,
+        waiting: usize,
+        working: usize,
+        parked: usize,
+    },
+    Group(String),
+    Card(InboxCard),
+    /// The open card's buttons, side by side.
+    Buttons {
+        ids: Vec<String>,
+        buttons: Vec<CardButton>,
+    },
+    /// The open card's note when the session asks.
+    Hint(String),
+    Empty(String),
 }
+
+/// The tabs of the inbox (Kevin 2026-11-09): who wants something from Kevin, what works, and what he put away.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InboxTab {
+    #[default]
+    Waiting,
+    Working,
+    Parked,
+}
+
+/// The tabs lie side by side at the top of the window, from this x, each this wide.
+pub const INBOX_TAB_X: f64 = 10.0;
+pub const INBOX_TAB_W: f64 = 120.0;
+/// The + for a new terminal window stands right after the three tabs.
+pub const INBOX_PLUS_X: f64 = INBOX_TAB_X + 3.0 * INBOX_TAB_W;
+pub const INBOX_PLUS_W: f64 = 36.0;
+/// The buttons of an open card lie side by side from `INBOX_TEXT_X`.
+pub const INBOX_BUTTON_W: f64 = 150.0;
+pub const INBOX_BUTTON_GAP: f64 = 8.0;
+
+/// Where the text of a card starts, from the card's top: name and project above it.
+pub const INBOX_WHAT_TOP: f64 = 47.0;
+/// One line of the question on an open card.
+pub const INBOX_OPEN_LINE_H: f64 = 23.0;
+/// Average width of a character of the open card's question (16.5 pt), on the high side so the text is never clipped.
+const INBOX_OPEN_CHAR_W: f64 = 8.8;
+/// Left of a card's text: status symbol. Right of it: margin.
+pub const INBOX_TEXT_X: f64 = 50.0;
+pub const INBOX_MARGIN: f64 = 16.0;
+const INBOX_OPEN_LINES_MAX: usize = 6;
 
 impl ListLine {
     pub fn height(&self) -> f64 {
-        if matches!(self, ListLine::Header(_)) {
-            LIST_HEADER_H
-        } else {
-            LIST_ROW_H
+        match self {
+            ListLine::Header(_) | ListLine::Group(_) => LIST_HEADER_H,
+            ListLine::Row { .. } | ListLine::More(_) => LIST_ROW_H,
+            ListLine::InboxTabs { .. } => 44.0,
+            ListLine::Card(c) if c.open => {
+                INBOX_WHAT_TOP + c.lines as f64 * INBOX_OPEN_LINE_H + 8.0
+            }
+            ListLine::Card(_) => 76.0,
+            ListLine::Buttons { .. } => 40.0,
+            ListLine::Hint(_) => 30.0,
+            ListLine::Empty(_) => 160.0,
         }
     }
 }
@@ -1000,11 +1070,71 @@ pub fn more_text(n: usize) -> String {
 pub fn row_at(lines: &[ListLine], y: f64) -> Option<&[String]> {
     let mut top = 0.0;
     for line in lines {
+        if y >= top && y < top + line.height() {
+            match line {
+                ListLine::Row { ids, .. } => return Some(ids),
+                ListLine::Card(c) => return Some(&c.ids),
+                _ => {}
+            }
+        }
+        top += line.height();
+    }
+    None
+}
+
+/// The inbox card at `y`; `None` off the cards.
+pub fn card_at(lines: &[ListLine], y: f64) -> Option<&InboxCard> {
+    let mut top = 0.0;
+    for line in lines {
         if y >= top
             && y < top + line.height()
-            && let ListLine::Row { ids, .. } = line
+            && let ListLine::Card(c) = line
         {
-            return Some(ids);
+            return Some(c);
+        }
+        top += line.height();
+    }
+    None
+}
+
+/// The inbox tab at `x`, `y` (points from the top left of the list); `None` off the tabs or in any other list.
+pub fn tab_at(lines: &[ListLine], x: f64, y: f64) -> Option<InboxTab> {
+    let first = lines.first()?;
+    if !matches!(first, ListLine::InboxTabs { .. }) || y >= first.height() {
+        return None;
+    }
+    match ((x - INBOX_TAB_X) / INBOX_TAB_W).floor() as i64 {
+        0 => Some(InboxTab::Waiting),
+        1 => Some(InboxTab::Working),
+        2 => Some(InboxTab::Parked),
+        _ => None,
+    }
+}
+
+/// Is `x`, `y` on the inbox's +?
+pub fn plus_at(lines: &[ListLine], x: f64, y: f64) -> bool {
+    lines.first().is_some_and(|first| {
+        matches!(first, ListLine::InboxTabs { .. })
+            && y < first.height()
+            && (INBOX_PLUS_X..INBOX_PLUS_X + INBOX_PLUS_W).contains(&x)
+    })
+}
+
+/// The button at `x`, `y` with its session ids; `None` off the buttons.
+pub fn button_at(lines: &[ListLine], x: f64, y: f64) -> Option<(CardButton, &[String])> {
+    let mut top = 0.0;
+    for line in lines {
+        if y >= top
+            && y < top + line.height()
+            && let ListLine::Buttons { ids, buttons } = line
+        {
+            let across = x - INBOX_TEXT_X;
+            let step = INBOX_BUTTON_W + INBOX_BUTTON_GAP;
+            let slot = (across / step).floor();
+            if slot < 0.0 || across - slot * step > INBOX_BUTTON_W {
+                return None;
+            }
+            return buttons.get(slot as usize).map(|b| (*b, ids.as_slice()));
         }
         top += line.height();
     }
@@ -1042,6 +1172,7 @@ pub fn list_target(
         .filter_map(|e| match e {
             ListEntry::Header(t) => Some(ListLine::Header(t.clone())),
             ListEntry::More(n) => Some(ListLine::More(*n)),
+            ListEntry::Working(_) | ListEntry::Lot(_) => None,
             ListEntry::Row(i) => {
                 let w = &windows[current_index(planned, *i, windows)?];
                 let line = session_line(w, since, lookout, now);
@@ -1054,6 +1185,208 @@ pub fn list_target(
             }
         })
         .collect();
+    ListTarget {
+        rect: list.rect,
+        lines,
+        window_number,
+    }
+}
+
+// ---------- Inbox (Kevin 2026-11-09) ----------
+
+/// What the inbox looks at besides its plan.
+#[derive(Clone, Copy, Debug)]
+pub struct InboxInput<'a> {
+    pub planned: &'a [u64],
+    pub windows: &'a [TermWindow],
+    pub since: &'a BTreeMap<String, SinceEntry>,
+    pub lookout: &'a BTreeMap<String, LookoutLine>,
+    pub now: Time,
+    pub read: &'a ReadAnswers,
+    /// Index in `windows` of the terminal in front: its card is open.
+    pub main: Option<usize>,
+    pub tab: InboxTab,
+    /// Session ids Kevin parked (`is_snoozed`).
+    pub snoozed: &'a BTreeSet<String>,
+}
+
+/// Lines of the question on the open card.
+/// ponytail: an average character width, no font metrics in the core; measure in the macOS layer if text gets clipped.
+fn open_lines(what: &str, panel_w: f64) -> usize {
+    let chars: usize = graphemes(what).map(width_of).sum();
+    let wide = (panel_w - INBOX_TEXT_X - INBOX_MARGIN).max(1.0);
+    ((chars as f64 * INBOX_OPEN_CHAR_W / wide).ceil() as usize).clamp(1, INBOX_OPEN_LINES_MAX)
+}
+
+/// A card and, on the open one, its note or the way back. Everything else is on the right-click (Kevin 2026-11-09: no
+/// buttons where they are not needed).
+fn inbox_card(i: usize, panel_w: f64, o: &InboxInput) -> Vec<ListLine> {
+    let w = &o.windows[i];
+    let row = menu_row(w, o.since, o.lookout, o.now);
+    let c = window_label(w, o.since, o.lookout, o.now);
+    // Line ends collapse: the card wraps the text itself, and counts its height from one running text.
+    let what = c.detail.map(|d| {
+        d.trim_matches(['„', '“', '”'])
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    });
+    let open = Some(i) == o.main;
+    let ids: Vec<String> = w.sessions.iter().map(|s| s.id.clone()).collect();
+    let parked =
+        is_snoozed(w, o.snoozed, o.read) || (c.tone == LabelTone::Ready && is_read(w, o.read));
+    let menu = if parked {
+        vec![CardButton::Unpark]
+    } else if c.tone == LabelTone::Ready {
+        vec![CardButton::Park, CardButton::ReadNext]
+    } else {
+        vec![CardButton::Park]
+    };
+    let mut out = vec![ListLine::Card(InboxCard {
+        ids: ids.clone(),
+        name: row.name,
+        project: row.project,
+        since: c.duration,
+        lines: what.as_deref().map_or(1, |t| open_lines(t, panel_w)),
+        what,
+        tone: c.tone,
+        open,
+        menu,
+    })];
+    if open && parked {
+        out.push(ListLine::Buttons {
+            ids,
+            buttons: vec![CardButton::Unpark],
+        });
+    } else if open && c.tone == LabelTone::Waiting {
+        out.push(ListLine::Hint(
+            tr(
+                "Rechts im Terminal antworten",
+                "Answer in the terminal on the right",
+            )
+            .to_owned(),
+        ));
+    }
+    out
+}
+
+/// The inbox window, one tab at a time: questions, then done; or what works, then the parking lot; or what Kevin parked
+/// and what he marked read. Every tab counts, whichever is shown. Group by the state right now, not the plan's: between
+/// two plans a session can have got an answer. Cards that do not fit the window go into "+N".
+pub fn inbox_target(list: &SideList, o: &InboxInput, window_number: i64) -> ListTarget {
+    // Every planned window with whether it is on the lot, sorted into the groups by its state now.
+    let planned: Vec<(usize, bool)> = list
+        .entries
+        .iter()
+        .filter_map(|e| {
+            let (i, on_lot) = match e {
+                ListEntry::Row(i) | ListEntry::Working(i) => (*i, false),
+                ListEntry::Lot(i) => (*i, true),
+                _ => return None,
+            };
+            Some((current_index(o.planned, i, o.windows)?, on_lot))
+        })
+        .collect();
+    let group = |tones: &[LabelTone], lot: Option<bool>| -> Vec<usize> {
+        planned
+            .iter()
+            .filter(|(i, on_lot)| {
+                let tone = window_tone(&o.windows[*i]);
+                tones.contains(&tone)
+                    && lot.is_none_or(|l| l == *on_lot)
+                    && !is_snoozed(&o.windows[*i], o.snoozed, o.read)
+                    // "Read" is about a done card; a session that works again stays on its tab.
+                    && (tone != LabelTone::Ready || !is_read(&o.windows[*i], o.read))
+            })
+            .map(|(i, _)| *i)
+            .collect()
+    };
+    let snoozed: Vec<usize> = planned
+        .iter()
+        .map(|(i, _)| *i)
+        .filter(|&i| is_snoozed(&o.windows[i], o.snoozed, o.read))
+        .collect();
+    let read: Vec<usize> = planned
+        .iter()
+        .map(|(i, _)| *i)
+        .filter(|&i| {
+            let w = &o.windows[i];
+            window_tone(w) == LabelTone::Ready
+                && is_read(w, o.read)
+                && !is_snoozed(w, o.snoozed, o.read)
+        })
+        .collect();
+    let running = [LabelTone::Running, LabelTone::Watching];
+    let (asks, done) = (
+        group(&[LabelTone::Waiting], None),
+        group(&[LabelTone::Ready], None),
+    );
+    let (working, lot) = (group(&running, Some(false)), group(&running, Some(true)));
+    let tabs = ListLine::InboxTabs {
+        tab: o.tab,
+        waiting: asks.len() + done.len(),
+        working: working.len() + lot.len(),
+        parked: snoozed.len() + read.len(),
+    };
+    let room = list.rect.height() - tabs.height();
+    let mut lines = vec![tabs];
+    let (groups, nobody) = match o.tab {
+        InboxTab::Waiting => (
+            [
+                (tr("Fragen an dich", "Questions for you"), &asks),
+                (tr("Fertig", "Done"), &done),
+            ],
+            tr("Niemand wartet auf dich.", "Nobody is waiting for you."),
+        ),
+        InboxTab::Working => (
+            [
+                (tr("Arbeitet", "Working"), &working),
+                (tr("Auf dem Parkplatz", "In the parking lot"), &lot),
+            ],
+            tr("Gerade arbeitet niemand.", "Nobody is working right now."),
+        ),
+        InboxTab::Parked => (
+            [
+                (tr("Von dir geparkt", "Parked by you"), &snoozed),
+                (tr("Gelesen", "Read"), &read),
+            ],
+            tr("Nichts geparkt.", "Nothing parked."),
+        ),
+    };
+    let mut left: usize = groups.iter().map(|(_, g)| g.len()).sum();
+    if left == 0 {
+        lines.push(ListLine::Empty(nobody.to_owned()));
+    }
+    let (mut used, mut more) = (0.0, 0);
+    for (label, group) in groups {
+        if group.is_empty() {
+            continue;
+        }
+        if more > 0 {
+            more += group.len();
+            continue;
+        }
+        // The heading goes in with the group's first card, never alone.
+        let mut head = Some(ListLine::Group(label.to_owned()));
+        for (k, &i) in group.iter().enumerate() {
+            let card = inbox_card(i, list.rect.width(), o);
+            let h = head.as_ref().map_or(0.0, ListLine::height)
+                + card.iter().map(ListLine::height).sum::<f64>();
+            // Room for "+N" only if a card would follow this one.
+            let reserve = if left > 1 { LIST_ROW_H } else { 0.0 };
+            if used + h + reserve > room {
+                more = group.len() - k;
+                break;
+            }
+            used += h;
+            left -= 1;
+            lines.extend(head.take());
+            lines.extend(card);
+        }
+    }
+    if more > 0 {
+        lines.push(ListLine::More(more));
+    }
     ListTarget {
         rect: list.rect,
         lines,

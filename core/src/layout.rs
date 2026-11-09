@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::geom::{Rect, cmp_f64};
 use crate::i18n::tr;
 use crate::model::{
-    Arrangement, GridSpec, LabelTone, LayoutMode, ListEntry, Pair, RailSplit, ScreenInfo, SideList,
-    StackSide, Target, TargetChoice, TermWindow, Time, fold_case,
+    Arrangement, CardButton, GridSpec, LabelTone, LayoutMode, ListEntry, Pair, RailSplit,
+    ScreenInfo, SideList, StackSide, Target, TargetChoice, TermWindow, Time, fold_case,
 };
 
 /// Smallest window Warp allows (spike: 480×192; Ghostty 90×48).
@@ -208,7 +208,7 @@ pub fn strip_stack<K: Ord + Clone>(rail: Rect, ids: &[K]) -> BTreeMap<K, Rect> {
 /// answer), then done sessions, and among those whoever was done FIRST; whoever is done later queues behind. Others
 /// after, by first sighting. Decides the left column in Focus 2 (top = first). Returns positions in `windows`.
 pub fn attention_order<W: Borrow<TermWindow>>(windows: &[W]) -> Vec<usize> {
-    let keys: Vec<(bool, bool, Time, Time)> = windows
+    let keys: Vec<(bool, bool, Time, Time, u64)> = windows
         .iter()
         .map(|w| {
             let w = w.borrow();
@@ -218,13 +218,14 @@ pub fn attention_order<W: Borrow<TermWindow>>(windows: &[W]) -> Vec<usize> {
                 s.ready,
                 w.ready_since.unwrap_or(w.first_seen),
                 w.first_seen,
+                w.id,
             )
         })
         .collect();
     let mut order: Vec<usize> = (0..windows.len()).collect();
     order.sort_by(|&a, &b| {
-        let (wa, ra, since_a, first_a) = keys[a];
-        let (wb, rb, since_b, first_b) = keys[b];
+        let (wa, ra, since_a, first_a, id_a) = keys[a];
+        let (wb, rb, since_b, first_b, id_b) = keys[b];
         wb.cmp(&wa)
             .then(rb.cmp(&ra))
             .then_with(|| {
@@ -235,6 +236,8 @@ pub fn attention_order<W: Borrow<TermWindow>>(windows: &[W]) -> Vec<usize> {
                 }
             })
             .then_with(|| cmp_f64(first_a, first_b))
+            // Windows found in the same tick (all of them after a restart): never by how they came in.
+            .then(id_a.cmp(&id_b))
     });
     order
 }
@@ -651,7 +654,10 @@ pub fn layout_candidates(windows: &[TermWindow], excluded: &BTreeSet<String>) ->
                 && !is_excluded(&windows[i], excluded)
         })
         .collect();
-    out.sort_by(|&a, &b| cmp_f64(windows[a].first_seen, windows[b].first_seen));
+    out.sort_by(|&a, &b| {
+        cmp_f64(windows[a].first_seen, windows[b].first_seen)
+            .then(windows[a].id.cmp(&windows[b].id))
+    });
     out
 }
 
@@ -846,6 +852,7 @@ fn fill_side(
     out.lists.push(SideList {
         rect: Rect::new(rail.min_x(), rail.min_y(), rail.width(), list_h),
         entries,
+        inbox: false,
     });
 }
 
@@ -989,6 +996,175 @@ fn focus2_arrange(
         (None, None) => {}
     }
     out
+}
+
+/// Width of the inbox window (Kevin 2026-11-09, preview "Eingang").
+pub const INBOX_W: f64 = 430.0;
+const INBOX_GAP: f64 = 8.0;
+
+/// Inbox: the list window with the terminal right beside it, the pair centred; what is left of a wide screen stays free.
+/// The terminal keeps the reading width while it fits, and the list gives way before the terminal falls below Warp's
+/// minimum. Returns `(panel, main)`.
+pub fn inbox_layout(vis: Rect) -> (Rect, Rect) {
+    let panel_w = INBOX_W
+        .min(vis.width() - INBOX_GAP - MIN_CARD_W)
+        .max(0.0)
+        .floor();
+    let main_w = READING_WIDTH.min(vis.width() - panel_w - INBOX_GAP);
+    let x = vis.min_x() + ((vis.width() - panel_w - INBOX_GAP - main_w) / 2.0).floor();
+    (
+        Rect::new(x, vis.min_y(), panel_w, vis.height()),
+        Rect::new(x + panel_w + INBOX_GAP, vis.min_y(), main_w, vis.height()),
+    )
+}
+
+/// Inbox (Kevin 2026-11-09: "die Anzeigen unnötig"): one window with tabs, whoever wants something from Kevin
+/// (`attention_order`) and what works (by first sighting, then the parking lot); the active terminal beside
+/// it, every other window behind that terminal. The terminal in front keeps its card: that card is the open one.
+fn inbox_arrange(
+    vis: Rect,
+    main: usize,
+    others: &[usize],
+    windows: &[TermWindow],
+    lot: &[usize],
+) -> Arrangement {
+    let (panel, main_rect) = inbox_layout(vis);
+    let mut all: Vec<usize> = others.to_vec();
+    all.push(main);
+    all.sort_by(|&a, &b| {
+        cmp_f64(windows[a].first_seen, windows[b].first_seen)
+            .then(windows[a].id.cmp(&windows[b].id))
+    });
+    let (ready, working): (Vec<usize>, Vec<usize>) =
+        all.into_iter().partition(|&i| windows[i].is_ready());
+    let entries: Vec<ListEntry> = by_attention(&ready, windows)
+        .into_iter()
+        .map(ListEntry::Row)
+        .chain(working.into_iter().map(ListEntry::Working))
+        .chain(lot.iter().map(|&i| ListEntry::Lot(i)))
+        .collect();
+    let mut frames = BTreeMap::from([(main, main_rect)]);
+    frames.extend(others.iter().map(|&i| (i, main_rect)));
+    Arrangement {
+        frames,
+        parked: others.iter().copied().collect(),
+        lists: vec![SideList {
+            rect: panel,
+            entries,
+            inbox: true,
+        }],
+        main: Some(main),
+        ..Default::default()
+    }
+}
+
+/// First session id of a window -> where it stood when Kevin marked it read in the inbox: since when it is done, and its
+/// latest answer. Both, because only Claude sessions have an answer time, and a quick new answer need not be seen as
+/// "running" in between.
+/// ponytail: in memory only and never thinned out, a restart brings read cards back; store it like `excluded` if that
+/// bothers.
+pub type ReadAnswers = BTreeMap<String, (Option<Time>, Option<Time>)>;
+
+fn last_answer(w: &TermWindow) -> Option<Time> {
+    w.sessions
+        .iter()
+        .filter_map(|s| s.digest.as_ref()?.answer_at)
+        .max_by(|a, b| cmp_f64(*a, *b))
+}
+
+/// Since when a window that is newly seen as done has been waiting: its last answer if the transcript knows it. Else a
+/// restart would put every window at "now", and the longest waiting would no longer stand on top (Kevin 2026-11-09).
+pub fn first_ready_time(w: &TermWindow, now: Time) -> Time {
+    last_answer(w).filter(|&at| at <= now).unwrap_or(now)
+}
+
+fn read_stamp(w: &TermWindow) -> (Option<Time>, Option<Time>) {
+    (w.ready_since, last_answer(w))
+}
+
+pub fn mark_read(w: &TermWindow, read: &mut ReadAnswers) {
+    if let Some(s) = w.sessions.first() {
+        read.insert(s.id.clone(), read_stamp(w));
+    }
+}
+
+fn stamped(w: &TermWindow, read: &ReadAnswers) -> bool {
+    w.sessions
+        .first()
+        .is_some_and(|s| read.get(&s.id) == Some(&read_stamp(w)))
+}
+
+/// A done window Kevin marked read, until it is done anew. A question is never read: it stays until answered.
+pub fn is_read(w: &TermWindow, read: &ReadAnswers) -> bool {
+    !w.is_waiting() && stamped(w, read)
+}
+
+/// Parked by Kevin (Kevin 2026-11-09: a session that watches a mailbox all day belongs neither under waiting nor under
+/// running). Whatever it is doing it stays out of the way, until it asks something new: the question he parked stays
+/// parked (`press_button` stamps it), a later one comes through. Without an answer time (Codex, Grok) a later question
+/// could not be told from the parked one, so a question there stays under Waiting.
+/// ponytail: the stamp lives in memory like `ReadAnswers`, after a restart a parked open question shows under Waiting.
+pub fn is_snoozed(w: &TermWindow, snoozed: &BTreeSet<String>, read: &ReadAnswers) -> bool {
+    is_excluded(w, snoozed) && (!w.is_waiting() || (last_answer(w).is_some() && stamped(w, read)))
+}
+
+/// Who comes to the middle after "read, next": the next in the waiting list after `main`, from the end back to the top;
+/// the top one if `main` does not wait. Stepping past `main` is what walks the list: "the most urgent other one" would
+/// only swap the top two, as a session Kevin looked at without answering stays where it was. `None`: nobody else waits.
+pub fn next_waiting(
+    windows: &[TermWindow],
+    excluded: &BTreeSet<String>,
+    snoozed: &BTreeSet<String>,
+    main: Option<usize>,
+    read: &ReadAnswers,
+) -> Option<usize> {
+    let ready: Vec<usize> = layout_candidates(windows, excluded)
+        .into_iter()
+        .filter(|&i| {
+            windows[i].is_ready()
+                && !is_read(&windows[i], read)
+                && !is_snoozed(&windows[i], snoozed, read)
+        })
+        .collect();
+    let order = by_attention(&ready, windows);
+    match main.and_then(|m| order.iter().position(|&i| i == m)) {
+        Some(p) => Some(order[(p + 1) % order.len()]).filter(|&i| Some(i) != main),
+        None => order.first().copied(),
+    }
+}
+
+/// A command on the card of window `w`; returns who comes to the middle next, only if `w` was in the middle: a right-click
+/// on another card moves nothing. Who comes next is decided while `w` still stands in the list, then it leaves: the other
+/// way round every click would start again at the top of the list instead of going down it (review quick 2026-11-09).
+/// Bringing back moves nothing.
+pub fn press_button(
+    button: CardButton,
+    windows: &[TermWindow],
+    excluded: &BTreeSet<String>,
+    main: Option<usize>,
+    w: usize,
+    read: &mut ReadAnswers,
+    snoozed: &mut BTreeSet<String>,
+) -> Option<usize> {
+    let window = &windows[w];
+    if button == CardButton::Unpark {
+        for s in &window.sessions {
+            snoozed.remove(&s.id);
+        }
+        if let Some(s) = window.sessions.first() {
+            read.remove(&s.id);
+        }
+        return None;
+    }
+    let next =
+        next_waiting(windows, excluded, snoozed, main, read).filter(|&i| i != w && main == Some(w));
+    if button == CardButton::ReadNext || window.is_waiting() {
+        mark_read(window, read);
+    }
+    if button == CardButton::Park {
+        snoozed.extend(window.sessions.iter().map(|s| s.id.clone()));
+    }
+    next
 }
 
 /// Control room (Kevin 2026-09-24: "fertig sollte immer neben aktiv sein"): big screen, middle the active session,
@@ -1203,14 +1379,18 @@ pub fn plan_arrangement(p: &PlanInput) -> Arrangement {
                 LayoutMode::Reading => {
                     focus_arrange(vis, p.side, main, &status_sequence(&rest, windows), windows)
                 }
-                LayoutMode::Focus2 => {
+                LayoutMode::Focus2 | LayoutMode::Inbox => {
                     // The sides follow the status, not clicks: the running ones by first sighting.
                     let others: Vec<usize> = ordered
                         .iter()
                         .copied()
                         .filter(|&i| i != main && !lot.contains(&i))
                         .collect();
-                    focus2_arrange(vis, p.side, main, &others, windows)
+                    if p.mode == LayoutMode::Inbox {
+                        inbox_arrange(vis, main, &others, windows, &lot)
+                    } else {
+                        focus2_arrange(vis, p.side, main, &others, windows)
+                    }
                 }
                 // Fixed and by first sighting: a click rearranges nothing in the grid (Kevin 2026-09-18). No lot.
                 LayoutMode::Grid => {
@@ -1303,6 +1483,7 @@ fn peek_layout(
             height,
         ),
         entries,
+        inbox: false,
     };
     (best_grid(area, tiled), Some(list))
 }

@@ -2,6 +2,8 @@
 //! platform layer's job; this module interprets its bytes. Values are read the way Swift's `JSONSerialization`
 //! bridges them (`as? Int` takes 5.0 and `true`, `as? Bool` takes 0 and 1), measured 2026-11-06.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Map, Value};
 
 use crate::model::trim_ws;
@@ -40,6 +42,9 @@ pub struct AppConfig {
     /// Name parts of worker sessions: running or watching, their windows go to the parking lot behind the main window
     /// (Kevin 2026-11-06).
     pub worker_names: Vec<String>,
+    /// How to resume a session per Claude folder, with `{id}` for the session; a folder not named here uses
+    /// `claude --resume {id}` (Kevin 2026-11-09).
+    pub resume_commands: BTreeMap<String, String>,
 }
 
 impl AppConfig {
@@ -62,6 +67,7 @@ impl AppConfig {
             other_window_names: vec![],
             ask_until_read_names: vec![],
             worker_names: vec![],
+            resume_commands: BTreeMap::new(),
         }
     }
 }
@@ -134,6 +140,17 @@ pub fn parse_config(obj: &Map<String, Value>, home: &str) -> AppConfig {
     c.other_window_names = names(obj, "otherWindowNames");
     c.ask_until_read_names = names(obj, "askUntilReadNames");
     c.worker_names = names(obj, "workerNames");
+    // Keyed like `claudeConfigDirs`; a command without {id} could not resume anything.
+    c.resume_commands = obj
+        .get("resumeCommands")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(dir, cmd)| {
+            let cmd = cmd.as_str().filter(|c| c.contains("{id}"))?;
+            Some((standardize_path(trim_ws(dir), home), cmd.to_owned()))
+        })
+        .collect();
     c
 }
 
@@ -366,6 +383,27 @@ mod tests {
                 .worker_names
                 .is_empty(),
             "not an array"
+        );
+    }
+
+    #[test]
+    fn resume_commands_need_their_placeholder() {
+        let c = parse(json!({"resumeCommands": {
+            "~/.claude-work/": "go --resume {id}",
+            "~/.none": "go --resume",
+            "~/.seven": 7
+        }}));
+        assert_eq!(
+            c.resume_commands,
+            BTreeMap::from([(
+                format!("{HOME}/.claude-work"),
+                "go --resume {id}".to_owned()
+            )])
+        );
+        assert!(
+            parse(json!({"resumeCommands": []}))
+                .resume_commands
+                .is_empty()
         );
     }
 

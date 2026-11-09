@@ -532,23 +532,31 @@ impl StackSide {
     }
 }
 
-/// The three arrangements (design v3, Kevin 2026-09-18). Order = menu and shortcuts Ctrl+Opt+1…3.
+/// The arrangements (design v3, Kevin 2026-09-18; Inbox 2026-11-09). Order = menu; the first three are also the
+/// shortcuts Ctrl+Opt+1…3, the inbox is chosen in the menu only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayoutMode {
     Reading,
     Focus2,
     Grid,
+    Inbox,
 }
 
 impl LayoutMode {
     /// Swift `allCases`.
-    pub const ALL: [LayoutMode; 3] = [LayoutMode::Reading, LayoutMode::Focus2, LayoutMode::Grid];
+    pub const ALL: [LayoutMode; 4] = [
+        LayoutMode::Reading,
+        LayoutMode::Focus2,
+        LayoutMode::Grid,
+        LayoutMode::Inbox,
+    ];
 
     pub fn raw(self) -> &'static str {
         match self {
             LayoutMode::Reading => "reading",
             LayoutMode::Focus2 => "focus2",
             LayoutMode::Grid => "grid",
+            LayoutMode::Inbox => "inbox",
         }
     }
 
@@ -561,6 +569,7 @@ impl LayoutMode {
             LayoutMode::Reading => tr("Fokus", "Focus"),
             LayoutMode::Focus2 => tr("Fokus 2", "Focus 2"),
             LayoutMode::Grid => tr("Raster", "Grid"),
+            LayoutMode::Inbox => tr("Eingang", "Inbox"),
         }
     }
 
@@ -687,19 +696,32 @@ pub struct RailSplit {
     pub more: usize,
 }
 
-/// List entry: header, window (index in `windows`) or "+N more (in the menu)".
+/// The buttons on an open card of the inbox.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardButton {
+    ReadNext,
+    Park,
+    Unpark,
+}
+
+/// List entry: header, window (index in `windows`) or "+N more (in the menu)". `Working` and `Lot` are windows for the
+/// inbox's second tab.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ListEntry {
     Header(String),
     Row(usize),
     More(usize),
+    Working(usize),
+    Lot(usize),
 }
 
-/// List at the foot of a side (Cocoa rectangle) with its entries from top to bottom.
+/// List at the foot of a side (Cocoa rectangle) with its entries from top to bottom. `inbox`: the inbox window, whose
+/// entries are drawn as cards (`overlay::inbox_target`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SideList {
     pub rect: Rect,
     pub entries: Vec<ListEntry>,
+    pub inbox: bool,
 }
 
 impl SideList {
@@ -708,7 +730,7 @@ impl SideList {
         self.entries
             .iter()
             .map(|e| match e {
-                ListEntry::Row(_) => 1,
+                ListEntry::Row(_) | ListEntry::Working(_) | ListEntry::Lot(_) => 1,
                 ListEntry::More(m) => *m,
                 ListEntry::Header(_) => 0,
             })

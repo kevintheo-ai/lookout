@@ -5,11 +5,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 use crate::i18n::set_german;
-use crate::layout::{PlanInput, plan_arrangement};
+use crate::layout::{PlanInput, ReadAnswers, mark_read, plan_arrangement};
 use crate::model::LayoutMode::Reading;
 use crate::model::StackSide::Right;
 use crate::model::Target::Single;
-use crate::model::{Digest, LineStatus};
+use crate::model::{CardButton, Digest, LineStatus};
 use crate::motion::{AxOrigin, GHOSTTY_BID};
 use crate::testutil::*;
 
@@ -1432,6 +1432,7 @@ fn list_and_preview_content() {
             ListEntry::Row(2),
             ListEntry::More(3),
         ],
+        inbox: false,
     };
     // The plan saw windows 10, 11, 12; since then 12 is gone and 11 stands first.
     let now_windows = [windows[1].clone(), windows[0].clone()];
@@ -1483,6 +1484,7 @@ fn list_and_preview_content() {
         lists: vec![SideList {
             rect: list_rect,
             entries: vec![ListEntry::Row(2)],
+            inbox: false,
         }],
         main: Some(0),
         lot: BTreeSet::new(),
@@ -1631,4 +1633,582 @@ fn glow_breathes_and_fades() {
         alpha(dying - 0.3, Some(dying), 0.0).unwrap() <= GLOW_ALPHA_BASE + GLOW_ALPHA_SWING,
         "clock back while fading out: never above the breath"
     );
+}
+
+// ---------- Inbox (Kevin 2026-11-09) ----------
+
+fn inbox_window(id: u64, waiting: bool, name: &str, question: Option<&str>) -> TermWindow {
+    let mut w = fake_window_with(true, 1000.0 + id as f64, None, waiting, true);
+    w.id = id;
+    w.sessions[0].digest = Some(Digest {
+        name: Some(name.into()),
+        question: question.map(Into::into),
+        text: Some("Sendung ist angelegt.".into()),
+        answer_at: Some(500.0),
+        ..Digest::default()
+    });
+    w
+}
+
+fn inbox_windows() -> Vec<TermWindow> {
+    vec![
+        inbox_window(
+            0,
+            true,
+            "MixFino · Italien",
+            Some("Pausieren oder halbieren?"),
+        ),
+        inbox_window(1, false, "MixFino · Spanien", None),
+    ]
+}
+
+fn inbox_list(rows: &[usize], height: f64) -> SideList {
+    SideList {
+        rect: Rect::new(0.0, 0.0, 430.0, height),
+        entries: rows.iter().map(|&i| ListEntry::Row(i)).collect(),
+        inbox: true,
+    }
+}
+
+fn inbox_lines_of(
+    w: &[TermWindow],
+    list: &SideList,
+    main: Option<usize>,
+    read: &ReadAnswers,
+    tab: InboxTab,
+) -> Vec<ListLine> {
+    inbox_lines_full(w, list, main, read, tab, &BTreeSet::new())
+}
+
+fn inbox_lines_full(
+    w: &[TermWindow],
+    list: &SideList,
+    main: Option<usize>,
+    read: &ReadAnswers,
+    tab: InboxTab,
+    snoozed: &BTreeSet<String>,
+) -> Vec<ListLine> {
+    let (since, lookout) = (BTreeMap::new(), BTreeMap::new());
+    let planned: Vec<u64> = w.iter().map(|x| x.id).collect();
+    inbox_target(
+        list,
+        &InboxInput {
+            planned: &planned,
+            windows: w,
+            since: &since,
+            lookout: &lookout,
+            now: 1000.0,
+            read,
+            main,
+            tab,
+            snoozed,
+        },
+        7,
+    )
+    .lines
+}
+
+fn inbox_lines(
+    w: &[TermWindow],
+    list: &SideList,
+    main: Option<usize>,
+    read: &ReadAnswers,
+) -> Vec<ListLine> {
+    inbox_lines_of(w, list, main, read, InboxTab::Waiting)
+}
+
+fn card(line: &ListLine) -> &InboxCard {
+    match line {
+        ListLine::Card(c) => c,
+        other => panic!("no card: {other:?}"),
+    }
+}
+
+/// Questions first, then done; the card of the terminal in front is open, and the question stands without quotes.
+#[test]
+fn test_inbox_groups_and_open_card() {
+    let w = inbox_windows();
+    let lines = inbox_lines(
+        &w,
+        &inbox_list(&[0, 1], 900.0),
+        Some(0),
+        &ReadAnswers::new(),
+    );
+    assert_eq!(
+        lines[0],
+        ListLine::InboxTabs {
+            tab: InboxTab::Waiting,
+            waiting: 2,
+            working: 0,
+            parked: 0
+        }
+    );
+    assert_eq!(lines[1], ListLine::Group("Fragen an dich".into()));
+    let question = card(&lines[2]);
+    assert!(question.open && question.tone == LabelTone::Waiting);
+    assert_eq!(question.name, "Italien");
+    assert_eq!(question.project.as_deref(), Some("MixFino"));
+    assert_eq!(question.what.as_deref(), Some("Pausieren oder halbieren?"));
+    assert_eq!(
+        lines[3],
+        ListLine::Hint("Rechts im Terminal antworten".into())
+    );
+    assert_eq!(lines[4], ListLine::Group("Fertig".into()));
+    let done = card(&lines[5]);
+    assert!(!done.open);
+    assert_eq!(done.what.as_deref(), Some("Sendung ist angelegt."));
+    assert_eq!(lines.len(), 6);
+}
+
+/// Kevin 2026-11-09: no buttons on the cards, a right-click offers what can be done; a done card can also be marked read.
+#[test]
+fn test_inbox_done_card_has_a_right_click_and_no_button() {
+    let w = inbox_windows();
+    let lines = inbox_lines(
+        &w,
+        &inbox_list(&[0, 1], 900.0),
+        Some(1),
+        &ReadAnswers::new(),
+    );
+    assert!(!lines.iter().any(|l| matches!(l, ListLine::Buttons { .. })));
+    let k = lines
+        .iter()
+        .position(|l| matches!(l, ListLine::Card(c) if c.open))
+        .unwrap();
+    let top: f64 = lines[..k].iter().map(ListLine::height).sum();
+    let hit = card_at(&lines, top + 5.0).unwrap();
+    assert_eq!(hit.ids, [w[1].sessions[0].id.clone()]);
+    assert_eq!(hit.menu, [CardButton::Park, CardButton::ReadNext]);
+    assert_eq!(card_at(&lines, 5.0), None, "the tabs are no card");
+}
+
+/// The way back is a button only in Parked, on the open card; a click on it is not a click on the card.
+#[test]
+fn test_inbox_parked_card_button_is_hit() {
+    let w = vec![inbox_window(0, false, "A · B", None)];
+    let id = w[0].sessions[0].id.clone();
+    let snoozed = BTreeSet::from([id.clone()]);
+    let list = inbox_list(&[0], 900.0);
+    let lines = inbox_lines_full(
+        &w,
+        &list,
+        Some(0),
+        &ReadAnswers::new(),
+        InboxTab::Parked,
+        &snoozed,
+    );
+    let k = lines
+        .iter()
+        .position(|l| matches!(l, ListLine::Card(c) if c.open))
+        .unwrap();
+    let top: f64 = lines[..k].iter().map(ListLine::height).sum();
+    let button = top + lines[k].height() + 5.0;
+    let first = INBOX_TEXT_X + 5.0;
+    assert_eq!(
+        button_at(&lines, first, button),
+        Some((CardButton::Unpark, &[id.clone()][..]))
+    );
+    assert_eq!(button_at(&lines, 10.0, button), None, "left of the button");
+    assert_eq!(row_at(&lines, button), None, "the button is not the row");
+    assert_eq!(
+        row_at(&lines, top + 5.0),
+        Some(&[id][..]),
+        "a click on the card"
+    );
+    assert_eq!(button_at(&lines, first, top + 5.0), None);
+    assert_eq!(card(&lines[k]).menu, [CardButton::Unpark]);
+}
+
+#[test]
+fn test_inbox_read_card_leaves_until_a_new_answer() {
+    let mut w = inbox_windows();
+    let mut read = ReadAnswers::new();
+    mark_read(&w[1], &mut read);
+    let list = inbox_list(&[0, 1], 900.0);
+    let lines = inbox_lines(&w, &list, Some(0), &read);
+    assert_eq!(
+        lines[0],
+        ListLine::InboxTabs {
+            tab: InboxTab::Waiting,
+            waiting: 1,
+            working: 0,
+            parked: 1
+        }
+    );
+    assert!(!lines.contains(&ListLine::Group("Fertig".into())));
+
+    w[1].sessions[0].digest.as_mut().unwrap().answer_at = Some(600.0);
+    let lines = inbox_lines(&w, &list, Some(0), &read);
+    assert!(lines.contains(&ListLine::Group("Fertig".into())));
+}
+
+/// Longer than the window: the rest goes into "+N".
+#[test]
+fn test_inbox_overflow() {
+    let w: Vec<TermWindow> = (0..20)
+        .map(|i| inbox_window(i, false, "A · B", None))
+        .collect();
+    let rows: Vec<usize> = (0..20).collect();
+    let lines = inbox_lines(&w, &inbox_list(&rows, 500.0), None, &ReadAnswers::new());
+    let cards = lines
+        .iter()
+        .filter(|l| matches!(l, ListLine::Card(_)))
+        .count();
+    let more = lines.iter().find_map(|l| match l {
+        ListLine::More(n) => Some(*n),
+        _ => None,
+    });
+    assert_eq!(Some(20 - cards), more);
+    let total: f64 = lines.iter().map(ListLine::height).sum();
+    assert!(total <= 500.0, "{total}");
+}
+
+/// The last card needs no room for a "+N" after it.
+#[test]
+fn test_inbox_last_card_fits_without_more() {
+    let w: Vec<TermWindow> = (0..5)
+        .map(|i| inbox_window(i, false, "A · B", None))
+        .collect();
+    let rows: Vec<usize> = (0..5).collect();
+    let lines = inbox_lines(&w, &inbox_list(&rows, 452.0), None, &ReadAnswers::new());
+    let cards = lines
+        .iter()
+        .filter(|l| matches!(l, ListLine::Card(_)))
+        .count();
+    assert_eq!(cards, 5);
+    assert!(!lines.iter().any(|l| matches!(l, ListLine::More(_))));
+    let total: f64 = lines.iter().map(ListLine::height).sum();
+    assert!(total <= 452.0, "{total}");
+}
+
+/// A question over several lines of its own is one text: the card counts and shows it wrapped, not by its line ends.
+#[test]
+fn test_inbox_question_with_line_ends() {
+    let w = vec![inbox_window(0, true, "A · B", Some("Eins\nZwei\n\nDrei"))];
+    let lines = inbox_lines(&w, &inbox_list(&[0], 900.0), Some(0), &ReadAnswers::new());
+    let c = card(&lines[2]);
+    assert_eq!(c.what.as_deref(), Some("Eins Zwei Drei"));
+    assert_eq!(c.lines, 1);
+}
+
+/// A group whose first card does not fit gets no heading: it would push "+N" past the window's end.
+#[test]
+fn test_inbox_no_heading_without_a_card() {
+    let mut w: Vec<TermWindow> = (0..6)
+        .map(|i| inbox_window(i, true, "A · B", Some("Ja?")))
+        .collect();
+    w.extend((6..8).map(|i| inbox_window(i, false, "A · C", None)));
+    let rows: Vec<usize> = (0..8).collect();
+    let lines = inbox_lines(&w, &inbox_list(&rows, 584.0), None, &ReadAnswers::new());
+    assert!(!lines.contains(&ListLine::Group("Fertig".into())));
+    assert!(lines.contains(&ListLine::More(2)));
+    let total: f64 = lines.iter().map(ListLine::height).sum();
+    assert!(total <= 584.0, "{total}");
+}
+
+#[test]
+fn test_inbox_empty_says_so() {
+    let list = SideList {
+        rect: Rect::new(0.0, 0.0, 430.0, 900.0),
+        entries: vec![],
+        inbox: true,
+    };
+    let lines = inbox_lines(&[], &list, None, &ReadAnswers::new());
+    assert_eq!(
+        lines,
+        [
+            ListLine::InboxTabs {
+                tab: InboxTab::Waiting,
+                waiting: 0,
+                working: 0,
+                parked: 0
+            },
+            ListLine::Empty("Niemand wartet auf dich.".into())
+        ]
+    );
+}
+
+fn running_window(id: u64, name: &str) -> TermWindow {
+    let mut w = fake_window(false, 1000.0 + id as f64);
+    w.id = id;
+    w.sessions[0].digest = Some(Digest {
+        name: Some(name.into()),
+        text: Some("Baut gerade.".into()),
+        ..Digest::default()
+    });
+    w
+}
+
+/// Kevin 2026-11-09: a second tab for the sessions that work: what runs, then the parking lot, each card clickable.
+#[test]
+fn test_inbox_working_tab() {
+    let w = vec![
+        running_window(0, "Lookout · Eingang"),
+        running_window(1, "MixFino · PPC"),
+        running_window(2, "Ultivor · #9"),
+        inbox_window(3, true, "MixFino · Italien", Some("Ja?")),
+    ];
+    let list = SideList {
+        rect: Rect::new(0.0, 0.0, 430.0, 900.0),
+        entries: vec![
+            ListEntry::Row(3),
+            ListEntry::Working(0),
+            ListEntry::Working(1),
+            ListEntry::Lot(2),
+        ],
+        inbox: true,
+    };
+    let lines = inbox_lines_of(&w, &list, Some(0), &ReadAnswers::new(), InboxTab::Working);
+    assert_eq!(
+        lines[0],
+        ListLine::InboxTabs {
+            tab: InboxTab::Working,
+            waiting: 1,
+            working: 3,
+            parked: 0
+        },
+        "both tabs count, whichever is shown"
+    );
+    assert_eq!(lines[1], ListLine::Group("Arbeitet".into()));
+    let front = card(&lines[2]);
+    assert!(front.open && front.name == "Eingang");
+    assert_eq!(
+        card(&lines[3]).name,
+        "PPC",
+        "the open card of a running session has no button"
+    );
+    assert_eq!(lines[4], ListLine::Group("Auf dem Parkplatz".into()));
+    assert_eq!(card(&lines[5]).name, "#9");
+    assert_eq!(lines.len(), 6);
+    let on_card: f64 = lines[..3].iter().map(ListLine::height).sum();
+    assert!(
+        row_at(&lines, on_card + 5.0).is_some(),
+        "a click brings it to the terminal"
+    );
+
+    let waiting = inbox_lines_of(&w, &list, Some(0), &ReadAnswers::new(), InboxTab::Waiting);
+    assert_eq!(
+        waiting
+            .iter()
+            .filter(|l| matches!(l, ListLine::Card(_)))
+            .count(),
+        1
+    );
+}
+
+/// "Read" only takes a card out of the done group: a session that works again stays visible on the running tab.
+#[test]
+fn test_inbox_read_does_not_hide_a_running_session() {
+    let w = vec![
+        running_window(0, "A · Vorn"),
+        running_window(1, "A · Wieder dran"),
+    ];
+    let mut read = ReadAnswers::new();
+    mark_read(&w[1], &mut read);
+    let list = SideList {
+        rect: Rect::new(0.0, 0.0, 430.0, 900.0),
+        entries: vec![ListEntry::Working(0), ListEntry::Working(1)],
+        inbox: true,
+    };
+    let lines = inbox_lines_of(&w, &list, Some(0), &read, InboxTab::Working);
+    let names: Vec<&str> = lines
+        .iter()
+        .filter_map(|l| match l {
+            ListLine::Card(c) => Some(c.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, ["Vorn", "Wieder dran"]);
+}
+
+/// Between two plans a session can change state: it moves to the group it belongs in now, it never drops out of both tabs.
+#[test]
+fn test_inbox_groups_by_the_state_now() {
+    let w = vec![
+        running_window(0, "A · Vorn"),
+        inbox_window(1, false, "A · Eben fertig", None),
+        inbox_window(2, true, "A · Fragt jetzt", Some("Ja?")),
+    ];
+    let list = SideList {
+        rect: Rect::new(0.0, 0.0, 430.0, 900.0),
+        entries: vec![
+            ListEntry::Working(0),
+            ListEntry::Working(1),
+            ListEntry::Lot(2),
+        ],
+        inbox: true,
+    };
+    let lines = inbox_lines(&w, &list, Some(0), &ReadAnswers::new());
+    assert_eq!(
+        lines[0],
+        ListLine::InboxTabs {
+            tab: InboxTab::Waiting,
+            waiting: 2,
+            working: 1,
+            parked: 0
+        }
+    );
+    assert_eq!(card(&lines[2]).name, "Fragt jetzt");
+    assert_eq!(lines[3], ListLine::Group("Fertig".into()));
+    assert_eq!(card(&lines[4]).name, "Eben fertig");
+}
+
+#[test]
+fn test_inbox_tabs_are_clicked_by_position() {
+    let lines = vec![
+        ListLine::InboxTabs {
+            tab: InboxTab::Waiting,
+            waiting: 1,
+            working: 2,
+            parked: 0,
+        },
+        ListLine::Group("Fertig".into()),
+    ];
+    assert_eq!(
+        tab_at(&lines, INBOX_TAB_X + 5.0, 20.0),
+        Some(InboxTab::Waiting)
+    );
+    assert_eq!(
+        tab_at(&lines, INBOX_TAB_X + INBOX_TAB_W + 5.0, 20.0),
+        Some(InboxTab::Working)
+    );
+    assert_eq!(
+        tab_at(&lines, INBOX_TAB_X + 2.0 * INBOX_TAB_W + 5.0, 20.0),
+        Some(InboxTab::Parked)
+    );
+    assert_eq!(tab_at(&lines, 400.0, 20.0), None, "right of the tabs");
+    assert!(plus_at(&lines, INBOX_PLUS_X + 5.0, 20.0));
+    assert!(!plus_at(&lines, INBOX_PLUS_X - 5.0, 20.0), "still the tabs");
+    assert!(!plus_at(&lines, INBOX_PLUS_X + 5.0, 60.0), "below it");
+    assert!(
+        !plus_at(&[ListLine::More(1)], INBOX_PLUS_X + 5.0, 20.0),
+        "not an inbox"
+    );
+    assert_eq!(tab_at(&lines, INBOX_TAB_X + 5.0, 60.0), None, "below them");
+    assert_eq!(
+        tab_at(&[ListLine::More(1)], 20.0, 20.0),
+        None,
+        "not an inbox"
+    );
+}
+
+#[test]
+fn test_inbox_working_tab_empty_says_so() {
+    let list = SideList {
+        rect: Rect::new(0.0, 0.0, 430.0, 900.0),
+        entries: vec![],
+        inbox: true,
+    };
+    let lines = inbox_lines_of(&[], &list, None, &ReadAnswers::new(), InboxTab::Working);
+    assert_eq!(lines[1], ListLine::Empty("Gerade arbeitet niemand.".into()));
+    let lines = inbox_lines_of(&[], &list, None, &ReadAnswers::new(), InboxTab::Parked);
+    assert_eq!(lines[1], ListLine::Empty("Nichts geparkt.".into()));
+}
+
+/// Kevin 2026-11-09: a third tab. What he parked, whatever it is doing, and what he marked read: nothing is simply gone.
+#[test]
+fn test_inbox_parked_tab() {
+    let mut w = vec![
+        running_window(0, "A · Postfach"),
+        inbox_window(1, false, "A · Fertig geparkt", None),
+        inbox_window(2, false, "A · Gelesen", None),
+        inbox_window(3, true, "A · Fragt trotzdem", Some("Ja?")),
+        running_window(4, "A · Laeuft"),
+    ];
+    w[3].sessions[0].waiting = true;
+    let snoozed: BTreeSet<String> = [0, 1, 3].map(|i| w[i].sessions[0].id.clone()).into();
+    let mut read = ReadAnswers::new();
+    mark_read(&w[2], &mut read);
+    let list = SideList {
+        rect: Rect::new(0.0, 0.0, 430.0, 900.0),
+        entries: vec![
+            ListEntry::Row(3),
+            ListEntry::Row(1),
+            ListEntry::Row(2),
+            ListEntry::Working(0),
+            ListEntry::Working(4),
+        ],
+        inbox: true,
+    };
+    let names = |lines: &[ListLine]| -> Vec<String> {
+        lines
+            .iter()
+            .filter_map(|l| match l {
+                ListLine::Card(c) => Some(c.name.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let parked = inbox_lines_full(&w, &list, Some(1), &read, InboxTab::Parked, &snoozed);
+    assert_eq!(
+        parked[0],
+        ListLine::InboxTabs {
+            tab: InboxTab::Parked,
+            waiting: 1,
+            working: 1,
+            parked: 3
+        }
+    );
+    assert_eq!(parked[1], ListLine::Group("Von dir geparkt".into()));
+    assert_eq!(names(&parked), ["Fertig geparkt", "Postfach", "Gelesen"]);
+    assert_eq!(
+        parked[3],
+        ListLine::Buttons {
+            ids: vec![w[1].sessions[0].id.clone()],
+            buttons: vec![CardButton::Unpark]
+        },
+        "the open card can come back"
+    );
+    assert!(parked.contains(&ListLine::Group("Gelesen".into())));
+
+    let waiting = inbox_lines_full(&w, &list, None, &read, InboxTab::Waiting, &snoozed);
+    assert_eq!(
+        names(&waiting),
+        ["Fragt trotzdem"],
+        "a parked session that asks still comes"
+    );
+    let working = inbox_lines_full(&w, &list, None, &read, InboxTab::Working, &snoozed);
+    assert_eq!(names(&working), ["Laeuft"]);
+}
+
+/// Parking is offered everywhere: on a running card and on a question too.
+#[test]
+fn test_inbox_park_on_every_card() {
+    let w = vec![running_window(0, "A · B")];
+    let list = SideList {
+        rect: Rect::new(0.0, 0.0, 430.0, 900.0),
+        entries: vec![ListEntry::Working(0)],
+        inbox: true,
+    };
+    let lines = inbox_lines_of(&w, &list, None, &ReadAnswers::new(), InboxTab::Working);
+    assert_eq!(card(&lines[2]).menu, [CardButton::Park]);
+    let asks = vec![inbox_window(0, true, "A · B", Some("Ja?"))];
+    let list = inbox_list(&[0], 900.0);
+    let lines = inbox_lines(&asks, &list, Some(0), &ReadAnswers::new());
+    assert_eq!(card(&lines[2]).menu, [CardButton::Park]);
+    assert!(!lines.iter().any(|l| matches!(l, ListLine::Buttons { .. })));
+}
+
+/// A long question gets more lines on the open card, a short one stays at one, and it never grows without end.
+#[test]
+fn test_inbox_open_card_height_follows_the_text() {
+    let long = "Soll ich die Kampagne pausieren, das Budget halbieren oder alles lassen, wie es ist, bis die Zahlen da sind?";
+    let w = vec![
+        inbox_window(0, true, "A · B", Some("Ja?")),
+        inbox_window(1, true, "A · C", Some(long)),
+        inbox_window(2, true, "A · D", Some(&long.repeat(9))),
+    ];
+    let list = inbox_list(&[0, 1, 2], 2000.0);
+    let lines_of = |m| {
+        inbox_lines(&w, &list, Some(m), &ReadAnswers::new())
+            .iter()
+            .find_map(|l| match l {
+                ListLine::Card(c) if c.open => Some(c.lines),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(lines_of(0), 1);
+    assert!(lines_of(1) >= 2);
+    assert_eq!(lines_of(2), 6);
 }

@@ -75,6 +75,7 @@ bundle() {
 	<key>CFBundleVersion</key><string>1</string>
 	<key>LSMinimumSystemVersion</key><string>26.0</string>
 	<key>LSUIElement</key><true/>
+	<key>NSAppleEventsUsageDescription</key><string>Lookout opens new Ghostty windows when you click + in the Inbox.</string>
 	<key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>

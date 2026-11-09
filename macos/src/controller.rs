@@ -28,9 +28,9 @@ use lookout_core::config::{AppConfig, color_from_hex, config_from_json};
 use lookout_core::geom::{Point, Rect};
 use lookout_core::i18n::{is_german, prefers_german, set_german};
 use lookout_core::layout::{
-    DEFAULT_GRID, PlanInput, attention_order, is_worker, layout_candidates, lot_member,
-    plan_arrangement, plan_log_line, resolve_target, rest_sequence, status_swap, swapped_rest,
-    unique_screen_ids,
+    DEFAULT_GRID, PlanInput, ReadAnswers, attention_order, first_ready_time, is_worker,
+    layout_candidates, lot_member, plan_arrangement, plan_log_line, press_button, resolve_target,
+    rest_sequence, status_swap, swapped_rest, unique_screen_ids,
 };
 use lookout_core::mapping::{
     PING_POLL, PING_ROUNDS, PING_WAIT, Ping, PingState, attach_processes, index_of_window,
@@ -39,18 +39,22 @@ use lookout_core::mapping::{
 };
 use lookout_core::model::Engine;
 use lookout_core::model::{
-    Arrangement, EngineProc, GridSpec, LayoutMode, LookoutLine, OnScreenWindow, Pair, Pid, PsRow,
-    ScreenInfo, Session, StackSide, Target, TargetChoice, TermWindow, Time, graphemes, title_glyph,
+    Arrangement, CardButton, EngineProc, GridSpec, LayoutMode, LookoutLine, OnScreenWindow, Pair,
+    Pid, PsRow, ScreenInfo, Session, StackSide, Target, TargetChoice, TermWindow, Time, graphemes,
+    title_glyph,
 };
-use lookout_core::motion::{Badge, MoveMemory, ax_origin, frames_differ, needs_move, status_badge};
+use lookout_core::motion::{
+    Badge, MoveMemory, WARP_BID, ax_origin, frames_differ, needs_move, status_badge,
+};
 use lookout_core::overlay::{
-    GlowTarget, MoveGate, OnScreenMatch, OverlayInput, SinceEntry, advance_since, first_name,
-    focus_source, frontmost_number, glow_targets, label_targets, list_target, locate_on_screen,
-    set_greeting_name,
+    GlowTarget, InboxInput, InboxTab, MoveGate, OnScreenMatch, OverlayInput, SinceEntry,
+    advance_since, first_name, focus_source, frontmost_number, glow_targets, inbox_target,
+    label_targets, list_target, locate_on_screen, set_greeting_name,
 };
+use lookout_core::restore::{self as restoring, OpenSession};
 use lookout_core::status::{
     BackgroundWatch, ClaudeStatus, LogSessionFinder, Standby, TAIL_BYTES, TranscriptReader,
-    apply_lookout_lines, fetch_agents, launch_corrected, mark_read_asks,
+    apply_lookout_lines, fetch_agents, launch_corrected, mark_read_asks, seen_outside_front,
 };
 
 use crate::animator::{Animator, WindowMove};
@@ -73,12 +77,17 @@ pub(crate) const DEFAULTS_LABELS: &str = "lookout.labels";
 pub(crate) const DEFAULTS_PARKED: &str = "lookout.parked";
 /// Workers taken off the parking lot by hand (Rust app only, like `lookout.parked`).
 pub(crate) const DEFAULTS_KEPT: &str = "lookout.kept";
+/// Sessions Kevin parked in the inbox.
+pub(crate) const DEFAULTS_SNOOZED: &str = "lookout.snoozed";
 /// Control-room screens, chosen in the menu from three screens on (Kevin 2026-10-01).
 pub(crate) const DEFAULTS_PAIR_WORK: &str = "lookout.leitstand.work";
 pub(crate) const DEFAULTS_PAIR_CONTROL: &str = "lookout.leitstand.control";
 
 /// A week: how long a seen answer is remembered (review quick 2026-10-04, GLM).
 const SEEN_KEEP: Time = 7.0 * 86_400.0;
+/// How long a session being reopened stays out of the menu: time for the staggered windows of a whole list to start. If
+/// it has not come back by then, the attempt failed and it is offered again.
+const RESTORE_WAIT: Time = 180.0;
 
 // ---------- The app slot ----------
 
@@ -232,6 +241,19 @@ pub(crate) struct App {
     pub(crate) hand_parked: BTreeSet<String>,
     /// Session ids of workers taken off the parking lot by hand: they stay in the arrangement.
     pub(crate) hand_kept: BTreeSet<String>,
+    /// Session ids Kevin parked in the inbox (`is_snoozed`). ponytail: never thinned out either, like `excluded`.
+    snoozed: BTreeSet<String>,
+    /// The session that came to the front last, with when it was seen before that (`seen_outside_front`).
+    in_front: Option<(String, Option<Time>)>,
+    /// What Kevin marked read in the inbox.
+    read_answers: ReadAnswers,
+    /// The tab the inbox shows. ponytail: starts on "waiting" after a restart, store it like `mode` if that bothers.
+    inbox_tab: InboxTab,
+    /// The open sessions as kept on disk, to come back after a crash or shutdown (`restore`).
+    restore_list: Vec<OpenSession>,
+    /// Session ids just being reopened, with when: not offered again meanwhile.
+    restoring_since: BTreeMap<String, Time>,
+    restore_unsaved: bool,
     pub(crate) side: StackSide,
     pub(crate) paused: bool,
     tick_in_flight: bool,
@@ -300,6 +322,8 @@ struct TickInput {
     known_rows: Vec<PsRow>,
     epoch: u64,
     seen: BTreeMap<String, Time>,
+    /// `seen_outside_front`, in the inbox only.
+    in_front: Option<(String, Option<Time>)>,
     shown: Vec<TermWindow>,
     front_pid: Option<Pid>,
     screen_h: f64,
@@ -386,6 +410,10 @@ impl App {
             .unwrap_or_default()
             .into_iter()
             .collect();
+        let snoozed: BTreeSet<String> = prefs::string_array(DEFAULTS_SNOOZED)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         let labels_on = prefs::boolean(DEFAULTS_LABELS).unwrap_or(cfg.labels);
         let side = StackSide::parse(&cfg.stack_side);
 
@@ -408,7 +436,22 @@ impl App {
             lists: ListOverlay::new(
                 mtm,
                 Box::new(|ids: Vec<String>| with_app(move |a| a.list_clicked(&ids))),
+                Box::new(|button, ids: Vec<String>| with_app(move |a| a.list_button(button, &ids))),
+                Box::new(|tab| {
+                    with_app(move |a| {
+                        a.inbox_tab = tab;
+                        a.refresh_overlays();
+                    })
+                }),
+                Box::new(|| with_app(|a| a.new_terminal_window())),
             ),
+            restore_list: restoring::load(&crate::restore::list_path()),
+            restoring_since: BTreeMap::new(),
+            restore_unsaved: false,
+            snoozed,
+            in_front: None,
+            read_answers: ReadAnswers::new(),
+            inbox_tab: InboxTab::default(),
             focus_watcher: FocusWatcher::new(Box::new(|| with_app(App::handle_focus_change))),
             tile_empty,
             tile_full,
@@ -586,6 +629,10 @@ impl App {
             known_rows: self.last_rows.clone(),
             epoch: self.move_epoch,
             seen: self.seen_at.clone(),
+            in_front: self
+                .in_front
+                .clone()
+                .filter(|_| self.mode == LayoutMode::Inbox),
             shown: self.windows.clone(),
             front_pid: frontmost_pid(),
             screen_h: screens::primary_height(),
@@ -620,7 +667,11 @@ impl App {
         // Ready times move on BEFORE the windows are taken over.
         let mut fresh = BTreeMap::new();
         for w in stamped.iter_mut().filter(|w| w.is_ready()) {
-            let since = self.ready_since.get(&w.id).copied().unwrap_or(n);
+            let since = self
+                .ready_since
+                .get(&w.id)
+                .copied()
+                .unwrap_or_else(|| first_ready_time(w, n));
             w.ready_since = Some(since);
             fresh.insert(w.id, since);
         }
@@ -645,6 +696,7 @@ impl App {
         self.last_procs = out.procs;
         self.last_rows = out.rows;
         self.first_seen = self.windows.iter().map(|w| (w.id, w.first_seen)).collect();
+        self.remember_open_sessions();
         let ids: BTreeSet<u64> = self.windows.iter().map(|w| w.id).collect();
         self.move_memory.retain(|id, _| ids.contains(id));
         self.trusted = out.trusted;
@@ -752,6 +804,9 @@ impl App {
                 on_screen.as_deref(),
                 screens::primary_height(),
             ) {
+                if self.in_front.as_ref().map(|f| &f.0) != Some(&id) {
+                    self.in_front = Some((id.clone(), self.seen_at.get(&id).copied()));
+                }
                 let entry = self.seen_at.entry(id).or_insert(at);
                 *entry = entry.max(at);
             }
@@ -1005,11 +1060,25 @@ impl App {
             self.list_anchor(main, on_screen)?
         };
         let n = now();
+        let inbox = InboxInput {
+            planned: &self.arrangement_ids,
+            windows: &self.windows,
+            since: &self.since,
+            lookout,
+            now: n,
+            read: &self.read_answers,
+            main: self.main_index(),
+            tab: self.inbox_tab,
+            snoozed: &self.snoozed,
+        };
         Some(
             self.arrangement
                 .lists
                 .iter()
                 .map(|l| {
+                    if l.inbox {
+                        return inbox_target(l, &inbox, number);
+                    }
                     list_target(
                         l,
                         &self.arrangement_ids,
@@ -1764,6 +1833,123 @@ impl App {
         attention_order(&ws).first().map(|&k| others[k])
     }
 
+    /// A failed write is tried again on every tick (`remember_open_sessions`) and logged once.
+    fn save_restore_list(&mut self) {
+        match restoring::save(&crate::restore::list_path(), &self.restore_list) {
+            Ok(()) => self.restore_unsaved = false,
+            Err(e) => {
+                if !self.restore_unsaved {
+                    log(&format!("Sitzungsliste nicht gespeichert: {e}"));
+                }
+                self.restore_unsaved = true;
+            }
+        }
+    }
+
+    /// Keeps the list of open sessions on disk current; written only when it changed or the last write failed.
+    fn remember_open_sessions(&mut self) {
+        let live = restoring::open_sessions(&self.windows);
+        let next = restoring::remember(&self.restore_list, live, &self.windows);
+        if next != self.restore_list || self.restore_unsaved {
+            self.restore_list = next;
+            self.save_restore_list();
+        }
+    }
+
+    /// Sessions the menu offers to bring back: on the list and not running.
+    pub(crate) fn restorable_sessions(&self) -> Vec<OpenSession> {
+        let n = now();
+        let running: BTreeSet<&str> = self
+            .live_sessions
+            .iter()
+            .map(|s| s.id.as_str())
+            .chain(
+                self.restoring_since
+                    .iter()
+                    .filter(|&(_, at)| n - *at < RESTORE_WAIT)
+                    .map(|(id, _)| id.as_str()),
+            )
+            .collect();
+        restoring::restorable(&self.restore_list, &running)
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
+    /// Brings back one session (`only`) or all of them. They stay on the list until they run again, so a failed attempt
+    /// loses nothing; for `RESTORE_WAIT` they are not offered, so a second click cannot resume one twice.
+    pub(crate) fn restore_sessions(&mut self, only: Option<&str>) {
+        let chosen: Vec<OpenSession> = self
+            .restorable_sessions()
+            .into_iter()
+            .filter(|o| only.is_none_or(|id| id == o.id))
+            .collect();
+        if chosen.is_empty() {
+            return;
+        }
+        let n = now();
+        self.restoring_since.retain(|_, at| n - *at < RESTORE_WAIT);
+        self.restoring_since
+            .extend(chosen.iter().map(|o| (o.id.clone(), n)));
+        log(&format!("Wiederherstellen: {} Sessions", chosen.len()));
+        crate::restore::reopen(
+            chosen,
+            self.cfg.claude_config_dirs.clone(),
+            self.cfg.resume_commands.clone(),
+        );
+    }
+
+    /// "Clear the list": nothing is offered any more; running sessions stay remembered.
+    pub(crate) fn clear_restorable(&mut self) {
+        let gone = self.restorable_sessions();
+        self.restore_list
+            .retain(|o| !gone.iter().any(|g| g.id == o.id));
+        self.save_restore_list();
+    }
+
+    /// The + in the inbox (Kevin 2026-11-09): a new window of the terminal in front, Warp when none is.
+    fn new_terminal_window(&self) {
+        let front = self.main_index().map(|i| self.windows[i].bundle_id.clone());
+        crate::restore::new_window(front.unwrap_or_else(|| WARP_BID.to_owned()));
+    }
+
+    /// A button on the inbox's open card (Kevin 2026-11-09): the session leaves the list, and the next one comes to the
+    /// terminal's place, the same way as a click on its row; bringing back moves nothing.
+    fn list_button(&mut self, button: CardButton, ids: &[String]) {
+        let Some(w) = self
+            .windows
+            .iter()
+            .position(|w| w.sessions.iter().any(|s| ids.contains(&s.id)))
+        else {
+            return;
+        };
+        let main = self.main_index();
+        let next = press_button(
+            button,
+            &self.windows,
+            &self.excluded,
+            main,
+            w,
+            &mut self.read_answers,
+            &mut self.snoozed,
+        );
+        prefs::set_string_array(
+            DEFAULTS_SNOOZED,
+            &self.snoozed.iter().cloned().collect::<Vec<_>>(),
+        );
+        match next {
+            Some(i) => {
+                let ids = self.windows[i]
+                    .sessions
+                    .iter()
+                    .map(|s| s.id.clone())
+                    .collect();
+                self.bring_to_front(&ids);
+            }
+            None => self.refresh_overlays(),
+        }
+    }
+
     /// A click on a session in the menu or a list (plan 1c/1d, GP 4, R2-4): the window to the front, a minimized one
     /// back, raise, main window, the terminal to the front via AX (`activate` only as fallback). Then read it fresh and
     /// count it like a click into it (`on_focused`): not relying on the focus report, it checks against the snapshot
@@ -1902,6 +2088,7 @@ fn tick_work(t: TickInput, engines: &Mutex<Engines>) -> TickOutput {
             seen.insert(id, at);
         }
     }
+    let counted = seen_outside_front(&seen, t.in_front.as_ref());
     // Processes not readable: the last list holds instead of dropping every match (finding 10).
     let terminals: BTreeSet<Pid> = ax::running_terminals().iter().map(|t| t.0).collect();
     let (procs, rows) = sys::engine_processes(&terminals).unwrap_or((t.known_procs, t.known_rows));
@@ -1944,14 +2131,14 @@ fn tick_work(t: TickInput, engines: &Mutex<Engines>) -> TickOutput {
             &t.ask_until_read_names,
             &t.other_window_names,
             &t.lead_names,
-            &seen,
+            &counted,
         );
         // Plan 1e: `busy`, answer finished, background resting since readyThresholdSec -> done.
         let raw = e
             .background
-            .adjust(&raw, &rows, now(), t.threshold as f64, &seen);
+            .adjust(&raw, &rows, now(), t.threshold as f64, &counted);
         // Done, but waits only for another session or an own timer and says "nothing needed".
-        let raw = e.standby.adjust(&raw, now(), &seen);
+        let raw = e.standby.adjust(&raw, now(), &counted);
         // Last: asks the session in its Lookout line for something, it waits for Kevin (Kevin 2026-10-12).
         apply_lookout_lines(raw, &t.other_window_names)
     } else {

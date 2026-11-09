@@ -17,6 +17,7 @@ pub mod menu;
 pub mod mouse;
 pub mod overlay;
 pub mod prefs;
+pub mod restore;
 pub mod screens;
 pub mod sys;
 

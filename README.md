@@ -29,7 +29,8 @@ Background story: [Why I run my company with AI agents](https://kevintheo.com/fi
   changes as the session goes on, so Lookout never shows it and shows the folder instead. You see it all without
   clicking into the window. For Codex, Grok and Kimi the label is shorter: status, time and window title.
 - **Four states:** `? WAITING FOR YOU`, `✓ DONE`, `● WORKING` and `◌ WATCHING` (Claude Code only, see below).
-- **Layouts:** three layouts for all AI windows on one screen, switched with Ctrl+Opt+1, 2 and 3.
+- **Layouts:** four layouts for all AI windows on one screen. Focus, Focus 2 and Grid are switched with
+  Ctrl+Opt+1, 2 and 3. Inbox is chosen in the menu.
   - **Focus:** the window you click goes to the middle. The others line up by who needs you first: waiting, then
     done (first come, first served), then working.
   - **Focus 2:** the middle stays yours, waiting and done windows on the left, working ones on the right. On
@@ -37,6 +38,32 @@ Background story: [Why I run my company with AI agents](https://kevintheo.com/fi
     holds the waiting and done windows, and the working sessions become rows in a list there.
   - **Grid:** every window gets a fixed place (2 × 2 up to 5 × 2, only the sizes that fit). Nothing moves when a
     status changes, and a click doesn't change the order.
+  - **Inbox:** A window of 430 points holds a list of sessions, and the active terminal sits right beside it at
+    reading width. The pair is centred on the screen, and the rest of a wide screen stays free. On a narrower
+    screen the terminal gets what is left. All other AI windows wait behind the terminal. Inbox has no hotkey.
+    You choose it in the menu. It applies to all windows on one screen. In the control room the layout is fixed.
+    The list shows only while labels are on. Three tabs at the top show a count each:
+    Waiting, Running and Parked. Waiting lists the sessions that want something from you, questions first,
+    then done ones. Within each of the two groups, whoever has waited longest stands on top, and a click on a card
+    does not change the order. Running lists the sessions at work, then the parking lot if you use one.
+    Parked has two groups, "Parked by you" and "Read". If something waits for you while you are on another tab,
+    the word Waiting turns amber. Lookout starts on the Waiting tab. The card of the terminal in front is open
+    and shows the whole question, up to 6 lines. A click on a card brings that session into the terminal.
+    You answer in the terminal as usual. A session counts as seen only once you move on to another card, not when
+    you click it. So a card does not leave the list under your mouse. A right-click on any card offers Park. On a
+    done card it also offers "Read: hide until the next answer". On a card in the Parked tab it offers
+    "Bring back". The open card in the Parked tab also has a "Bring back" button. There are no other buttons
+    on the cards. Parking is for a session you do not want to follow, for example one that watches a mailbox
+    all day. A parked session stays in the Parked tab whatever it does. If it then asks something new, it comes to
+    Waiting, and it goes back to Parked once answered. You can park a card with an open question too. It leaves
+    Waiting until the session asks something else. For sessions with no answer time in their transcript
+    (Codex, Grok) the question stays under Waiting, because a later question could not be told apart.
+    Parking stays through a restart of Lookout. An open question you parked shows under Waiting again after such
+    a restart. If you park the card in front or mark it read, the next waiting session comes to the terminal.
+    Doing the same on another card moves nothing. What you marked read is kept in memory only:
+    after quitting Lookout those cards are back. A + right of the tabs opens a new empty window of the terminal
+    in front: Warp in your home folder, or Ghostty. If no terminal is in front, it opens Warp. Ghostty needs
+    version 1.3 or later for this.
 - **Control room:** with two or more screens, your active session and the windows that need you are on one
   screen, the busy ones on the other. There are three variants in the menu. The layout is fixed there, so the
   hotkeys don't apply.
@@ -61,16 +88,24 @@ Background story: [Why I run my company with AI agents](https://kevintheo.com/fi
   to the front and makes it the active one. Hover over a screen or layout in the menu to see where your windows
   would go before anything moves.
 - **The menu:** it is a real macOS menu (keyboard, VoiceOver, light and dark mode as usual). The sessions stand in
-  sections with a count: WAITING FOR YOU, DONE, WORKING (working and watching sessions) and, with a parking lot,
-  IN THE PARKING LOT. That last section is compact: three rows, then "… and N more", which opens the peek. Each
-  session row has a colored dot (amber: waiting for you, mint: done, grey: working, grey ring: watching, paler on
-  the parking lot), the session name, below it the project and what the session does or asks, and on the right how
-  long it has been in that state. Hover over a session to see where its window is. Screens, layouts, the parking
-  lot, *More* and *Quit* have symbols. The switches (labels, strip side, pause) and the window choices (*Choose
-  windows*, *Without window*) are under *More*.
+  sections with a count: WAITING FOR YOU, DONE and, with a parking lot, IN THE PARKING LOT, while working and
+  watching sessions sit behind one row "Running" with an arrow and a count, and that submenu lists all of them.
+  That last section is compact: three rows, then "… and N more", which opens the peek. Each session row has a
+  colored dot (amber: waiting for you, mint: done, grey: working, grey ring: watching, paler on the parking lot),
+  the session name, below it the project and what the session does or asks, and on the right how long it has been
+  in that state. Hover over a session to see where its window is. Screens, layouts, the parking lot, *More* and
+  *Quit* have symbols. The switches (labels, strip side, pause) and the window choices (*Choose windows*, *Without
+  window*) are under *More*.
 - **"Watching":** some Claude Code sessions are done but only wait for their own background job (a CI run,
   workers), for another session, or for a timer they set themselves. They turn grey instead of "done": they don't
   need you, so they don't ask for your attention. Details and limits below.
+- **Restore sessions:** after a crash, a shutdown, or when Warp was quit, the menu shows "Restore sessions" with
+  a count. You can restore all of them or single ones. Each one opens in its own Warp window and runs the real
+  `claude --resume`, 3 seconds apart. The conversation comes back. A command that was running at that moment, and
+  background jobs, do not continue by themselves. That is how `claude --resume` works. A session you close
+  yourself while Warp keeps running is not offered. "Clear the list" removes all offers. Only Claude Code sessions
+  in Warp are offered. Ghostty sessions are not. A session whose transcript no longer exists cannot be restored.
+  The setting `resumeCommands` changes the command per Claude configuration folder.
 
 Lookout only moves windows with a recognized AI session. Normal terminal windows, minimized and full screen
 windows, and windows you took out stay where they are.
@@ -160,7 +195,7 @@ Lookout (it reads the file once at start), for example:
 |---|---|---|
 | `language` | your Mac's language | `"de"` or `"en"` (German or English menus and labels) |
 | `claudeConfigDirs` | `["~/.claude"]` | Claude Code configuration folders to watch, one per `CLAUDE_CONFIG_DIR` you use |
-| `layout` | `"reading"` | layout until you choose one in the menu: `reading` (Focus), `focus2`, `grid` |
+| `layout` | `"reading"` | layout until you choose one in the menu: `reading` (Focus), `focus2`, `grid`, `inbox` |
 | `stackSide` | `"right"` | side of the window column (the "strip" in the menu) when only one fits next to the center: `right`, `left` |
 | `readyThresholdSec` | `90` | seconds of quiet before a background command counts as resting, and the fallback for tools that don't say when their answer ends |
 | `pollSec` | `3` | how often windows are checked (seconds) |
@@ -173,10 +208,12 @@ Lookout (it reads the file once at start), for example:
 | `leadNames` | `[]` | own names (`claude --name …` or `/rename`) of sessions that lead other sessions, written exactly the same; an automatic topic title does not count (see "Watching" below); these sessions never park |
 | `otherWindowNames` | `[]` | parts of window names where you answer for other sessions (for example `"front desk"`, any case); a `?` status line that only sends you there does not bring this window forward (see "The session's own status line") |
 | `askUntilReadNames` | `[]` | parts of names of places outside the terminal where you handle a request (for example `"card page"`, any case); a `?` status line that ends with one of them in brackets, like `(card page)`, shows WAITING FOR YOU only until you have had its tab in front (see "The session's own status line") |
+| `resumeCommands` | `{}` | command to restore a session, per Claude configuration folder, as `{"folder": "command"}` with `{id}` standing for the session, for example `{"~/.claude": "my-launcher claude --resume {id}"}`. A folder without an entry uses `CLAUDE_CONFIG_DIR='<folder>' claude --resume <id>`. A command without `{id}` is ignored |
 | `workerNames` | `[]` | parts of session names (any case) that mark worker windows for the parking lot, for example `"Worker · "`; without them there is no parking lot |
 
 The menu remembers your choice of screen, layout, grid, control room screens, excluded windows and labels, and
 also which windows you sent to the parking lot or took off it by hand.
+Lookout also remembers which sessions you parked in the Inbox, across restarts.
 Pause and the side of the strip (*More > Strip on the right/left*) start fresh after a restart.
 
 ## What Lookout does on your Mac
@@ -196,6 +233,13 @@ I want you to know exactly what it touches:
 - It opens **no network connection** itself. It runs local tools only: `nettop` and `lsof` (only while a Claude
   session has finished its answer but still runs background commands), and `claude`. It reads the process list
   directly.
+- It keeps the list of open Claude sessions in `~/Library/Application Support/Lookout/open-sessions.json`.
+  The file holds the session id, the folder and the session name, and no conversation text.
+- Only when you choose to restore sessions, it writes one launch configuration per session into
+  `~/.warp/launch_configurations`, in files whose names start with `lookout-restore-`. It opens each one through
+  `open warp://launch/...` and removes it about a minute later.
+- Only when you click + in the Inbox: for Warp it runs `open warp://action/new_window`. For Ghostty it runs
+  `osascript` to tell Ghostty to open a window. The first time, macOS asks whether Lookout may control Ghostty.
 - It writes a log to `~/Library/Logs/Lookout.log` (in German; rotated at 5 MB, one old file kept). The log
   contains session names, status changes and the titles of terminal windows you click, but no answer text.
 - The **labels show transcript text** (answers, questions), and so does the open menu. Before you share your
@@ -282,6 +326,10 @@ lines, Lookout takes that instead of the rules above:
   question in the session status and keeps showing **WAITING FOR YOU** until you answer it. A question
   written as plain text at the end of a reply is easy to miss. Worker sessions keep showing DONE after `✓`
   so you see which windows can be closed.
+- A lead whose status line says `◌` shows WATCHING once you have had its tab in front after the answer, even
+  when nothing wakes it on its own. Before you have seen it, it shows DONE like the others. This holds only for
+  `◌` (and for a `?` line that already counts as `◌`). A read `✓` from a lead still needs something that wakes it.
+  The price: if the lead forgets what it said it would do, Lookout no longer points it out.
 - Only the last non-empty line counts, and only for the turn it was written in. The sign decides, not the words, so
   any language works. The text in brackets goes on the label.
 
@@ -383,7 +431,13 @@ arbeitet, wer fertig ist und wer auf dich wartet. Fertig ist mintgrün umrahmt, 
 braucht deine Freigabe oder deine Auswahl in einem Fragefenster. Endet eine Antwort mit einer Lookout-Zeile
 (`◌` / `?` / `✓ Lookout: …`, siehe oben), gilt, was die Session selbst sagt. Seit Version 4 ist Lookout in Rust
 neu geschrieben. Mit der Einstellung `workerNames` warten die Fenster von Worker-Sessions hinter deiner aktiven
-Session (Parkplatz); Ctrl+Opt+4 zeigt sie. Installation wie oben (`git clone`, `./build.sh`,
+Session (Parkplatz); Ctrl+Opt+4 zeigt sie.
+Der neue «Eingang» ist ein viertes Layout: Er zeigt deine Sessions in einer Liste mit den Reitern «Wartet»,
+«Läuft» und «Geparkt», direkt neben dem aktiven Terminal. Mit «Parken» im Rechtsklick-Menü einer Karte parkst du
+eine Session, der du nicht folgen willst; im Reiter «Geparkt» holst du sie mit «Zurückholen» wieder. Nach einem
+Absturz, einem Herunterfahren oder wenn Warp beendet wurde, zeigt das Menü «Sessions wiederherstellen»; jede
+Claude-Code-Session öffnet sich dann in einem eigenen Warp-Fenster und startet `claude --resume`.
+Installation wie oben (`git clone`, `./build.sh`,
 Bedienungshilfen freigeben). Die Sprache folgt dem Mac; fest auf Deutsch mit `{"language": "de"}` in
 `~/.config/lookout.json`. Die Schilder zeigen Text aus deinen Sessions: vor dem Bildschirmteilen unter
 *Mehr > Schilder anzeigen* ausschalten.

@@ -18,9 +18,9 @@ use objc2_app_kit::{
 use objc2_foundation::{NSDate, NSPoint, NSRect, NSRunLoop, NSSize};
 
 use lookout_core::geom::Rect;
-use lookout_core::model::{LabelTone, OnScreenWindow, Pid};
+use lookout_core::model::{CardButton, LabelTone, OnScreenWindow, Pid};
 use lookout_core::overlay::{
-    GlowTarget, LabelContent, LabelTarget, ListLine, ListTarget, PreviewBox,
+    GlowTarget, InboxCard, InboxTab, LabelContent, LabelTarget, ListLine, ListTarget, PreviewBox,
 };
 use lookout_macos::overlay::{
     GlowOverlay, LabelOverlay, Level, ListOverlay, PreviewOverlay, make_list_panel,
@@ -260,6 +260,9 @@ fn list_click_reaches_on_click(mtm: MainThreadMarker) {
                     lists.set_tints(MINT, ORANGE);
                 }
             }),
+            Box::new(|_, _| {}),
+            Box::new(|_| {}),
+            Box::new(|| {}),
         )
     });
     let target = ListTarget {
@@ -357,7 +360,13 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
     };
     labels.update(&[label_target], None);
 
-    let lists = ListOverlay::new(mtm, Box::new(|_| {}));
+    let lists = ListOverlay::new(
+        mtm,
+        Box::new(|_| {}),
+        Box::new(|_, _| {}),
+        Box::new(|_| {}),
+        Box::new(|| {}),
+    );
     lists.set_tints(MINT, ORANGE);
     let li = Rect::new(860.0, 520.0, 300.0, 120.0);
     let row = ListLine::Row {
@@ -371,7 +380,42 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
         lines: vec![ListLine::Header("SESSIONS".into()), row, ListLine::More(3)],
         window_number: 0,
     };
-    lists.update(&[list_target], None);
+    let card = |open, tone| {
+        ListLine::Card(InboxCard {
+            ids: vec!["a".into()],
+            name: "alpha".into(),
+            project: Some("beta".into()),
+            since: Some("seit 6 Min.".into()),
+            what: Some("Shall I commit?".into()),
+            tone,
+            open,
+            lines: 2,
+            menu: vec![CardButton::Park],
+        })
+    };
+    let ib = Rect::new(60.0, 200.0, 430.0, 500.0);
+    let inbox = ListTarget {
+        rect: ib,
+        lines: vec![
+            ListLine::InboxTabs {
+                tab: InboxTab::Working,
+                waiting: 1,
+                working: 2,
+                parked: 3,
+            },
+            ListLine::Group("Fragen".into()),
+            card(true, LabelTone::Waiting),
+            ListLine::Hint("Rechts antworten".into()),
+            card(false, LabelTone::Ready),
+            ListLine::Buttons {
+                ids: vec!["a".into()],
+                buttons: vec![CardButton::ReadNext, CardButton::Park],
+            },
+            ListLine::Empty("Niemand".into()),
+        ],
+        window_number: 0,
+    };
+    lists.update(&[list_target, inbox], None);
 
     let preview = PreviewOverlay::new(mtm);
     let pr = Rect::new(120.0, 120.0, 480.0, 300.0);
@@ -383,13 +427,14 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
 
     // Per panel frame: (x, y, lowest alpha, highest alpha).
     type Probe = (f64, f64, f64, f64);
-    let probes: [(Rect, &[Probe]); 4] = [
+    let probes: [(Rect, &[Probe]); 5] = [
         (
             grown(g),
             &[(7.0, 107.0, 0.8, 1.0), (157.0, 107.0, 0.0, 0.01)],
         ),
         (l, &[(180.0, 40.0, 0.9, 1.0)]),
         (li, &[(150.0, 60.0, 0.9, 1.0)]),
+        (ib, &[(400.0, 250.0, 0.99, 1.0)]),
         (pr, &[(240.0, 150.0, 0.5, 1.0), (30.0, 40.0, 0.1, 0.25)]),
     ];
     for (frame, points) in probes {

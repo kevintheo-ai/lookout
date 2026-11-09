@@ -30,6 +30,7 @@ use lookout_core::overlay::{
     MENU_LOT_ROWS, MENU_ROWS_MAX, MenuGroup, OnScreenMatch, PreviewBox, locate_on_screen,
     menu_groups, menu_row, more_rows_text, preview_boxes, rows_shown, whereabouts, window_tone,
 };
+use lookout_core::restore::OpenSession;
 use lookout_core::status::windowless_sessions;
 
 use crate::controller::{App, with_app, with_app_now};
@@ -48,6 +49,8 @@ const PREVIEW_FRONT: &str = "front:";
 const PREVIEW_PEEK: &str = "peek:";
 /// "To the parking lot": the window's session ids follow; a click sends it there by hand or takes it back.
 const PREVIEW_HAND: &str = "hand:";
+/// "Restore sessions": the session id follows.
+const PREVIEW_RESTORE: &str = "restore:";
 /// Control-room screens: the screen id follows; "auto" = automatic again.
 const PAIR_WORK: &str = "pair-work:";
 const PAIR_CONTROL: &str = "pair-control:";
@@ -186,6 +189,23 @@ define_class!(
         #[unsafe(method(toggleSide:))]
         fn toggle_side(&self, _sender: Option<&AnyObject>) {
             with_app(App::toggle_side);
+        }
+
+        #[unsafe(method(restoreAll:))]
+        fn restore_all(&self, _sender: Option<&AnyObject>) {
+            with_app(|a| a.restore_sessions(None));
+        }
+
+        #[unsafe(method(restoreOne:))]
+        fn restore_one(&self, sender: &NSMenuItem) {
+            if let Some(id) = key_after(sender, PREVIEW_RESTORE) {
+                with_app(move |a| a.restore_sessions(Some(&id)));
+            }
+        }
+
+        #[unsafe(method(restoreClear:))]
+        fn restore_clear(&self, _sender: Option<&AnyObject>) {
+            with_app(App::clear_restorable);
         }
 
         #[unsafe(method(quitApp:))]
@@ -376,6 +396,36 @@ fn peek_item(a: &App, title: &str, lot: usize) -> Retained<NSMenuItem> {
     it
 }
 
+/// "Restore sessions": all, one by one, or forget them.
+fn restore_menu(a: &App, lost: &[OpenSession]) -> Retained<NSMenu> {
+    let sub = submenu(a);
+    sub.addItem(&item(
+        a,
+        tr("Alle wiederherstellen", "Restore all"),
+        Some(sel!(restoreAll:)),
+        "",
+    ));
+    sub.addItem(&NSMenuItem::separatorItem(a.mtm));
+    for o in lost {
+        let (project, name) = match o.name.split_once(" · ") {
+            Some((project, task)) => (Some(project.to_owned()), task),
+            None => (None, o.name.as_str()),
+        };
+        let it = item(a, name, Some(sel!(restoreOne:)), "");
+        set_subtitle(&it, project);
+        keyed(&it, &format!("{PREVIEW_RESTORE}{}", o.id));
+        sub.addItem(&it);
+    }
+    sub.addItem(&NSMenuItem::separatorItem(a.mtm));
+    sub.addItem(&item(
+        a,
+        tr("Liste leeren", "Clear the list"),
+        Some(sel!(restoreClear:)),
+        "",
+    ));
+    sub
+}
+
 /// The symbol of a screen choice: MacBook, iMac, an external screen, or a control room over two.
 fn target_symbol(option: &TargetChoice, infos: &[ScreenInfo]) -> &'static str {
     match option {
@@ -393,6 +443,7 @@ fn mode_symbol(m: LayoutMode) -> &'static str {
         LayoutMode::Reading => "rectangle.center.inset.filled",
         LayoutMode::Focus2 => "rectangle.split.3x1",
         LayoutMode::Grid => "square.grid.3x2",
+        LayoutMode::Inbox => "tray.full",
     }
 }
 
@@ -491,7 +542,8 @@ fn rebuild(a: &mut App) {
     ));
     let vis = single_target_visible(a, &infos);
     for (i, m) in LayoutMode::ALL.into_iter().enumerate() {
-        let key = if a.cfg.hotkeys && m != LayoutMode::Grid {
+        // The grid's shortcut stands in its submenu, the inbox has none.
+        let key = if a.cfg.hotkeys && matches!(m, LayoutMode::Reading | LayoutMode::Focus2) {
             (i + 1).to_string()
         } else {
             String::new()
@@ -538,6 +590,20 @@ fn rebuild(a: &mut App) {
     add_sessions(a, &menu);
 
     menu.addItem(&NSMenuItem::separatorItem(a.mtm));
+    // After a crash or shutdown (Kevin 2026-11-09); only when there is something to bring back.
+    let lost = a.restorable_sessions();
+    if !lost.is_empty() {
+        let it = item(
+            a,
+            tr("Sessions wiederherstellen", "Restore sessions"),
+            None,
+            "",
+        );
+        count_badge(&it, lost.len());
+        show_image(&it, symbol("arrow.counterclockwise"));
+        it.setSubmenu(Some(&restore_menu(a, &lost)));
+        menu.addItem(&it);
+    }
     let more = item(a, tr("Mehr", "More"), None, "");
     show_image(&more, symbol("ellipsis.circle"));
     more.setSubmenu(Some(&more_menu(a)));
@@ -552,10 +618,10 @@ fn rebuild(a: &mut App) {
     menu.addItem(&quit);
 }
 
-/// Sessions by status (design A, Kevin 2026-11-06 evening): who waits for Kevin on top, then done and working ones,
-/// each section with its count; the parking lot apart, one line per window. A row: dot, name, below it project, where
-/// the window is and what the session does, the time on the right. A click brings it to the front, hovering lights it
-/// up (as before).
+/// Sessions by status (design A, Kevin 2026-11-06 evening): who waits for Kevin on top, then the done ones, each section
+/// with its count; the running ones behind one row with an arrow (Kevin 2026-11-09: the menu had outgrown itself); the
+/// parking lot apart, one line per window. A row: dot, name, below it project, where the window is and what the session
+/// does, the time on the right. A click brings it to the front, hovering lights it up (as before).
 fn add_sessions(a: &App, menu: &NSMenu) {
     let order = ai_windows_by_status(a);
     if order.is_empty() {
@@ -567,31 +633,45 @@ fn add_sessions(a: &App, menu: &NSMenu) {
     let lot = a.lot_indices();
     let lookout = a.lookout_lines();
     let n = now();
+    let row_item = |idx: usize, on_lot: bool| {
+        let w = &a.windows[idx];
+        let row = menu_row(w, &a.since, &lookout, n);
+        let front = sel!(bringToFrontItem:);
+        if on_lot {
+            let it = session_item(a, w, &row.compact(), None, front, PREVIEW_FRONT);
+            set_badge(&it, &row.tone.word().to_lowercase());
+            return it;
+        }
+        let it = session_item(a, w, &row.name, Some(row.tone), front, PREVIEW_FRONT);
+        set_subtitle(
+            &it,
+            row.subtitle(&session_notes(a, idx, on_screen.as_deref(), &parked)),
+        );
+        if let Some(d) = &row.duration {
+            set_badge(&it, d);
+        }
+        it
+    };
     let mut budget = MENU_ROWS_MAX;
     for (group, rows) in menu_groups(&a.windows, &order, &lot) {
+        if group == MenuGroup::Working {
+            // All of them: a submenu scrolls.
+            let list = submenu(a);
+            for &idx in &rows {
+                list.addItem(&row_item(idx, false));
+            }
+            let it = item(a, tr("Läuft", "Running"), None, "");
+            count_badge(&it, rows.len());
+            show_image(&it, dot(a, Some(LabelTone::Running)));
+            it.setSubmenu(Some(&list));
+            menu.addItem(&it);
+            continue;
+        }
         menu.addItem(&header(a, &group.header(rows.len())));
         let on_lot = group == MenuGroup::Lot;
         let shown = rows_shown(rows.len(), if on_lot { MENU_LOT_ROWS } else { budget });
         for &idx in &rows[..shown] {
-            let w = &a.windows[idx];
-            let row = menu_row(w, &a.since, &lookout, n);
-            let front = sel!(bringToFrontItem:);
-            let it = if on_lot {
-                let it = session_item(a, w, &row.compact(), None, front, PREVIEW_FRONT);
-                set_badge(&it, &row.tone.word().to_lowercase());
-                it
-            } else {
-                let it = session_item(a, w, &row.name, Some(row.tone), front, PREVIEW_FRONT);
-                set_subtitle(
-                    &it,
-                    row.subtitle(&session_notes(a, idx, on_screen.as_deref(), &parked)),
-                );
-                if let Some(d) = &row.duration {
-                    set_badge(&it, d);
-                }
-                it
-            };
-            menu.addItem(&it);
+            menu.addItem(&row_item(idx, on_lot));
         }
         let rest = rows.len() - shown;
         if rest > 0 {

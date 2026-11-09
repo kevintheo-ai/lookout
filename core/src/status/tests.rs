@@ -2231,6 +2231,62 @@ fn test_ask_until_read() {
     );
 }
 
+/// Kevin 2026-11-09 (screenshot 02:42, AgentOperator · Team-Lead: "◌ … (Wochenauswertung am Montag)", 36 min FERTIG): a
+/// lead whose read line needs nothing rests, even with nothing due to wake it. Unread, "✓", another window: done.
+#[test]
+fn test_lead_rests_without_a_waker() {
+    let nothing = "Gesichert.\n◌ Lookout: braucht nichts (Wochenauswertung am Montag)";
+    let done = "Gesichert.\n✓ Lookout: fertig (gesichert)";
+    let answered = 1_790_800_000.0;
+    let now = answered + 300.0;
+    let read = BTreeMap::from([("claude:lead".to_owned(), answered + 60.0)]);
+    let unread = BTreeMap::new();
+    let session = |text: &str, own_name: &str| Session {
+        digest: Some(Digest {
+            text: Some(text.into()),
+            last: LastBlock::Text,
+            turn_ended: true,
+            answer_at: Some(answered),
+            name: Some(own_name.into()),
+            ..Digest::default()
+        }),
+        ..Session::new(
+            "claude:lead",
+            Engine::Claude,
+            Some(53833),
+            "beta-ad",
+            "/x",
+            true,
+            true,
+        )
+    };
+    let (log, report) = recorder();
+    let mut standby = Standby::new(vec![], BTreeSet::from(["Beta · Lead".to_owned()]), report);
+    let mut judge =
+        |s: Session, seen: &BTreeMap<String, Time>| standby.adjust(&[s], now, seen)[0].clone();
+    assert!(
+        judge(session(nothing, "Beta · Lead"), &unread).ready,
+        "unread: Kevin still sees it"
+    );
+    let w = judge(session(nothing, "Beta · Lead"), &read);
+    assert!(w.watching && !w.ready, "read: rests");
+    assert!(
+        said(&log)
+            .iter()
+            .any(|l| l.contains("Beta") || l.contains("beta")),
+        "the log says so, got {:?}",
+        said(&log)
+    );
+    assert!(
+        judge(session(done, "Beta · Lead"), &read).ready,
+        "a read '✓' without a waker stays done"
+    );
+    assert!(
+        judge(session(nothing, "Beta · #9"), &read).ready,
+        "not a lead: nothing wakes it, done"
+    );
+}
+
 /// Kevin 2026-11-07 (screenshot 18:36, AgentOperator · Team-Lead): "wenn er eine frage hat muss es dialog sein sonst
 /// sehe ich es nicht". A lead's text "?" waits only until Kevin has read it; its dialog (open question) still waits.
 #[test]
@@ -2286,6 +2342,18 @@ fn test_lead_ask_read() {
 
 /// Kevin 2026-10-04 (screenshot 22:38): the answer to Kevin's own message is done until he had its window in front of
 /// him once after it; then it counts like an answer he did not start (watching, if it wants nothing from him).
+#[test]
+fn test_seen_outside_front() {
+    let seen = BTreeMap::from([("a".to_owned(), 900.0), ("b".to_owned(), 800.0)]);
+    assert_eq!(seen_outside_front(&seen, None), seen);
+    let held = ("a".to_owned(), Some(100.0));
+    let out = seen_outside_front(&seen, Some(&held));
+    assert_eq!(out["a"], 100.0, "as it was before it came to the front");
+    assert_eq!(out["b"], 800.0, "the others are untouched");
+    let never = ("a".to_owned(), None);
+    assert!(!seen_outside_front(&seen, Some(&never)).contains_key("a"));
+}
+
 #[test]
 fn test_watcher_answer_seen() {
     let rows = background_fixture();

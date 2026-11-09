@@ -21,6 +21,26 @@ pub fn answer_seen(d: &Digest, seen_at: Option<Time>) -> bool {
     }
 }
 
+/// In the inbox a card stays where it stands while its terminal is in front (Kevin 2026-11-09), so the session in front
+/// still counts as last seen before it came there. `in_front`: that session with that time. Once Kevin moves on, what he
+/// read there counts.
+pub fn seen_outside_front(
+    seen: &BTreeMap<String, Time>,
+    in_front: Option<&(String, Option<Time>)>,
+) -> BTreeMap<String, Time> {
+    let mut out = seen.clone();
+    match in_front {
+        Some((id, Some(before))) => {
+            out.insert(id.clone(), *before);
+        }
+        Some((id, None)) => {
+            out.remove(id);
+        }
+        None => {}
+    }
+    out
+}
+
 /// A lead session (`lead_names`): its name from the status file or its own name from the transcript (the menu's).
 fn is_lead(leads: &BTreeSet<String>, s: &Session) -> bool {
     leads.contains(&s.name)
@@ -149,7 +169,14 @@ impl Standby {
                 .wakeups
                 .values()
                 .any(|at| at.is_none_or(|at| now < at + Self::WAKE_GRACE));
-            if !(peer || wake) {
+            // Kevin 2026-11-09 (screenshot 02:42, "◌ … am Montag"): a lead that said it needs nothing, read by Kevin,
+            // rests even with nothing due to wake it. Every other session stays done: nothing would continue it.
+            let rests = line
+                .as_ref()
+                .is_some_and(|l| l.status == LineStatus::Nothing)
+                && is_lead(&self.leads, s)
+                && answer_seen(d, seen.get(&s.id).copied());
+            if !(peer || wake || rests) {
                 continue;
             }
             let why = if read_done {
@@ -167,8 +194,10 @@ impl Standby {
             if !self.quiet.contains_key(&s.id) {
                 let what = if peer {
                     "eine andere Session"
-                } else {
+                } else if wake {
                     "einen Wecker"
+                } else {
+                    "seinen nächsten Auftrag"
                 };
                 (self.report)(&format!(
                     "Wartet nur noch auf {what}, nichts nötig{why}: {} gilt als überwacht",

@@ -4,12 +4,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 use crate::i18n::set_german;
-use crate::model::LayoutMode::{Focus2, Grid, Reading};
+use crate::model::LayoutMode::{Focus2, Grid, Inbox, Reading};
 use crate::model::ListEntry::{Header, More, Row};
 use crate::model::StackSide::{Left, Right};
 use crate::model::Target::Single;
 use crate::model::TargetChoice::{Both, Both2, Both3, Builtin, External, Screen};
-use crate::model::{Digest, Engine, Session};
+use crate::model::{CardButton, Digest, Engine, Session};
 use crate::testutil::*;
 
 fn keys(m: &BTreeMap<usize, Rect>) -> Vec<usize> {
@@ -842,15 +842,432 @@ fn test_legacy_layout_names_still_work() {
     );
     assert_eq!(LayoutMode::parse("focus2"), Focus2);
     assert_eq!(LayoutMode::parse("quatsch"), Grid);
+    assert_eq!(LayoutMode::parse("inbox"), Inbox);
     assert_eq!(
         LayoutMode::ALL,
-        [Reading, Focus2, Grid],
-        "Ctrl+Opt+1 Focus, 2 Focus 2, 3 Grid"
+        [Reading, Focus2, Grid, Inbox],
+        "the order in the menu; Ctrl+Opt+1 Focus, 2 Focus 2, 3 Grid"
     );
     assert_eq!(
         LayoutMode::ALL.map(LayoutMode::label),
-        ["Fokus", "Fokus 2", "Raster"]
+        ["Fokus", "Fokus 2", "Raster", "Eingang"]
     );
+}
+
+// ---------- Inbox (Kevin 2026-11-09): one list window, the terminal beside it, every other window behind it ----------
+
+#[test]
+fn test_inbox_columns() {
+    let (panel, main) = inbox_layout(OLED);
+    assert_eq!(panel, Rect::new(585.0, 0.0, 430.0, 1239.0), "pair centred");
+    assert_eq!(
+        main,
+        Rect::new(1023.0, 0.0, 1400.0, 1239.0),
+        "reading width"
+    );
+
+    let (panel, main) = inbox_layout(MACBOOK);
+    assert_eq!(panel.min_x(), MACBOOK.min_x());
+    assert_eq!(panel.width(), 430.0);
+    assert_eq!(main.max_x(), MACBOOK.max_x());
+    assert_eq!(main.width(), 1290.0, "the terminal gets the rest");
+
+    let tiny = Rect::new(0.0, 0.0, 800.0, 600.0);
+    assert_eq!(
+        inbox_layout(tiny).1.width(),
+        MIN_CARD_W,
+        "the list gives way before the terminal falls below what Warp allows"
+    );
+}
+
+#[test]
+fn test_inbox_all_behind_the_terminal() {
+    let w = spread_windows(); // 0 runs, 1 done, 2 question, 3 runs, 4 plain shell
+    let a = plan_arrangement(&PlanInput {
+        focused: Some(0),
+        ..input(Inbox, Single(0), &w, Right)
+    });
+    let (panel, main) = inbox_layout(OLED);
+    assert_eq!(a.main, Some(0));
+    for i in 0..4 {
+        assert_eq!(a.frames[&i], main, "window {i} is on the terminal's frame");
+    }
+    assert_eq!(a.parked, BTreeSet::from([1, 2, 3]));
+    assert!(!a.frames.contains_key(&4), "plain shell stays where it is");
+    assert_eq!(a.lists.len(), 1, "one window, no second list");
+    assert!(a.lists[0].inbox);
+    assert_eq!(a.lists[0].rect, panel, "full height");
+    assert_eq!(
+        a.lists[0].entries,
+        [Row(2), Row(1), ListEntry::Working(0), ListEntry::Working(3)],
+        "question first; what runs for the second tab, by first sighting"
+    );
+}
+
+/// The terminal in front keeps its card while it waits: that is the open card, with the question and "read, next".
+#[test]
+fn test_inbox_lists_the_terminal_in_front() {
+    let w = spread_windows(); // 0 runs, 1 done, 2 question, 3 runs
+    let a = plan_arrangement(&PlanInput {
+        focused: Some(2),
+        ..input(Inbox, Single(0), &w, Right)
+    });
+    assert_eq!(
+        a.lists[0].entries,
+        [Row(2), Row(1), ListEntry::Working(0), ListEntry::Working(3)]
+    );
+    assert!(!a.parked.contains(&2), "it is the window in front");
+
+    let only = vec![fake_window(true, 1.0)];
+    let a = plan_arrangement(&PlanInput {
+        focused: Some(0),
+        ..input(Inbox, Single(0), &only, Right)
+    });
+    assert_eq!(
+        a.lists[0].entries,
+        [Row(0)],
+        "a single done session has its card"
+    );
+}
+
+/// With nobody waiting the window stays: it says so, instead of the screen rearranging itself.
+#[test]
+fn test_inbox_stays_when_nobody_waits() {
+    let w = vec![fake_window(false, 1.0)];
+    let a = plan_arrangement(&PlanInput {
+        focused: Some(0),
+        ..input(Inbox, Single(0), &w, Right)
+    });
+    assert_eq!(a.lists.len(), 1);
+    assert_eq!(
+        a.lists[0].entries,
+        [ListEntry::Working(0)],
+        "nobody in the first tab"
+    );
+}
+
+#[test]
+fn test_inbox_counts_the_parking_lot() {
+    let w = lot_windows(); // 1 and 2 park, 3 done, 4 runs, 5 question
+    let (workers, leads) = (names(&["Worker"]), names(&["Ultivor · Team lead"]));
+    let a = plan_arrangement(&PlanInput {
+        focused: Some(0),
+        worker_names: &workers,
+        lead_names: &leads,
+        ..input(Inbox, Single(0), &w, Right)
+    });
+    assert_eq!(a.lot, BTreeSet::from([1, 2]));
+    assert_eq!(
+        a.lists[0].entries,
+        [
+            Row(5),
+            Row(3),
+            ListEntry::Working(0),
+            ListEntry::Working(4),
+            ListEntry::Lot(1),
+            ListEntry::Lot(2)
+        ]
+    );
+}
+
+fn read_of(w: &TermWindow) -> ReadAnswers {
+    let mut read = ReadAnswers::new();
+    mark_read(w, &mut read);
+    read
+}
+
+/// "Read, next" walks down the list and does not go back and forth between the top two.
+#[test]
+fn test_next_waiting_walks_the_list() {
+    let (none, no_read) = (BTreeSet::new(), ReadAnswers::new());
+    let w = spread_windows(); // 0 runs, 1 done, 2 question, 3 runs: the list is 2, 1
+    let next = |m| next_waiting(&w, &none, &BTreeSet::new(), m, &no_read);
+    assert_eq!(next(Some(0)), Some(2), "question first");
+    assert_eq!(next(Some(2)), Some(1), "one further down");
+    assert_eq!(next(Some(1)), Some(2), "from the end back to the top");
+    assert_eq!(next(None), Some(2));
+}
+
+#[test]
+fn test_next_waiting_only_those_in_the_list() {
+    let (none, no_read) = (BTreeSet::new(), ReadAnswers::new());
+    let w = spread_windows();
+    let excluded = BTreeSet::from([w[2].sessions[0].id.clone()]);
+    assert_eq!(
+        next_waiting(&w, &excluded, &BTreeSet::new(), Some(0), &no_read),
+        Some(1)
+    );
+
+    let mut minimized = spread_windows();
+    minimized[2].minimized = true;
+    assert_eq!(
+        next_waiting(&minimized, &none, &BTreeSet::new(), Some(0), &no_read),
+        Some(1)
+    );
+
+    let running = vec![fake_window(false, 1.0), fake_window(false, 2.0)];
+    assert_eq!(
+        next_waiting(&running, &none, &BTreeSet::new(), Some(0), &no_read),
+        None
+    );
+
+    let alone = vec![fake_window(false, 1.0), fake_window(true, 2.0)];
+    assert_eq!(
+        next_waiting(&alone, &none, &BTreeSet::new(), Some(1), &no_read),
+        None,
+        "only the middle waits"
+    );
+}
+
+/// A done session marked read is out of the walk until it answers anew; a question can never be marked away.
+#[test]
+fn test_is_read() {
+    let none = BTreeSet::new();
+    let mut w = spread_windows();
+    w[1].sessions[0].digest = Some(Digest {
+        answer_at: Some(500.0),
+        ..Digest::default()
+    });
+    let read = read_of(&w[1]);
+    assert!(is_read(&w[1], &read));
+    assert_eq!(
+        next_waiting(&w, &none, &BTreeSet::new(), Some(2), &read),
+        None,
+        "2 is the middle, 1 is read: nobody else"
+    );
+
+    w[1].sessions[0].digest = Some(Digest {
+        answer_at: Some(600.0),
+        ..Digest::default()
+    });
+    assert!(!is_read(&w[1], &read), "a new answer brings it back");
+
+    let question = read_of(&w[2]);
+    assert!(
+        !is_read(&w[2], &question),
+        "a question stays until answered"
+    );
+}
+
+/// "Read, next" goes down the list; marking first would land on the question at the top on every click.
+#[test]
+fn test_read_next_goes_down_the_list() {
+    let none = BTreeSet::new();
+    let mut snoozed = BTreeSet::new();
+    let mut w = spread_windows(); // the list is 2 (question), 1 (done)
+    w.push(fake_window(true, 1010.0)); // and 5 (done later)
+    let mut read = ReadAnswers::new();
+    assert_eq!(
+        press_button(
+            CardButton::ReadNext,
+            &w,
+            &none,
+            Some(1),
+            1,
+            &mut read,
+            &mut snoozed
+        ),
+        Some(5),
+        "the one below, not back to the question"
+    );
+    assert!(is_read(&w[1], &read));
+    assert_eq!(
+        press_button(
+            CardButton::ReadNext,
+            &w,
+            &none,
+            Some(5),
+            5,
+            &mut read,
+            &mut snoozed
+        ),
+        Some(2),
+        "from the end back to the top"
+    );
+    let mut only = ReadAnswers::new();
+    let alone = vec![fake_window(true, 1.0)];
+    assert_eq!(
+        press_button(
+            CardButton::ReadNext,
+            &alone,
+            &none,
+            Some(0),
+            0,
+            &mut only,
+            &mut snoozed
+        ),
+        None
+    );
+    assert!(is_read(&alone[0], &only));
+}
+
+/// After a restart a done window counts from its last answer, not from now.
+#[test]
+fn test_first_ready_time() {
+    let mut w = fake_window(true, 1.0);
+    assert_eq!(first_ready_time(&w, 900.0), 900.0, "no answer time");
+    w.sessions[0].digest = Some(Digest {
+        answer_at: Some(500.0),
+        ..Digest::default()
+    });
+    assert_eq!(first_ready_time(&w, 900.0), 500.0);
+    assert_eq!(
+        first_ready_time(&w, 400.0),
+        400.0,
+        "a clock twitch is not the future"
+    );
+}
+
+/// Windows found in the same tick share their first sighting (all of them after a restart). Their order must not depend
+/// on how they came in: a click would move the clicked one (Kevin 2026-11-09).
+#[test]
+fn test_attention_order_is_stable_on_a_tie() {
+    let mut a = fake_window(true, 1.0);
+    a.id = 1;
+    let mut b = fake_window(true, 1.0);
+    b.id = 2;
+    let (one, two) = (vec![a.clone(), b.clone()], vec![b, a]);
+    let ids = |w: &[TermWindow]| -> Vec<u64> {
+        attention_order(w).into_iter().map(|k| w[k].id).collect()
+    };
+    assert_eq!(ids(&one), ids(&two));
+}
+
+/// Parked by hand (Kevin 2026-11-09, a session that watches a mailbox all day): out of the walk, also when it is done
+/// again, until it asks something; then it counts as waiting, and rests again once answered.
+#[test]
+fn test_park_and_bring_back() {
+    let none = BTreeSet::new();
+    let mut read = ReadAnswers::new();
+    let mut snoozed = BTreeSet::new();
+    let mut w = spread_windows(); // 0 runs, 1 done, 2 question, 3 runs
+    w.push(fake_window(true, 1010.0)); // 5 done
+    assert_eq!(
+        press_button(
+            CardButton::Park,
+            &w,
+            &none,
+            Some(1),
+            1,
+            &mut read,
+            &mut snoozed
+        ),
+        Some(5),
+        "parking also moves on"
+    );
+    assert!(is_snoozed(&w[1], &snoozed, &read));
+    assert_eq!(
+        next_waiting(&w, &none, &snoozed, Some(5), &read),
+        Some(2),
+        "the parked one is skipped"
+    );
+
+    let mut asks = w[1].clone();
+    asks.sessions[0].waiting = true;
+    assert!(
+        !is_snoozed(&asks, &snoozed, &read),
+        "a new question goes to Waiting"
+    );
+
+    // Everywhere (Kevin 2026-11-09): a card that asks can be parked too, until it asks something else.
+    let mut asking = spread_windows();
+    asking[2].sessions[0].digest = Some(Digest {
+        answer_at: Some(500.0),
+        ..Digest::default()
+    });
+    press_button(
+        CardButton::Park,
+        &asking,
+        &none,
+        Some(0),
+        2,
+        &mut read,
+        &mut snoozed,
+    );
+    assert!(
+        is_snoozed(&asking[2], &snoozed, &read),
+        "the open question stays parked"
+    );
+    asking[2].sessions[0].digest.as_mut().unwrap().answer_at = Some(600.0);
+    assert!(
+        !is_snoozed(&asking[2], &snoozed, &read),
+        "a later question comes through"
+    );
+
+    // No answer time (Codex, Grok): a later question could not be told apart, so it never hides.
+    let mut no_time = spread_windows();
+    no_time[2].sessions[0].digest = None;
+    press_button(
+        CardButton::Park,
+        &no_time,
+        &none,
+        Some(0),
+        2,
+        &mut read,
+        &mut snoozed,
+    );
+    assert!(!is_snoozed(&no_time[2], &snoozed, &read));
+
+    // A right-click on another card leaves the middle alone.
+    let (mut r, mut s) = (ReadAnswers::new(), BTreeSet::new());
+    assert_eq!(
+        press_button(CardButton::Park, &w, &none, Some(5), 1, &mut r, &mut s),
+        None
+    );
+
+    assert_eq!(
+        press_button(
+            CardButton::Unpark,
+            &w,
+            &none,
+            Some(1),
+            1,
+            &mut read,
+            &mut snoozed
+        ),
+        None,
+        "bringing back moves nothing"
+    );
+    assert!(!is_snoozed(&w[1], &snoozed, &read));
+
+    mark_read(&w[5], &mut read);
+    press_button(
+        CardButton::Unpark,
+        &w,
+        &none,
+        Some(5),
+        5,
+        &mut read,
+        &mut snoozed,
+    );
+    assert!(!is_read(&w[5], &read), "bringing back also undoes read");
+}
+
+/// A session without a transcript answer (Codex, Grok) comes back too: being done anew counts.
+#[test]
+fn test_is_read_without_an_answer_time() {
+    let mut w = fake_window_with(true, 1.0, Some(100.0), false, true);
+    assert!(w.sessions[0].digest.is_none());
+    let read = read_of(&w);
+    assert!(is_read(&w, &read));
+    w.ready_since = Some(200.0);
+    assert!(!is_read(&w, &read), "done anew brings it back");
+}
+
+/// A window whose visible tab is not recognisable can be marked read as well.
+#[test]
+fn test_is_read_without_a_visible_tab() {
+    let mut w = tab_window(
+        vec![
+            tab_session("a", true, false, Some("Alpha")),
+            tab_session("b", true, false, Some("Beta")),
+        ],
+        "kein Treffer",
+    );
+    w.ready_since = Some(100.0);
+    assert!(w.visible_session().is_none());
+    let read = read_of(&w);
+    assert!(is_read(&w, &read));
 }
 
 // ---------- Plan 1d: status decides the order, nothing disappears on the MacBook ----------
@@ -1202,7 +1619,7 @@ fn test_english_texts() {
     );
     assert_eq!(
         LayoutMode::ALL.map(LayoutMode::label),
-        ["Focus", "Focus 2", "Grid"]
+        ["Focus", "Focus 2", "Grid", "Inbox"]
     );
     let w = eleven_sessions();
     let f1 = plan_arrangement(&PlanInput {
