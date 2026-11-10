@@ -3989,6 +3989,10 @@ fn test_quiet_since_end() {
             r#"{"type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt","prompt":"x"}}"#,
             "a message mid-turn",
         ),
+        (
+            r#"{"type":"system","subtype":"scheduled_task_fire","taskId":"c1"}"#,
+            "an own timer fires",
+        ),
     ] {
         assert!(
             !digest_transcript(&format!("{end}\n{after}")).quiet_since_end,
@@ -3999,6 +4003,22 @@ fn test_quiet_since_end() {
     assert!(
         digest_transcript(&format!("{end}\n{hook}")).quiet_since_end,
         "a hook note is no new input"
+    );
+    // Esc ends the turn with an interrupt line, a prompt without origin: the "?" before it no longer counts, so nothing
+    // is left to lift (review quick 2026-11-10, Grok; order as recorded live 2026-10-15).
+    let esc = concat!(
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"? Lookout: Bitte (x)"}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1"}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}"#,
+        "\n",
+        r#"{"type":"system","subtype":"turn_duration"}"#
+    );
+    let d = digest_transcript(esc);
+    assert!(
+        d.turn_ended && d.quiet_since_end && d.line(&[]).is_none(),
+        "Esc: no line left to lift"
     );
 }
 

@@ -245,11 +245,13 @@ pub fn digest_transcript(text: &str) -> Digest {
         };
         let entry = str_of(&obj, "type");
         // A message, notice, tool result or answer after the turn end: the session itself works again (Kevin
-        // 2026-11-10). Queued messages show up as `queue-operation` or a `queued_command` attachment first.
+        // 2026-11-10). Queued messages show up as `queue-operation` or a `queued_command` attachment first; an own
+        // timer fires as `scheduled_task_fire` just before its wake prompt (review quick 2026-11-10, GLM + Muse).
         if matches!(entry, Some("user" | "assistant" | "queue-operation"))
             || (entry == Some("attachment")
                 && obj_of(&obj, "attachment").and_then(|a| str_of(a, "type"))
                     == Some("queued_command"))
+            || (entry == Some("system") && str_of(&obj, "subtype") == Some("scheduled_task_fire"))
         {
             d.quiet_since_end = false;
         }
