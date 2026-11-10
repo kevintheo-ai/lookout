@@ -558,6 +558,9 @@ mod tests {
     use super::*;
 
     const HOME: &str = "/home/test";
+    /// Prints its arguments joined by `|`, ending in `|`, with the shell's own printf. An outside `printf` is no good:
+    /// GNU's (Linux CI) drops a `--` argument, macOS's keeps it.
+    const ECHO: &str = "IFS='|'; printf '%s|' \"$*\"";
 
     fn settings() -> NewSession {
         parse(
@@ -579,7 +582,7 @@ mod tests {
                     {"name": "Quoted task", "models": ["m"], "efforts": ["e"], "command": ["x", "--", "\"{task}\""]},
                     {"name": "No models", "efforts": ["e"], "command": ["x", "--model", "{model}", "--", "{task}"]},
                     {"name": "Plain", "command": ["plain", "--", "{task}"]},
-                    {"name": "Wrapper", "command": ["/bin/sh", "-c", "exec printf '%s|' \"$@\"", "", "--", "{task}"]}
+                    {"name": "Wrapper", "command": ["/bin/sh", "-c", ECHO, "", "--", "{task}"]}
                 ]
             })),
             HOME,
@@ -832,7 +835,7 @@ mod tests {
             name: "Echo".into(),
             models: vec![],
             efforts: vec![],
-            command: words(&["printf", "%s|", "--", TASK]),
+            command: words(&["/bin/sh", "-c", ECHO, "", "--", TASK]),
             models_command: vec![],
             model_labels: BTreeMap::new(),
         };
