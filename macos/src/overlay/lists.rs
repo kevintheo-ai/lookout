@@ -8,8 +8,9 @@ use std::rc::Rc;
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSBezierPath, NSColor, NSEvent, NSLineBreakMode, NSMenu, NSMenuItem, NSMutableParagraphStyle,
-    NSPanel, NSResponder, NSScrollElasticity, NSScrollView, NSTextAlignment, NSView,
+    NSBezierPath, NSColor, NSEvent, NSEventPhase, NSLineBreakMode, NSMenu, NSMenuItem,
+    NSMutableParagraphStyle, NSPanel, NSResponder, NSScrollElasticity, NSScrollView,
+    NSTextAlignment, NSView,
 };
 use objc2_foundation::{NSObject, NSPoint, NSRect, NSSize, NSString};
 
@@ -18,9 +19,11 @@ use lookout_core::i18n::tr;
 use lookout_core::layout::{LIST_HEADER_H, LIST_ROW_H};
 use lookout_core::model::{CardButton, LabelTone, OnScreenWindow};
 use lookout_core::overlay::{
-    FontWeight, INBOX_BUTTON_GAP, INBOX_BUTTON_W, INBOX_MARGIN, INBOX_OPEN_LINE_H, INBOX_PLUS_W,
-    INBOX_PLUS_X, INBOX_TAB_W, INBOX_TAB_X, INBOX_TEXT_X, INBOX_WHAT_TOP, InboxCard, InboxTab,
-    LABEL_BG_ALPHA, ListLine, ListTarget, button_at, card_at, more_text, plus_at, row_at, tab_at,
+    FontWeight, INBOX_ARROW_W, INBOX_BACK_W, INBOX_BACK_X, INBOX_BUTTON_GAP, INBOX_BUTTON_W,
+    INBOX_MARGIN, INBOX_OPEN_LINE_H, INBOX_PLUS_W, INBOX_PLUS_X, INBOX_TEXT_X, INBOX_TILE_H,
+    INBOX_WHAT_TOP, InboxCard, InboxCounts, InboxNav, InboxTab, InboxTile, LABEL_BG_ALPHA,
+    ListLine, ListTarget, PlanMark, WeekStrip, button_at, card_at, more_text, nav_at, plus_at,
+    row_at, swipe_step, tile_spans, week_arrows, week_day_span,
 };
 
 use super::{
@@ -58,7 +61,7 @@ struct ListIvars {
     tints: RefCell<Tints>,
     on_click: Rc<dyn Fn(Vec<String>)>,
     on_button: Rc<dyn Fn(CardButton, Vec<String>)>,
-    on_tab: Rc<dyn Fn(InboxTab)>,
+    on_nav: Rc<dyn Fn(InboxNav)>,
     on_plus: Rc<dyn Fn()>,
     /// The card a right-click menu was opened on.
     menu_card: RefCell<Option<InboxCard>>,
@@ -78,6 +81,246 @@ fn paragraph(alignment: NSTextAlignment, wrap: bool) -> Retained<NSMutableParagr
 fn fill_rounded(r: Rect, radius: f64, color: &NSColor) {
     color.setFill();
     NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(ns_rect(r), radius, radius).fill();
+}
+
+fn stroke_rounded(r: Rect, radius: f64, color: &NSColor) {
+    color.setStroke();
+    NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(ns_rect(r), radius, radius).stroke();
+}
+
+/// An open circle (a task started by hand), 1.5 pt.
+fn ring(r: Rect, color: &NSColor) {
+    let path = NSBezierPath::bezierPathWithOvalInRect(ns_rect(r));
+    path.setLineWidth(1.5);
+    color.setStroke();
+    path.stroke();
+}
+
+/// The name of an area in the head and on its tile.
+fn area_name(tab: InboxTab) -> &'static str {
+    match tab {
+        InboxTab::Overview => tr("Übersicht", "Overview"),
+        InboxTab::Waiting => tr("Wartet", "Waiting"),
+        InboxTab::Working => tr("Läuft", "Running"),
+        InboxTab::Parked => tr("Geparkt", "Parked"),
+        InboxTab::Planned => tr("Geplant", "Planned"),
+    }
+}
+
+/// The inbox's head (Kevin 2026-11-10, "H"): on the overview its title; in an area the way back ("‹ Übersicht"), the
+/// area's name and count. The + at the right, a thin line below.
+fn draw_head(tab: InboxTab, counts: InboxCounts, y: f64, width: f64) {
+    let left = paragraph(NSTextAlignment::Left, false);
+    let centre = paragraph(NSTextAlignment::Center, false);
+    let title_x = if tab == InboxTab::Overview {
+        16.0
+    } else {
+        let back = Rect::new(INBOX_BACK_X, y + 8.0, INBOX_BACK_W - 6.0, 28.0);
+        fill_rounded(back, 7.0, &white(0.08));
+        let text = format!("‹ {}", area_name(InboxTab::Overview));
+        draw_text(
+            &text,
+            Rect::new(back.min_x(), y + 13.0, back.width(), 19.0),
+            &system_font(14.0, FontWeight::Regular),
+            &NSColor::whiteColor(),
+            &centre,
+        );
+        INBOX_BACK_X + INBOX_BACK_W + 6.0
+    };
+    let count = match tab {
+        InboxTab::Overview => None,
+        InboxTab::Waiting => Some(counts.waiting),
+        InboxTab::Working => Some(counts.working),
+        InboxTab::Parked => Some(counts.parked),
+        InboxTab::Planned => counts.planned,
+    };
+    let title = match count {
+        Some(n) => format!("{}  {n}", area_name(tab)),
+        None => area_name(tab).to_owned(),
+    };
+    let title_w = (INBOX_PLUS_X - 8.0 - title_x).max(0.0);
+    draw_text(
+        &title,
+        Rect::new(title_x, y + 11.0, title_w, 22.0),
+        &system_font(16.0, FontWeight::Semibold),
+        &NSColor::whiteColor(),
+        &left,
+    );
+    fill_rounded(
+        Rect::new(INBOX_PLUS_X, y + 8.0, INBOX_PLUS_W - 4.0, 28.0),
+        7.0,
+        &white(0.06),
+    );
+    let rect = Rect::new(INBOX_PLUS_X, y + 9.0, INBOX_PLUS_W - 4.0, 24.0);
+    draw_text(
+        "+",
+        rect,
+        &system_font(19.0, FontWeight::Regular),
+        &NSColor::whiteColor(),
+        &centre,
+    );
+    fill_rounded(
+        Rect::new(0.0, y + 43.0, width, 1.0),
+        0.0,
+        &white(INBOX_LINE_ALPHA),
+    );
+}
+
+/// The amber strip in an area while somebody waits: how many, the first of them, "ansehen ›" (a click opens Waiting).
+fn draw_wait_bar(n: usize, text: &str, y: f64, width: f64, tints: &Tints) {
+    let amber = tints.color(LabelTone::Waiting);
+    fill_rounded(
+        Rect::new(0.0, y, width, 35.0),
+        0.0,
+        &amber.colorWithAlphaComponent(0.16),
+    );
+    let left = paragraph(NSTextAlignment::Left, false);
+    let right = paragraph(NSTextAlignment::Right, false);
+    let label = if n == 1 {
+        tr("? 1 wartet auf dich", "? 1 is waiting for you").to_owned()
+    } else {
+        format!("? {n} {}", tr("warten auf dich", "are waiting for you"))
+    };
+    draw_text(
+        &label,
+        Rect::new(16.0, y + 8.0, 172.0, 19.0),
+        &system_font(14.0, FontWeight::Semibold),
+        &amber,
+        &left,
+    );
+    draw_text(
+        text,
+        Rect::new(192.0, y + 9.0, (width - 192.0 - 96.0).max(0.0), 18.0),
+        &system_font(13.5, FontWeight::Regular),
+        &white(0.85),
+        &left,
+    );
+    draw_text(
+        tr("ansehen ›", "view ›"),
+        Rect::new(width - 92.0, y + 9.0, 78.0, 18.0),
+        &system_font(13.5, FontWeight::Semibold),
+        &amber,
+        &right,
+    );
+}
+
+/// One row of the overview's tiles: an area with its count and what is in it; amber while somebody waits.
+fn draw_tiles(tiles: &[InboxTile], y: f64, width: f64, tints: &Tints) {
+    let left = paragraph(NSTextAlignment::Left, false);
+    let right = paragraph(NSTextAlignment::Right, false);
+    let amber = tints.color(LabelTone::Waiting);
+    for (tile, (x, w)) in tiles.iter().zip(tile_spans(tiles.len(), width)) {
+        let r = Rect::new(x, y, w, INBOX_TILE_H);
+        if tile.hot {
+            fill_rounded(r, 11.0, &amber.colorWithAlphaComponent(0.13));
+            stroke_rounded(r, 11.0, &amber.colorWithAlphaComponent(0.5));
+        } else {
+            fill_rounded(r, 11.0, &white(0.05));
+            stroke_rounded(r, 11.0, &white(0.08));
+        }
+        let title_color = if tile.hot {
+            amber.clone()
+        } else {
+            NSColor::whiteColor()
+        };
+        draw_text(
+            &tile.title,
+            Rect::new(x + 12.0, y + 10.0, w - 70.0, 19.0),
+            &system_font(14.5, FontWeight::Semibold),
+            &title_color,
+            &left,
+        );
+        draw_text(
+            &tile.count.to_string(),
+            Rect::new(x + w - 62.0, y + 6.0, 50.0, 26.0),
+            &system_font(20.0, FontWeight::Bold),
+            &title_color,
+            &right,
+        );
+        let line_color = if tile.hot { white(0.88) } else { white(0.62) };
+        for (k, line) in tile.lines.iter().take(2).enumerate() {
+            let ly = y + 37.0 + k as f64 * 21.0;
+            draw_text(
+                line,
+                Rect::new(x + 12.0, ly, w - 24.0, 18.0),
+                &system_font(13.0, FontWeight::Regular),
+                &line_color,
+                &left,
+            );
+        }
+    }
+}
+
+/// The Planned area's week: arrows and title on top, the seven days below, the chosen one highlighted, today in mint,
+/// a dot per item (mint start, amber problem or deadline, open ring a task).
+fn draw_week(week: &WeekStrip, y: f64, width: f64, tints: &Tints) {
+    let centre = paragraph(NSTextAlignment::Center, false);
+    let mint = tints.color(LabelTone::Ready);
+    let amber = tints.color(LabelTone::Waiting);
+    for ((x, w), arrow) in week_arrows(width).into_iter().zip(["‹", "›"]) {
+        fill_rounded(Rect::new(x, y + 6.0, w, 24.0), 6.0, &white(0.06));
+        draw_text(
+            arrow,
+            Rect::new(x, y + 8.0, w, 19.0),
+            &system_font(15.0, FontWeight::Semibold),
+            &NSColor::whiteColor(),
+            &centre,
+        );
+    }
+    let title_x = 10.0 + INBOX_ARROW_W + 4.0;
+    draw_text(
+        &week.title,
+        Rect::new(title_x, y + 9.0, (width - 2.0 * title_x).max(0.0), 18.0),
+        &system_font(13.0, FontWeight::Semibold),
+        &NSColor::whiteColor(),
+        &centre,
+    );
+    for (k, day) in week.days.iter().enumerate() {
+        let (x, w) = week_day_span(k, width);
+        if day.selected {
+            fill_rounded(
+                Rect::new(x + 2.0, y + 36.0, w - 4.0, 56.0),
+                9.0,
+                &white(0.12),
+            );
+        }
+        draw_text(
+            &day.name,
+            Rect::new(x, y + 40.0, w, 15.0),
+            &system_font(11.5, FontWeight::Regular),
+            &white(0.6),
+            &centre,
+        );
+        let number_color = if day.today {
+            mint.clone()
+        } else {
+            NSColor::whiteColor()
+        };
+        draw_text(
+            &day.number.to_string(),
+            Rect::new(x, y + 54.0, w, 22.0),
+            &system_font(17.0, FontWeight::Semibold),
+            &number_color,
+            &centre,
+        );
+        let n = day.dots.len() as f64;
+        let mut dx = x + w / 2.0 - (n * 7.0 + (n - 1.0).max(0.0) * 3.0) / 2.0;
+        for dot in &day.dots {
+            let r = Rect::new(dx, y + 79.0, 7.0, 7.0);
+            match dot {
+                PlanMark::Start => {
+                    mint.setFill();
+                    NSBezierPath::bezierPathWithOvalInRect(ns_rect(r)).fill();
+                }
+                PlanMark::Problem | PlanMark::Deadline => {
+                    amber.setFill();
+                    NSBezierPath::bezierPathWithOvalInRect(ns_rect(r)).fill();
+                }
+                PlanMark::Task => ring(Rect::new(dx + 0.75, y + 79.75, 5.5, 5.5), &white(0.78)),
+            }
+            dx += 10.0;
+        }
+    }
 }
 
 /// The pin before the name of a pinned card, as in the preview Kevin chose from (2026-11-09): a push pin, its outline in
@@ -128,12 +371,26 @@ fn draw_card(c: &InboxCard, y: f64, width: f64, block: f64, tints: &Tints) {
         fill_rounded(Rect::new(8.0, y, width - 16.0, block), 9.0, &white(0.075));
     }
     let circle = Rect::new(16.0, y + 10.0, GLYPH, GLYPH);
-    tints.color(c.tone).setFill();
-    NSBezierPath::bezierPathWithOvalInRect(ns_rect(circle)).fill();
+    // A planned item shows its mark: a ring for a task started by hand, a filled circle with ▶ or ! otherwise.
+    let symbol = match c.mark {
+        None => c.tone.symbol(),
+        Some(PlanMark::Start) => "▶",
+        Some(PlanMark::Problem | PlanMark::Deadline) => "!",
+        Some(PlanMark::Task) => "",
+    };
+    if c.mark == Some(PlanMark::Task) {
+        ring(
+            Rect::new(17.0, y + 11.0, GLYPH - 2.0, GLYPH - 2.0),
+            &tints.color(c.tone),
+        );
+    } else {
+        tints.color(c.tone).setFill();
+        NSBezierPath::bezierPathWithOvalInRect(ns_rect(circle)).fill();
+    }
     draw_text(
-        c.tone.symbol(),
+        symbol,
         Rect::new(circle.min_x(), y + 12.5, GLYPH, 18.0),
-        &system_font(13.0, FontWeight::Bold),
+        &system_font(if c.mark.is_some() { 11.0 } else { 13.0 }, FontWeight::Bold),
         &NSColor::colorWithWhite_alpha(0.1, 1.0),
         &centre,
     );
@@ -253,7 +510,7 @@ define_class!(
             let bounds = self.bounds();
             let inbox = matches!(
                 self.ivars().lines.borrow().first(),
-                Some(ListLine::InboxTabs { .. })
+                Some(ListLine::InboxHead { .. })
             );
             if inbox {
                 srgb(INBOX_BG).setFill();
@@ -301,36 +558,10 @@ define_class!(
                         FontWeight::Regular,
                         &white(0.6),
                     ),
-                    ListLine::InboxTabs { tab, waiting, working, parked } => {
-                        let tabs = [
-                            (InboxTab::Waiting, tr("Wartet", "Waiting"), *waiting),
-                            (InboxTab::Working, tr("Läuft", "Running"), *working),
-                            (InboxTab::Parked, tr("Geparkt", "Parked"), *parked),
-                        ];
-                        for (k, (which, label, n)) in tabs.into_iter().enumerate() {
-                            let x = INBOX_TAB_X + k as f64 * INBOX_TAB_W;
-                            let shown = which == *tab;
-                            if shown {
-                                fill_rounded(Rect::new(x, y + 8.0, INBOX_TAB_W - 4.0, 28.0), 7.0, &white(0.12));
-                            }
-                            // On the other tab new questions must not go unnoticed: "Wartet" takes the waiting tint.
-                            let color = if which == InboxTab::Waiting && !shown && n > 0 {
-                                tints.color(LabelTone::Waiting)
-                            } else if shown {
-                                NSColor::whiteColor()
-                            } else {
-                                white(0.6)
-                            };
-                            let centre = paragraph(NSTextAlignment::Center, false);
-                            let rect = Rect::new(x, y + 13.0, INBOX_TAB_W - 4.0, 19.0);
-                            draw_text(&format!("{label} {n}"), rect, &system_font(14.0, FontWeight::Semibold), &color, &centre);
-                        }
-                        fill_rounded(Rect::new(INBOX_PLUS_X, y + 8.0, INBOX_PLUS_W - 4.0, 28.0), 7.0, &white(0.06));
-                        let centre = paragraph(NSTextAlignment::Center, false);
-                        let rect = Rect::new(INBOX_PLUS_X, y + 9.0, INBOX_PLUS_W - 4.0, 24.0);
-                        draw_text("+", rect, &system_font(19.0, FontWeight::Regular), &NSColor::whiteColor(), &centre);
-                        fill_rounded(Rect::new(0.0, y + 43.0, width, 1.0), 0.0, &white(INBOX_LINE_ALPHA));
-                    }
+                    ListLine::InboxHead { tab, counts } => draw_head(*tab, *counts, y, width),
+                    ListLine::WaitBar { n, text } => draw_wait_bar(*n, text, y, width, &tints),
+                    ListLine::Tiles(tiles) => draw_tiles(tiles, y, width, &tints),
+                    ListLine::Week(week) => draw_week(week, y, width, &tints),
                     ListLine::Group(t) => {
                         let font = system_font(13.0, FontWeight::Semibold);
                         draw_text(t, Rect::new(16.0, y + 8.0, width - 32.0, 18.0), &font, &white(0.6), &para);
@@ -383,23 +614,25 @@ define_class!(
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
             let p = self.convertPoint_fromView(event.locationInWindow(), None);
+            let width = core_rect(self.bounds()).width();
             // Ids copied and the lines' borrow ended before the call: the controller reacts right away and may update
             // this list.
-            let (plus, tab, button, row) = {
+            let (plus, nav, button, row) = {
                 let lines = self.ivars().lines.borrow();
                 (
                     plus_at(&lines, p.x, p.y),
-                    tab_at(&lines, p.x, p.y),
+                    nav_at(&lines, width, p.x, p.y),
                     button_at(&lines, p.x, p.y).map(|(b, ids)| (b, ids.to_vec())),
-                    row_at(&lines, p.y).map(<[String]>::to_vec),
+                    // A planned item has no session behind it: nothing to bring forward.
+                    row_at(&lines, p.y).filter(|ids| !ids.is_empty()).map(<[String]>::to_vec),
                 )
             };
             if plus {
                 let on_plus = Rc::clone(&self.ivars().on_plus);
                 on_plus();
-            } else if let Some(tab) = tab {
-                let on_tab = Rc::clone(&self.ivars().on_tab);
-                on_tab(tab);
+            } else if let Some(nav) = nav {
+                let on_nav = Rc::clone(&self.ivars().on_nav);
+                on_nav(nav);
             } else if let Some((button, ids)) = button {
                 let on_button = Rc::clone(&self.ivars().on_button);
                 on_button(button, ids);
@@ -417,7 +650,7 @@ impl ListView {
         tints: Tints,
         on_click: Rc<dyn Fn(Vec<String>)>,
         on_button: Rc<dyn Fn(CardButton, Vec<String>)>,
-        on_tab: Rc<dyn Fn(InboxTab)>,
+        on_nav: Rc<dyn Fn(InboxNav)>,
         on_plus: Rc<dyn Fn()>,
         bare: bool,
     ) -> Retained<ListView> {
@@ -426,7 +659,7 @@ impl ListView {
             tints: RefCell::new(tints),
             on_click,
             on_button,
-            on_tab,
+            on_nav,
             on_plus,
             menu_card: RefCell::default(),
             bare,
@@ -439,6 +672,9 @@ impl ListView {
     fn card_menu(&self, event: &NSEvent) -> Option<Retained<NSMenu>> {
         let p = self.convertPoint_fromView(event.locationInWindow(), None);
         let card = card_at(&self.ivars().lines.borrow(), p.y)?.clone();
+        if card.menu.is_empty() {
+            return None;
+        }
         let mtm = self.mtm();
         let menu = NSMenu::new(mtm);
         for (tag, button) in card.menu.iter().enumerate() {
@@ -483,18 +719,19 @@ pub struct ListOverlay {
     tints: RefCell<Tints>,
     on_click: Rc<dyn Fn(Vec<String>)>,
     on_button: Rc<dyn Fn(CardButton, Vec<String>)>,
-    on_tab: Rc<dyn Fn(InboxTab)>,
+    on_nav: Rc<dyn Fn(InboxNav)>,
     on_plus: Rc<dyn Fn()>,
 }
 
 impl ListOverlay {
-    /// `on_click`, `on_button` (the buttons on the inbox's open card), `on_tab` and `on_plus` (the inbox's +) run on the
-    /// main thread from the click (outside any other call into the overlay).
+    /// `on_click`, `on_button` (the buttons on the inbox's open card), `on_nav` (the inbox's way between overview, areas,
+    /// weeks and days, also the two-finger swipe back) and `on_plus` (the inbox's +) run on the main thread from the click
+    /// (outside any other call into the overlay).
     pub fn new(
         mtm: MainThreadMarker,
         on_click: Box<dyn Fn(Vec<String>)>,
         on_button: Box<dyn Fn(CardButton, Vec<String>)>,
-        on_tab: Box<dyn Fn(InboxTab)>,
+        on_nav: Box<dyn Fn(InboxNav)>,
         on_plus: Box<dyn Fn()>,
     ) -> ListOverlay {
         ListOverlay {
@@ -507,7 +744,7 @@ impl ListOverlay {
             }),
             on_click: Rc::from(on_click),
             on_button: Rc::from(on_button),
-            on_tab: Rc::from(on_tab),
+            on_nav: Rc::from(on_nav),
             on_plus: Rc::from(on_plus),
         }
     }
@@ -525,18 +762,18 @@ impl ListOverlay {
             tints.clone(),
             Rc::clone(&self.on_click),
             Rc::clone(&self.on_button),
-            Rc::clone(&self.on_tab),
+            Rc::clone(&self.on_nav),
             Rc::clone(&self.on_plus),
             bare,
         )
     }
 
     /// Panels beyond the targets are ordered out; changed lines or tints redraw. The inbox (the target that starts with its
-    /// tabs) has a panel of its own that scrolls.
+    /// head) has a panel of its own that scrolls.
     pub fn update(&self, targets: &[ListTarget], stack: Option<&[OnScreenWindow]>) {
         let (inbox, lists): (Vec<&ListTarget>, Vec<&ListTarget>) = targets
             .iter()
-            .partition(|t| matches!(t.lines.first(), Some(ListLine::InboxTabs { .. })));
+            .partition(|t| matches!(t.lines.first(), Some(ListLine::InboxHead { .. })));
         self.update_inbox(inbox.first().copied(), stack);
         let mut panels = self.panels.borrow_mut();
         let tints = self.tints.borrow();
@@ -557,9 +794,10 @@ impl ListOverlay {
         }
     }
 
-    /// The inbox (Kevin 2026-11-10: "das soll scrollbar sein", no "+N more"): the tabs view is the whole panel and draws
-    /// the ground; below the tabs lies a scroll view whose document view holds every card. The tabs stay, the cards scroll.
-    /// Another tab starts at its top.
+    /// The inbox (Kevin 2026-11-10: "das soll scrollbar sein", no "+N more"): the head view is the whole panel and draws
+    /// the ground; below the head (and the amber strip, while somebody waits) lies a scroll view whose document view holds
+    /// the rest. The head stays, the rest scrolls. Another area starts at its top; in an area a two-finger swipe sideways
+    /// leads back to the overview (Kevin 2026-11-10: "mit zwei Fingern zurückwischen").
     fn update_inbox(&self, target: Option<&ListTarget>, stack: Option<&[OnScreenWindow]>) {
         let mut slot = self.inbox.borrow_mut();
         let Some(t) = target else {
@@ -573,7 +811,7 @@ impl ListOverlay {
         let tints = self.tints.borrow();
         let p = slot.get_or_insert_with(|| {
             let (tabs, cards) = (self.view(&tints, false), self.view(&tints, true));
-            let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(self.mtm), NSRect::ZERO);
+            let scroll = InboxScroll::new(self.mtm, Rc::clone(&self.on_nav));
             scroll.setDrawsBackground(false);
             scroll.setHasVerticalScroller(true);
             scroll.setAutohidesScrollers(true);
@@ -590,10 +828,15 @@ impl ListOverlay {
                 tab: Cell::new(None),
             }
         });
-        let (head, body) = t.lines.split_at(1);
+        let fixed = if matches!(t.lines.get(1), Some(ListLine::WaitBar { .. })) {
+            2
+        } else {
+            1
+        };
+        let (head, body) = t.lines.split_at(fixed.min(t.lines.len()));
         p.tabs.show(head, &tints);
         p.cards.show(body, &tints);
-        let top = head[0].height();
+        let top: f64 = head.iter().map(ListLine::height).sum();
         let shown = NSSize::new(t.rect.width(), (t.rect.height() - top).max(0.0));
         p.scroll
             .setFrame(NSRect::new(NSPoint::new(0.0, top), shown));
@@ -606,9 +849,15 @@ impl ListOverlay {
             p.cards.setFrameSize(size);
             p.cards.setNeedsDisplay(true);
         }
-        if let ListLine::InboxTabs { tab, .. } = &head[0]
-            && p.tab.replace(Some(*tab)) != Some(*tab)
-        {
+        let tab = match head.first() {
+            Some(ListLine::InboxHead { tab, .. }) => Some(*tab),
+            _ => None,
+        };
+        p.scroll
+            .ivars()
+            .in_area
+            .set(tab.is_some_and(|t| t != InboxTab::Overview));
+        if p.tab.replace(tab) != tab {
             let clip = p.scroll.contentView();
             clip.scrollToPoint(NSPoint::new(0.0, 0.0));
             p.scroll.reflectScrolledClipView(&clip);
@@ -621,15 +870,75 @@ impl ListOverlay {
     }
 }
 
-/// The inbox's panel (`ListOverlay::update_inbox`): the tabs view as content, the scroll view under the tabs, the cards
+/// The inbox's panel (`ListOverlay::update_inbox`): the head view as content, the scroll view under the head, the rest
 /// as its document view.
 struct InboxPanel {
     panel: Retained<NSPanel>,
     tabs: Retained<ListView>,
-    scroll: Retained<NSScrollView>,
+    scroll: Retained<InboxScroll>,
     cards: Retained<ListView>,
-    /// The tab shown last.
+    /// The area shown last.
     tab: Cell<Option<InboxTab>>,
+}
+
+struct ScrollIvars {
+    on_nav: Rc<dyn Fn(InboxNav)>,
+    /// An area is open: a swipe sideways leads back to the overview.
+    in_area: Cell<bool>,
+    /// The gesture so far: sideways, up or down, and whether it already led back.
+    swipe: Cell<(f64, f64, bool)>,
+}
+
+define_class!(
+    /// The inbox's scroll view: scrolls up and down as ever, and a two-finger swipe sideways in an area leads back to
+    /// the overview, like "back" in a browser (Kevin 2026-11-10).
+    // SAFETY: NSScrollView has no subclassing requirements; no `Drop`.
+    #[unsafe(super(NSScrollView, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ScrollIvars]
+    struct InboxScroll;
+
+    impl InboxScroll {
+        // SAFETY: the signature of -[NSResponder scrollWheel:].
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel(&self, event: &NSEvent) {
+            if !self.swiped_back(event) {
+                // SAFETY: NSScrollView's own scrolling, same selector and argument.
+                let _: () = unsafe { msg_send![super(self), scrollWheel: event] };
+            }
+        }
+    }
+);
+
+impl InboxScroll {
+    fn new(mtm: MainThreadMarker, on_nav: Rc<dyn Fn(InboxNav)>) -> Retained<InboxScroll> {
+        let this = InboxScroll::alloc(mtm).set_ivars(ScrollIvars {
+            on_nav,
+            in_area: Cell::new(false),
+            swipe: Cell::new((0.0, 0.0, false)),
+        });
+        // SAFETY: NSView's designated initializer, as `NSScrollView::initWithFrame`.
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
+
+    /// True = this scroll event belongs to a swipe back (now or earlier in the same gesture, its glide too) and is not
+    /// scrolled. Only fingers on the trackpad count: a mouse wheel has no phase, the glide after lifting them only a
+    /// momentum phase.
+    fn swiped_back(&self, event: &NSEvent) -> bool {
+        let s = self.ivars();
+        let phase = event.phase();
+        let began = phase.contains(NSEventPhase::Began) || phase.contains(NSEventPhase::MayBegin);
+        let trackpad = !phase.is_empty() || !event.momentumPhase().is_empty();
+        let gesture = s.in_area.get() && !phase.is_empty();
+        let (dx, dy) = (event.scrollingDeltaX(), event.scrollingDeltaY());
+        let (state, mine, back) = swipe_step(s.swipe.get(), began, trackpad, gesture, dx, dy);
+        s.swipe.set(state);
+        if back {
+            let on_nav = Rc::clone(&s.on_nav);
+            on_nav(InboxNav::Open(InboxTab::Overview));
+        }
+        mine
+    }
 }
 
 impl Drop for ListOverlay {

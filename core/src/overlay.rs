@@ -22,6 +22,8 @@ use crate::model::{
     Pid, Session, SideList, TermWindow, Time, graphemes, title_glyph, trim_ws,
 };
 use crate::motion::{WARP_BID, ax_origin, cocoa_to_ax, glide_path};
+use crate::planned::{self, NaiveDate, PlannedItem};
+use chrono::Datelike;
 
 // ---------- Glow frames ----------
 
@@ -986,6 +988,69 @@ pub struct InboxCard {
     pub menu: Vec<CardButton>,
     /// Pinned by Kevin (`pin_rank`): a pin before the name.
     pub pinned: bool,
+    /// A planned item, not a session (Planned area): its mark replaces the status symbol; no ids, no menu.
+    pub mark: Option<PlanMark>,
+}
+
+/// What a planned item is, on its card and as a dot in the week strip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanMark {
+    /// Opens a session by itself at its time.
+    Start,
+    /// A task due that day, started by hand.
+    Task,
+    /// A start that did not happen.
+    Problem,
+    /// A hard deadline that day.
+    Deadline,
+}
+
+/// The counts of the inbox's areas. `planned`: `None` = no planner configured.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InboxCounts {
+    pub waiting: usize,
+    pub working: usize,
+    pub parked: usize,
+    pub planned: Option<usize>,
+}
+
+/// One tile of the overview: an area with its count and up to two lines of what is in it. `hot`: somebody waits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InboxTile {
+    pub tab: InboxTab,
+    pub title: String,
+    pub count: usize,
+    pub lines: Vec<String>,
+    pub hot: bool,
+}
+
+/// The Planned area's week: its title and the seven days.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WeekStrip {
+    pub title: String,
+    pub days: Vec<WeekDay>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WeekDay {
+    pub date: NaiveDate,
+    /// "Di".
+    pub name: String,
+    pub number: u32,
+    pub today: bool,
+    pub selected: bool,
+    /// A dot per card the day lists, at most four: problems and deadlines first, then starts, then tasks.
+    pub dots: Vec<PlanMark>,
+}
+
+/// Where a click in the inbox leads (`nav_at`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InboxNav {
+    Open(InboxTab),
+    /// A day in the week strip.
+    Day(NaiveDate),
+    /// A week back (-1) or ahead (+1).
+    Week(i64),
 }
 
 /// A list line, ready to draw. `ids`: the sessions of the window (for the click). The first three are the side lists,
@@ -1000,12 +1065,21 @@ pub enum ListLine {
         tone: LabelTone,
     },
     More(usize),
-    InboxTabs {
+    /// The inbox's head (Kevin 2026-11-10, "H"): on the overview its title, in an area a way back, the area's name and
+    /// count; the + at the right.
+    InboxHead {
         tab: InboxTab,
-        waiting: usize,
-        working: usize,
-        parked: usize,
+        counts: InboxCounts,
     },
+    /// In every area but Waiting while somebody waits: an amber strip with the first of them; a click opens Waiting.
+    WaitBar {
+        n: usize,
+        text: String,
+    },
+    /// One row of the overview: one tile across or two side by side.
+    Tiles(Vec<InboxTile>),
+    /// The Planned area's week strip.
+    Week(WeekStrip),
     Group(String),
     Card(InboxCard),
     /// The open card's buttons, side by side.
@@ -1018,21 +1092,31 @@ pub enum ListLine {
     Empty(String),
 }
 
-/// The tabs of the inbox (Kevin 2026-11-09): who wants something from Kevin, what works, and what he put away.
+/// What the inbox shows (Kevin 2026-11-10, "H"): the overview with one tile per area, or one area. The areas: who wants
+/// something from Kevin, what works, what he put away, and what is planned.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum InboxTab {
     #[default]
+    Overview,
     Waiting,
     Working,
     Parked,
+    Planned,
 }
 
-/// The tabs lie side by side at the top of the window, from this x, each this wide.
-pub const INBOX_TAB_X: f64 = 10.0;
-pub const INBOX_TAB_W: f64 = 120.0;
-/// The + for a new terminal window stands right after the three tabs.
-pub const INBOX_PLUS_X: f64 = INBOX_TAB_X + 3.0 * INBOX_TAB_W;
+/// The head: the way back to the overview from this x, this wide; the + for a new terminal window at the right.
+pub const INBOX_BACK_X: f64 = 10.0;
+pub const INBOX_BACK_W: f64 = 116.0;
+pub const INBOX_PLUS_X: f64 = 370.0;
 pub const INBOX_PLUS_W: f64 = 36.0;
+/// The overview's tiles: margin and gap, and a tile's height (its row adds the gap below).
+pub const INBOX_TILE_X: f64 = 10.0;
+pub const INBOX_TILE_GAP: f64 = 8.0;
+pub const INBOX_TILE_H: f64 = 86.0;
+/// The week strip: arrows in its top row, the days below.
+pub const INBOX_WEEK_H: f64 = 98.0;
+pub const INBOX_ARROW_W: f64 = 30.0;
+const INBOX_WEEK_DAYS_TOP: f64 = 36.0;
 /// The buttons of an open card lie side by side from `INBOX_TEXT_X`.
 pub const INBOX_BUTTON_W: f64 = 150.0;
 pub const INBOX_BUTTON_GAP: f64 = 8.0;
@@ -1053,7 +1137,10 @@ impl ListLine {
         match self {
             ListLine::Header(_) | ListLine::Group(_) => LIST_HEADER_H,
             ListLine::Row { .. } | ListLine::More(_) => LIST_ROW_H,
-            ListLine::InboxTabs { .. } => 44.0,
+            ListLine::InboxHead { .. } => 44.0,
+            ListLine::WaitBar { .. } => 36.0,
+            ListLine::Tiles(_) => INBOX_TILE_H + INBOX_TILE_GAP,
+            ListLine::Week(_) => INBOX_WEEK_H,
             ListLine::Card(c) if c.open => {
                 INBOX_WHAT_TOP + c.lines as f64 * INBOX_OPEN_LINE_H + 8.0
             }
@@ -1101,24 +1188,121 @@ pub fn card_at(lines: &[ListLine], y: f64) -> Option<&InboxCard> {
     None
 }
 
-/// The inbox tab at `x`, `y` (points from the top left of the list); `None` off the tabs or in any other list.
-pub fn tab_at(lines: &[ListLine], x: f64, y: f64) -> Option<InboxTab> {
-    let first = lines.first()?;
-    if !matches!(first, ListLine::InboxTabs { .. }) || y >= first.height() {
-        return None;
+/// The tiles of a row across `width`: (x, width) each, one across or two side by side.
+pub fn tile_spans(n: usize, width: f64) -> Vec<(f64, f64)> {
+    let inner = width - 2.0 * INBOX_TILE_X;
+    if n <= 1 {
+        return vec![(INBOX_TILE_X, inner)];
     }
-    match ((x - INBOX_TAB_X) / INBOX_TAB_W).floor() as i64 {
-        0 => Some(InboxTab::Waiting),
-        1 => Some(InboxTab::Working),
-        2 => Some(InboxTab::Parked),
-        _ => None,
+    let w = (inner - INBOX_TILE_GAP) / 2.0;
+    vec![(INBOX_TILE_X, w), (INBOX_TILE_X + w + INBOX_TILE_GAP, w)]
+}
+
+/// The week strip's arrows (x, width): back at the left, ahead at the right.
+pub fn week_arrows(width: f64) -> [(f64, f64); 2] {
+    [
+        (INBOX_TILE_X, INBOX_ARROW_W),
+        (width - INBOX_TILE_X - INBOX_ARROW_W, INBOX_ARROW_W),
+    ]
+}
+
+/// Day `k` (Monday 0) of the week strip: (x, width) and the y range below the arrows.
+pub fn week_day_span(k: usize, width: f64) -> (f64, f64) {
+    let w = (width - 2.0 * INBOX_TILE_X) / 7.0;
+    (INBOX_TILE_X + k as f64 * w, w)
+}
+
+/// Where a click at `x`, `y` (points from the top left of the list) leads: back to the overview from the head, Waiting
+/// from the amber strip, an area from its tile, another week or day in the week strip. `width`: the list's width.
+pub fn nav_at(lines: &[ListLine], width: f64, x: f64, y: f64) -> Option<InboxNav> {
+    let inside = |x: f64, (left, w): (f64, f64)| x >= left && x < left + w;
+    let mut top = 0.0;
+    for line in lines {
+        let h = line.height();
+        if y >= top && y < top + h {
+            let dy = y - top;
+            return match line {
+                ListLine::InboxHead { tab, .. }
+                    if *tab != InboxTab::Overview && inside(x, (INBOX_BACK_X, INBOX_BACK_W)) =>
+                {
+                    Some(InboxNav::Open(InboxTab::Overview))
+                }
+                ListLine::WaitBar { .. } => Some(InboxNav::Open(InboxTab::Waiting)),
+                ListLine::Tiles(tiles) if dy < INBOX_TILE_H => tile_spans(tiles.len(), width)
+                    .into_iter()
+                    .zip(tiles)
+                    .find(|(span, _)| inside(x, *span))
+                    .map(|(_, t)| InboxNav::Open(t.tab)),
+                ListLine::Week(week) if dy < INBOX_WEEK_DAYS_TOP => {
+                    let [back, ahead] = week_arrows(width);
+                    if inside(x, back) {
+                        Some(InboxNav::Week(-1))
+                    } else if inside(x, ahead) {
+                        Some(InboxNav::Week(1))
+                    } else {
+                        None
+                    }
+                }
+                ListLine::Week(week) => (0..week.days.len())
+                    .find(|&k| inside(x, week_day_span(k, width)))
+                    .map(|k| InboxNav::Day(week.days[k].date)),
+                _ => None,
+            };
+        }
+        top += h;
     }
+    None
+}
+
+/// How far two fingers must move sideways (points, more than twice as far as up or down) to lead back to the overview.
+pub const SWIPE_BACK: f64 = 40.0;
+
+/// One scroll event in the inbox (Kevin 2026-11-10: "mit zwei Fingern zurückwischen"), either direction. `so_far`: the
+/// gesture's sideways and up-down distance and whether it already led back; `began`: this event starts a gesture;
+/// `trackpad`: fingers on the trackpad or the glide after lifting them (a mouse wheel has neither); `gesture`: fingers on
+/// the trackpad in an area. Returns the new state, whether the event is the swipe's (so the list does not scroll), and
+/// whether to lead back now. Once it led back, the rest of the gesture and its glide stay the swipe's: the overview it
+/// opened does not scroll with it (review quick 2026-11-10).
+pub fn swipe_step(
+    so_far: (f64, f64, bool),
+    began: bool,
+    trackpad: bool,
+    gesture: bool,
+    dx: f64,
+    dy: f64,
+) -> ((f64, f64, bool), bool, bool) {
+    let so_far = if began { (0.0, 0.0, false) } else { so_far };
+    if so_far.2 && trackpad {
+        return (so_far, true, false);
+    }
+    if !gesture {
+        return (so_far, false, false);
+    }
+    let (sx, sy) = (so_far.0 + dx, so_far.1 + dy);
+    let back = sx.abs() > SWIPE_BACK && sx.abs() > 2.0 * sy.abs();
+    ((sx, sy, back), back, back)
+}
+
+/// The day the Planned area stands on after `nav`, from `day`. `None` = today, so it moves on at midnight with the clock
+/// (review quick 2026-11-10: it stayed on the day before, which showed nothing).
+pub fn plan_day_after(
+    nav: InboxNav,
+    day: Option<NaiveDate>,
+    today: NaiveDate,
+) -> Option<NaiveDate> {
+    let day = match nav {
+        InboxNav::Open(InboxTab::Planned) => return None,
+        InboxNav::Open(_) => return day,
+        InboxNav::Day(d) => d,
+        InboxNav::Week(k) => planned::shift_week(day.unwrap_or(today), k, today),
+    };
+    (day != today).then_some(day)
 }
 
 /// Is `x`, `y` on the inbox's +?
 pub fn plus_at(lines: &[ListLine], x: f64, y: f64) -> bool {
     lines.first().is_some_and(|first| {
-        matches!(first, ListLine::InboxTabs { .. })
+        matches!(first, ListLine::InboxHead { .. })
             && y < first.height()
             && (INBOX_PLUS_X..INBOX_PLUS_X + INBOX_PLUS_W).contains(&x)
     })
@@ -1214,6 +1398,11 @@ pub struct InboxInput<'a> {
     pub snoozed: &'a BTreeSet<String>,
     /// Session ids Kevin pinned, in the order he pinned them (`pin_rank`).
     pub pinned: &'a [String],
+    /// What is planned (`plannedFile`); `None` = no planner, no Planned area.
+    pub plan: Option<&'a [PlannedItem]>,
+    /// The day the Planned area shows, and today.
+    pub plan_day: NaiveDate,
+    pub today: NaiveDate,
 }
 
 /// Room a scroller that takes space leaves out of the cards ("Show scroll bars: Always", measured 17 pt on macOS 27).
@@ -1267,6 +1456,7 @@ fn inbox_card(i: usize, panel_w: f64, o: &InboxInput) -> Vec<ListLine> {
         open,
         menu,
         pinned,
+        mark: None,
     })];
     if open && parked {
         out.push(ListLine::Buttons {
@@ -1352,18 +1542,49 @@ pub fn inbox_target(list: &SideList, o: &InboxInput, window_number: i64) -> List
         unpinned(group(&[LabelTone::Ready], None)),
     );
     let (working, lot) = (group(&running, Some(false)), group(&running, Some(true)));
-    let pins_waiting = pins
+    // Who waits, in the order Waiting lists them: pinned ones that do not work, questions, done.
+    let waiting: Vec<usize> = pins
         .iter()
-        .filter(|&&i| !running.contains(&window_tone(&o.windows[i])))
-        .count();
-    let tabs = ListLine::InboxTabs {
-        tab: o.tab,
-        waiting: pins_waiting + asks.len() + done.len(),
+        .copied()
+        .filter(|&i| !running.contains(&window_tone(&o.windows[i])))
+        .chain(asks.iter().copied())
+        .chain(done.iter().copied())
+        .collect();
+    let counts = InboxCounts {
+        waiting: waiting.len(),
         working: working.len() + lot.len(),
         parked: snoozed.len() + read.len(),
+        planned: o.plan.map(|p| planned::count_this_week(p, o.today)),
     };
-    let mut lines = vec![tabs];
-    let (groups, nobody): (Vec<(&str, &Vec<usize>)>, &str) = match o.tab {
+    // Without a planner (any more) the Planned area is the overview.
+    let tab = match (o.tab, o.plan) {
+        (InboxTab::Planned, None) => InboxTab::Overview,
+        (tab, _) => tab,
+    };
+    let mut lines = vec![ListLine::InboxHead { tab, counts }];
+    if !matches!(tab, InboxTab::Overview | InboxTab::Waiting)
+        && let Some(&first) = waiting.first()
+    {
+        lines.push(ListLine::WaitBar {
+            n: waiting.len(),
+            text: waiting_text(first, o),
+        });
+    }
+    let target = |lines| ListTarget {
+        rect: list.rect,
+        lines,
+        window_number,
+    };
+    let (groups, nobody): (Vec<(&str, &Vec<usize>)>, &str) = match tab {
+        InboxTab::Overview => {
+            let parts = (working.len(), lot.len(), snoozed.len(), read.len());
+            lines.extend(overview(o, counts, &waiting, parts));
+            return target(lines);
+        }
+        InboxTab::Planned => {
+            lines.extend(planned_area(o, o.plan.unwrap_or_default()));
+            return target(lines);
+        }
         InboxTab::Waiting => (
             vec![
                 (tr("Angeheftet", "Pinned"), &pins),
@@ -1396,11 +1617,251 @@ pub fn inbox_target(list: &SideList, o: &InboxInput, window_number: i64) -> List
             lines.extend(inbox_card(i, list.rect.width(), o));
         }
     }
-    ListTarget {
-        rect: list.rect,
-        lines,
-        window_number,
+    target(lines)
+}
+
+/// The amber strip's text: the first who waits, with the question if there is one.
+fn waiting_text(i: usize, o: &InboxInput) -> String {
+    let w = &o.windows[i];
+    let name = menu_row(w, o.since, o.lookout, o.now).name;
+    match window_label(w, o.since, o.lookout, o.now).detail {
+        Some(what) => format!("{name}: {}", what.trim_matches(['„', '“', '”'])),
+        None => name,
     }
+}
+
+/// "1 arbeitet" / "3 arbeiten".
+fn count_word(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// The overview (Kevin 2026-11-10, "H"): Waiting across the top, then the other areas two by two, each tile with its
+/// count and what is in it. `parts`: working, on the lot, parked by Kevin, read.
+fn overview(
+    o: &InboxInput,
+    counts: InboxCounts,
+    waiting: &[usize],
+    (working, lot, snoozed, read): (usize, usize, usize, usize),
+) -> Vec<ListLine> {
+    let waits = counts.waiting > 0;
+    let wait = InboxTile {
+        tab: InboxTab::Waiting,
+        title: if waits {
+            tr("Wartet auf dich", "Waiting for you")
+        } else {
+            tr("Wartet", "Waiting")
+        }
+        .to_owned(),
+        count: counts.waiting,
+        lines: if waits {
+            waiting
+                .iter()
+                .take(2)
+                .map(|&i| {
+                    let w = &o.windows[i];
+                    format!(
+                        "{} {}",
+                        window_tone(w).symbol(),
+                        menu_row(w, o.since, o.lookout, o.now).name
+                    )
+                })
+                .collect()
+        } else {
+            vec![tr("Niemand wartet auf dich.", "Nobody is waiting for you.").to_owned()]
+        },
+        hot: waits,
+    };
+    let run = InboxTile {
+        tab: InboxTab::Working,
+        title: tr("Läuft", "Running").to_owned(),
+        count: counts.working,
+        // Two short lines: a half tile is about 200 pt wide (live 2026-11-10: one line was cut off).
+        lines: if counts.working == 0 {
+            vec![tr("Gerade arbeitet niemand.", "Nobody is working right now.").to_owned()]
+        } else {
+            vec![
+                count_word(
+                    working,
+                    tr("arbeitet", "working"),
+                    tr("arbeiten", "working"),
+                ),
+                format!("{lot} {}", tr("auf dem Parkplatz", "in the parking lot")),
+            ]
+        },
+        hot: false,
+    };
+    let park = InboxTile {
+        tab: InboxTab::Parked,
+        title: tr("Geparkt", "Parked").to_owned(),
+        count: counts.parked,
+        lines: vec![if counts.parked == 0 {
+            tr("Nichts geparkt.", "Nothing parked.").to_owned()
+        } else {
+            format!(
+                "{snoozed} {}, {read} {}",
+                tr("von dir geparkt", "parked by you"),
+                tr("gelesen", "read")
+            )
+        }],
+        hot: false,
+    };
+    match o.plan {
+        Some(plan) => vec![
+            ListLine::Tiles(vec![wait]),
+            ListLine::Tiles(vec![run, plan_tile(plan, counts, o)]),
+            ListLine::Tiles(vec![park]),
+        ],
+        None => vec![
+            ListLine::Tiles(vec![wait]),
+            ListLine::Tiles(vec![run, park]),
+        ],
+    }
+}
+
+/// "heute" / "morgen" / "Do 12.11." before a time.
+fn when(day: NaiveDate, today: NaiveDate) -> String {
+    if day == today {
+        tr("heute", "today").to_owned()
+    } else if today.succ_opt() == Some(day) {
+        tr("morgen", "tomorrow").to_owned()
+    } else {
+        planned::short_date(day)
+    }
+}
+
+/// The Planned tile: a start that did not happen first (then the tile is amber, Kevin has to act), else the next start;
+/// below, how many items stand today and tomorrow.
+fn plan_tile(plan: &[PlannedItem], counts: InboxCounts, o: &InboxInput) -> InboxTile {
+    let shown = |it: &PlannedItem| planned::shown_day(it, o.today);
+    let failed = plan.iter().find(|it| it.problem.is_some());
+    let next = plan
+        .iter()
+        .filter(|it| it.problem.is_none() && it.time.is_some())
+        .min_by_key(|it| (shown(it), it.time));
+    let mut lines = Vec::new();
+    if let Some(it) = failed {
+        lines.push(format!(
+            "! {} {}",
+            tr("Nicht gestartet:", "Did not start:"),
+            it.title
+        ));
+    } else if let Some(it) = next {
+        let at = it.time.map(planned::clock).unwrap_or_default();
+        lines.push(format!("▶ {} {at} {}", when(shown(it), o.today), it.title));
+    }
+    let tomorrow = o.today.succ_opt().unwrap_or(o.today);
+    lines.push(format!(
+        "{} {} · {} {}",
+        planned::items_on(plan, o.today, o.today).len(),
+        tr("heute", "today"),
+        planned::items_on(plan, tomorrow, o.today).len(),
+        tr("morgen", "tomorrow")
+    ));
+    InboxTile {
+        tab: InboxTab::Planned,
+        title: tr("Geplant", "Planned").to_owned(),
+        count: counts.planned.unwrap_or(0),
+        lines,
+        hot: failed.is_some(),
+    }
+}
+
+/// The Planned area (Kevin 2026-11-10, variant 1): the week of the chosen day with dots, below it that day's items.
+fn planned_area(o: &InboxInput, plan: &[PlannedItem]) -> Vec<ListLine> {
+    let monday = planned::monday_of(o.plan_day);
+    let days = monday
+        .iter_days()
+        .take(7)
+        .map(|date| {
+            // A dot per card the day lists (review quick 2026-11-10), what wants Kevin first so the cut keeps it.
+            let mut dots: Vec<PlanMark> = planned::items_on(plan, date, o.today)
+                .into_iter()
+                .map(plan_mark)
+                .chain(
+                    planned::deadlines_on(plan, date, o.today)
+                        .into_iter()
+                        .map(|_| PlanMark::Deadline),
+                )
+                .collect();
+            dots.sort_by_key(|m| match m {
+                PlanMark::Problem | PlanMark::Deadline => 0,
+                PlanMark::Start => 1,
+                PlanMark::Task => 2,
+            });
+            dots.truncate(4);
+            WeekDay {
+                date,
+                name: planned::weekday_short(date).to_owned(),
+                number: date.day(),
+                today: date == o.today,
+                selected: date == o.plan_day,
+                dots,
+            }
+        })
+        .collect();
+    let mut lines = vec![
+        ListLine::Week(WeekStrip {
+            title: planned::week_title(monday),
+            days,
+        }),
+        ListLine::Group(planned::day_title(o.plan_day, o.today)),
+    ];
+    let on = planned::items_on(plan, o.plan_day, o.today);
+    let due = planned::deadlines_on(plan, o.plan_day, o.today);
+    if on.is_empty() && due.is_empty() {
+        lines.push(ListLine::Empty(
+            tr(
+                "An diesem Tag ist nichts geplant.",
+                "Nothing planned that day.",
+            )
+            .to_owned(),
+        ));
+    }
+    lines.extend(on.into_iter().map(|it| plan_card(it, None, o.today)));
+    lines.extend(due.into_iter().map(|it| {
+        let text = format!(
+            "{} {}, {} {}",
+            tr("Harte Frist", "Hard deadline"),
+            planned::short_date(o.plan_day),
+            tr("steht am", "listed on"),
+            planned::short_date(planned::shown_day(it, o.today))
+        );
+        plan_card(it, Some((text, PlanMark::Deadline)), o.today)
+    }));
+    lines
+}
+
+/// What a planned item is on its own card and its dot.
+fn plan_mark(it: &PlannedItem) -> PlanMark {
+    if it.problem.is_some() {
+        PlanMark::Problem
+    } else if it.time.is_some() {
+        PlanMark::Start
+    } else {
+        PlanMark::Task
+    }
+}
+
+/// A planned item as a card: its mark instead of a status, its time at the right, no ids and no right-click.
+fn plan_card(it: &PlannedItem, deadline: Option<(String, PlanMark)>, today: NaiveDate) -> ListLine {
+    let (what, mark) = deadline.unwrap_or_else(|| (planned::item_text(it, today), plan_mark(it)));
+    ListLine::Card(InboxCard {
+        ids: vec![],
+        name: it.title.clone(),
+        project: (!it.project.is_empty()).then(|| it.project.clone()),
+        since: it.time.map(planned::clock),
+        what: Some(what),
+        tone: match mark {
+            PlanMark::Start => LabelTone::Ready,
+            PlanMark::Task => LabelTone::Watching,
+            PlanMark::Problem | PlanMark::Deadline => LabelTone::Waiting,
+        },
+        open: false,
+        lines: 1,
+        menu: vec![],
+        pinned: false,
+        mark: Some(mark),
+    })
 }
 
 // ---------- Preview outlines while hovering in the menu (Kevin 2026-09-18) ----------

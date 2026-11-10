@@ -20,7 +20,8 @@ use objc2_foundation::{NSDate, NSPoint, NSRect, NSRunLoop, NSSize};
 use lookout_core::geom::Rect;
 use lookout_core::model::{CardButton, LabelTone, OnScreenWindow, Pid};
 use lookout_core::overlay::{
-    GlowTarget, InboxCard, InboxTab, LabelContent, LabelTarget, ListLine, ListTarget, PreviewBox,
+    GlowTarget, InboxCard, InboxCounts, InboxNav, InboxTab, InboxTile, LabelContent, LabelTarget,
+    ListLine, ListTarget, PlanMark, PreviewBox, WeekDay, WeekStrip,
 };
 use lookout_macos::overlay::{
     GlowOverlay, LabelOverlay, Level, ListOverlay, PreviewOverlay, make_list_panel,
@@ -42,7 +43,7 @@ fn main() {
     };
     let mtm = MainThreadMarker::new().expect("tests run on the main thread");
     let _ = NSApplication::sharedApplication(mtm);
-    let tests: [Test; 9] = [
+    let tests: [Test; 10] = [
         (
             "overlay_panels_do_not_animate",
             overlay_panels_do_not_animate,
@@ -55,6 +56,10 @@ fn main() {
         ("list_panel_takes_clicks", list_panel_takes_clicks),
         ("list_click_reaches_on_click", list_click_reaches_on_click),
         ("inbox_scrolls_below_its_tabs", inbox_scrolls_below_its_tabs),
+        (
+            "inbox_tiles_and_strip_lead_on",
+            inbox_tiles_and_strip_lead_on,
+        ),
         ("every_panel_kind_draws", every_panel_kind_draws),
         ("fades_end_off_screen", fades_end_off_screen),
         (
@@ -330,16 +335,18 @@ fn inbox_scrolls_below_its_tabs(mtm: MainThreadMarker) {
             lines: 1,
             menu: vec![CardButton::Park],
             pinned: false,
+            mark: None,
         })
     };
     let at = Rect::new(200.0, 200.0, 430.0, 300.0);
     let target_of = |tab, cards: usize| {
         let mut lines = vec![
-            ListLine::InboxTabs {
+            ListLine::InboxHead {
                 tab,
-                waiting: cards,
-                working: 0,
-                parked: 0,
+                counts: InboxCounts {
+                    waiting: cards,
+                    ..InboxCounts::default()
+                },
             },
             ListLine::Group("Fertig".into()),
         ];
@@ -352,7 +359,7 @@ fn inbox_scrolls_below_its_tabs(mtm: MainThreadMarker) {
     };
     let target = |tab| target_of(tab, 10);
     let clicks: Rc<RefCell<Vec<Vec<String>>>> = Rc::default();
-    let tabs: Rc<RefCell<Vec<InboxTab>>> = Rc::default();
+    let tabs: Rc<RefCell<Vec<InboxNav>>> = Rc::default();
     let lists = {
         let (clicks, tabs) = (Rc::clone(&clicks), Rc::clone(&tabs));
         ListOverlay::new(
@@ -409,8 +416,8 @@ fn inbox_scrolls_below_its_tabs(mtm: MainThreadMarker) {
     click(20.0);
     assert_eq!(
         *tabs.borrow(),
-        [InboxTab::Waiting],
-        "the tabs stay where they are"
+        [InboxNav::Open(InboxTab::Overview)],
+        "the head stays where it is: its way back to the overview"
     );
     // No frame and no ground of their own: the inbox's ground shows behind the cards (review quick 2026-11-10).
     assert_eq!(scroll.borderType(), NSBorderType::NoBorder);
@@ -442,6 +449,110 @@ fn inbox_scrolls_below_its_tabs(mtm: MainThreadMarker) {
     let left = scroll.contentSize().width;
     assert!(left < 430.0, "the scroller takes room: {left}");
     assert_eq!(document.frame().size.width, left);
+}
+
+/// Kevin 2026-11-10 ("H"): a tile on the overview opens its area; in an area the amber strip stays under the head (it does
+/// not scroll away) and opens Waiting.
+fn inbox_tiles_and_strip_lead_on(mtm: MainThreadMarker) {
+    let at = Rect::new(240.0, 220.0, 430.0, 400.0);
+    let tile = |tab, title: &str| InboxTile {
+        tab,
+        title: title.into(),
+        count: 1,
+        lines: vec![],
+        hot: false,
+    };
+    let overview = ListTarget {
+        rect: at,
+        lines: vec![
+            ListLine::InboxHead {
+                tab: InboxTab::Overview,
+                counts: InboxCounts::default(),
+            },
+            ListLine::Tiles(vec![tile(InboxTab::Waiting, "Wartet")]),
+            ListLine::Tiles(vec![
+                tile(InboxTab::Working, "Läuft"),
+                tile(InboxTab::Planned, "Geplant"),
+            ]),
+        ],
+        window_number: 0,
+    };
+    let navs: Rc<RefCell<Vec<InboxNav>>> = Rc::default();
+    let lists = {
+        let navs = Rc::clone(&navs);
+        ListOverlay::new(
+            mtm,
+            Box::new(|_| {}),
+            Box::new(|_, _| {}),
+            Box::new(move |nav| navs.borrow_mut().push(nav)),
+            Box::new(|| {}),
+        )
+    };
+    lists.update(&[overview], None);
+    let panel = window_at(mtm, at);
+    let click = |x: f64, from_top: f64| {
+        let location = NSPoint::new(x, rect(panel.frame()).height() - from_top);
+        let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            NSEventType::LeftMouseDown,
+            location,
+            NSEventModifierFlags::empty(),
+            0.0,
+            panel.windowNumber(),
+            None,
+            0,
+            1,
+            1.0,
+        )
+        .expect("mouse event");
+        panel.sendEvent(&event);
+    };
+    click(320.0, 44.0 + 94.0 + 20.0);
+    assert_eq!(
+        *navs.borrow(),
+        [InboxNav::Open(InboxTab::Planned)],
+        "the right tile of the second row"
+    );
+
+    let area = ListTarget {
+        rect: at,
+        lines: vec![
+            ListLine::InboxHead {
+                tab: InboxTab::Working,
+                counts: InboxCounts::default(),
+            },
+            ListLine::WaitBar {
+                n: 1,
+                text: "alpha".into(),
+            },
+            ListLine::Group("Arbeitet".into()),
+        ],
+        window_number: 0,
+    };
+    lists.update(&[area], None);
+    let content = panel.contentView().expect("content view");
+    let scroll = content
+        .subviews()
+        .firstObject()
+        .expect("a view under the head")
+        .downcast::<NSScrollView>()
+        .expect("a scroll view");
+    assert_eq!(
+        rect(scroll.frame()).height(),
+        400.0 - 44.0 - 36.0,
+        "below head and strip"
+    );
+    click(300.0, 44.0 + 10.0);
+    assert_eq!(
+        navs.borrow().last(),
+        Some(&InboxNav::Open(InboxTab::Waiting)),
+        "the strip"
+    );
+    click(20.0, 20.0);
+    assert_eq!(
+        navs.borrow().last(),
+        Some(&InboxNav::Open(InboxTab::Overview)),
+        "the way back"
+    );
 }
 
 /// What `view` paints at (x, y), its points from the bottom left, drawn into a bitmap at the window's scale.
@@ -524,18 +635,69 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
             menu: vec![CardButton::Park],
             // The open card is the pinned one: its pin is probed below.
             pinned: open,
+            mark: None,
         })
     };
     let ib = Rect::new(60.0, 200.0, 430.0, 500.0);
     let inbox = ListTarget {
         rect: ib,
         lines: vec![
-            ListLine::InboxTabs {
+            ListLine::InboxHead {
                 tab: InboxTab::Working,
-                waiting: 1,
-                working: 2,
-                parked: 3,
+                counts: InboxCounts {
+                    waiting: 1,
+                    working: 2,
+                    parked: 3,
+                    planned: Some(4),
+                },
             },
+            ListLine::WaitBar {
+                n: 1,
+                text: "alpha: Shall I commit?".into(),
+            },
+            ListLine::Tiles(vec![
+                InboxTile {
+                    tab: InboxTab::Waiting,
+                    title: "Wartet auf dich".into(),
+                    count: 1,
+                    lines: vec!["? alpha".into()],
+                    hot: true,
+                },
+                InboxTile {
+                    tab: InboxTab::Planned,
+                    title: "Geplant".into(),
+                    count: 4,
+                    lines: vec!["▶ heute 10:00 Report".into(), "1 heute · 0 morgen".into()],
+                    hot: false,
+                },
+            ]),
+            ListLine::Week(WeekStrip {
+                title: "KW 46".into(),
+                days: (0..7)
+                    .map(|k| WeekDay {
+                        date: lookout_core::planned::NaiveDate::from_ymd_opt(2026, 11, 9 + k)
+                            .unwrap(),
+                        name: "Mo".into(),
+                        number: 9 + k,
+                        today: k == 1,
+                        selected: k == 1,
+                        dots: vec![PlanMark::Start, PlanMark::Task, PlanMark::Deadline],
+                    })
+                    .collect(),
+            }),
+            ListLine::Card(InboxCard {
+                ids: vec![],
+                name: "Report".into(),
+                project: None,
+                since: Some("10:00".into()),
+                what: Some("Startet von selbst".into()),
+                tone: LabelTone::Watching,
+                open: false,
+                lines: 1,
+                menu: vec![],
+                pinned: false,
+                mark: Some(PlanMark::Task),
+            }),
             ListLine::Group("Fragen".into()),
             card(true, LabelTone::Waiting),
             ListLine::Hint("Rechts antworten".into()),

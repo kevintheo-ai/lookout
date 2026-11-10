@@ -45,6 +45,8 @@ pub struct AppConfig {
     /// How to resume a session per Claude folder, with `{id}` for the session; a folder not named here uses
     /// `claude --resume {id}` (Kevin 2026-11-09).
     pub resume_commands: BTreeMap<String, String>,
+    /// JSON file with what is planned (`planned`), written by another program; `None` = no "Planned" area.
+    pub planned_file: Option<String>,
 }
 
 impl AppConfig {
@@ -68,6 +70,7 @@ impl AppConfig {
             ask_until_read_names: vec![],
             worker_names: vec![],
             resume_commands: BTreeMap::new(),
+            planned_file: None,
         }
     }
 }
@@ -151,6 +154,9 @@ pub fn parse_config(obj: &Map<String, Value>, home: &str) -> AppConfig {
             Some((standardize_path(trim_ws(dir), home), cmd.to_owned()))
         })
         .collect();
+    c.planned_file = string("plannedFile")
+        .map(|p| standardize_path(trim_ws(p), home))
+        .filter(|p| p.starts_with('/'));
     c
 }
 
@@ -405,6 +411,18 @@ mod tests {
                 .resume_commands
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn planned_file_is_an_absolute_path() {
+        let c = parse(json!({"plannedFile": " ~/.state/planned.json "}));
+        assert_eq!(c.planned_file, Some(format!("{HOME}/.state/planned.json")));
+        assert_eq!(
+            parse(json!({"plannedFile": "relative.json"})).planned_file,
+            None
+        );
+        assert_eq!(parse(json!({"plannedFile": 3})).planned_file, None);
+        assert_eq!(parse(json!({})).planned_file, None);
     }
 
     /// Swift `JSONSerialization` + `as?`, measured 2026-11-06.

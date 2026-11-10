@@ -11,6 +11,7 @@ pub mod mapping;
 pub mod model;
 pub mod motion;
 pub mod overlay;
+pub mod planned;
 pub mod restore;
 pub mod status;
 

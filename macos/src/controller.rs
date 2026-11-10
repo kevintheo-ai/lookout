@@ -47,10 +47,11 @@ use lookout_core::motion::{
     Badge, MoveMemory, WARP_BID, ax_origin, frames_differ, needs_move, status_badge,
 };
 use lookout_core::overlay::{
-    GlowTarget, InboxInput, InboxTab, MoveGate, OnScreenMatch, OverlayInput, SinceEntry,
+    GlowTarget, InboxInput, InboxNav, InboxTab, MoveGate, OnScreenMatch, OverlayInput, SinceEntry,
     advance_since, first_name, focus_source, frontmost_number, glow_targets, inbox_target,
-    label_targets, list_target, locate_on_screen, set_greeting_name,
+    label_targets, list_target, locate_on_screen, plan_day_after, set_greeting_name,
 };
+use lookout_core::planned::{self, NaiveDate, PlannedItem};
 use lookout_core::restore::{self as restoring, OpenSession};
 use lookout_core::status::{
     BackgroundWatch, ClaudeStatus, LogSessionFinder, Standby, TAIL_BYTES, TranscriptReader,
@@ -252,8 +253,13 @@ pub(crate) struct App {
     in_front: Option<(String, Option<Time>)>,
     /// What Kevin marked read in the inbox.
     read_answers: ReadAnswers,
-    /// The tab the inbox shows. ponytail: starts on "waiting" after a restart, store it like `mode` if that bothers.
+    /// What the inbox shows: the overview or an area (Kevin 2026-11-10, "H"). ponytail: starts on the overview after a
+    /// restart, store it like `mode` if that bothers.
     inbox_tab: InboxTab,
+    /// The day the Planned area shows; `None` = today, also after midnight (`plan_day_after`).
+    plan_day: Option<NaiveDate>,
+    /// `plannedFile` as last read, with its modification time: read again only when that changes.
+    plan_cache: Option<(std::time::SystemTime, Vec<PlannedItem>)>,
     /// The open sessions as kept on disk, to come back after a crash or shutdown (`restore`).
     restore_list: Vec<OpenSession>,
     /// Session ids just being reopened, with when: not offered again meanwhile.
@@ -442,12 +448,7 @@ impl App {
                 mtm,
                 Box::new(|ids: Vec<String>| with_app(move |a| a.list_clicked(&ids))),
                 Box::new(|button, ids: Vec<String>| with_app(move |a| a.list_button(button, &ids))),
-                Box::new(|tab| {
-                    with_app(move |a| {
-                        a.inbox_tab = tab;
-                        a.refresh_overlays();
-                    })
-                }),
+                Box::new(|nav| with_app(move |a| a.inbox_nav(nav))),
                 Box::new(|| with_app(|a| a.new_terminal_window())),
             ),
             restore_list: restoring::load(&crate::restore::list_path()),
@@ -458,6 +459,8 @@ impl App {
             in_front: None,
             read_answers: ReadAnswers::new(),
             inbox_tab: InboxTab::default(),
+            plan_day: None,
+            plan_cache: None,
             focus_watcher: FocusWatcher::new(Box::new(|| with_app(App::handle_focus_change))),
             tile_empty,
             tile_full,
@@ -1066,6 +1069,8 @@ impl App {
             self.list_anchor(main, on_screen)?
         };
         let n = now();
+        let has_plan = self.refresh_plan();
+        let today = planned::today();
         let inbox = InboxInput {
             planned: &self.arrangement_ids,
             windows: &self.windows,
@@ -1077,6 +1082,9 @@ impl App {
             tab: self.inbox_tab,
             snoozed: &self.snoozed,
             pinned: &self.pinned,
+            plan: has_plan.then(|| self.plan_cache.as_ref().map_or(&[][..], |c| c.1.as_slice())),
+            plan_day: self.plan_day.unwrap_or(today),
+            today,
         };
         Some(
             self.arrangement
@@ -1098,6 +1106,26 @@ impl App {
                 })
                 .collect(),
         )
+    }
+
+    /// The inbox's way between overview, areas, weeks and days (clicks, and the two-finger swipe back).
+    fn inbox_nav(&mut self, nav: InboxNav) {
+        if let InboxNav::Open(tab) = nav {
+            self.inbox_tab = tab;
+        }
+        self.plan_day = plan_day_after(nav, self.plan_day, planned::today());
+        self.refresh_overlays();
+    }
+
+    /// Reads `plannedFile` again when it changed. False = no planner configured. A missing or unreadable file is an empty
+    /// plan: the Planned area stays, with nothing in it.
+    fn refresh_plan(&mut self) -> bool {
+        let Some(path) = self.cfg.planned_file.as_deref() else {
+            self.plan_cache = None;
+            return false;
+        };
+        self.plan_cache = planned::reload(path, self.plan_cache.take());
+        true
     }
 
     /// The peek's list lies over the frontmost tile: the tiles were lifted above the middle and the side windows, a list

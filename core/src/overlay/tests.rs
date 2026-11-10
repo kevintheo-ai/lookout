@@ -1699,10 +1699,29 @@ fn inbox_lines_full(
             tab,
             snoozed,
             pinned,
+            plan: None,
+            plan_day: TEST_DAY,
+            today: TEST_DAY,
         },
         7,
     )
     .lines
+}
+
+/// Tuesday 10 November 2026, the day the tests' plans are made for.
+const TEST_DAY: NaiveDate = NaiveDate::from_ymd_opt(2026, 11, 10).unwrap();
+
+/// The inbox's head with the three session counts and no planner.
+fn head(tab: InboxTab, waiting: usize, working: usize, parked: usize) -> ListLine {
+    ListLine::InboxHead {
+        tab,
+        counts: InboxCounts {
+            waiting,
+            working,
+            parked,
+            planned: None,
+        },
+    }
 }
 
 fn inbox_lines(
@@ -1731,15 +1750,7 @@ fn test_inbox_groups_and_open_card() {
         Some(0),
         &ReadAnswers::new(),
     );
-    assert_eq!(
-        lines[0],
-        ListLine::InboxTabs {
-            tab: InboxTab::Waiting,
-            waiting: 2,
-            working: 0,
-            parked: 0
-        }
-    );
+    assert_eq!(lines[0], head(InboxTab::Waiting, 2, 0, 0));
     assert_eq!(lines[1], ListLine::Group("Fragen an dich".into()));
     let question = card(&lines[2]);
     assert!(question.open && question.tone == LabelTone::Waiting);
@@ -1827,15 +1838,7 @@ fn test_inbox_read_card_leaves_until_a_new_answer() {
     mark_read(&w[1], &mut read);
     let list = inbox_list(&[0, 1], 900.0);
     let lines = inbox_lines(&w, &list, Some(0), &read);
-    assert_eq!(
-        lines[0],
-        ListLine::InboxTabs {
-            tab: InboxTab::Waiting,
-            waiting: 1,
-            working: 0,
-            parked: 1
-        }
-    );
+    assert_eq!(lines[0], head(InboxTab::Waiting, 1, 0, 1));
     assert!(!lines.contains(&ListLine::Group("Fertig".into())));
 
     w[1].sessions[0].digest.as_mut().unwrap().answer_at = Some(600.0);
@@ -1885,12 +1888,7 @@ fn test_inbox_empty_says_so() {
     assert_eq!(
         lines,
         [
-            ListLine::InboxTabs {
-                tab: InboxTab::Waiting,
-                waiting: 0,
-                working: 0,
-                parked: 0
-            },
+            head(InboxTab::Waiting, 0, 0, 0),
             ListLine::Empty("Niemand wartet auf dich.".into())
         ]
     );
@@ -1929,26 +1927,29 @@ fn test_inbox_working_tab() {
     let lines = inbox_lines_of(&w, &list, Some(0), &ReadAnswers::new(), InboxTab::Working);
     assert_eq!(
         lines[0],
-        ListLine::InboxTabs {
-            tab: InboxTab::Working,
-            waiting: 1,
-            working: 3,
-            parked: 0
-        },
+        head(InboxTab::Working, 1, 3, 0),
         "both tabs count, whichever is shown"
     );
-    assert_eq!(lines[1], ListLine::Group("Arbeitet".into()));
-    let front = card(&lines[2]);
+    assert_eq!(
+        lines[1],
+        ListLine::WaitBar {
+            n: 1,
+            text: "Italien: Ja?".into()
+        },
+        "somebody waits: the amber strip, whatever area is open"
+    );
+    assert_eq!(lines[2], ListLine::Group("Arbeitet".into()));
+    let front = card(&lines[3]);
     assert!(front.open && front.name == "Eingang");
     assert_eq!(
-        card(&lines[3]).name,
+        card(&lines[4]).name,
         "PPC",
         "the open card of a running session has no button"
     );
-    assert_eq!(lines[4], ListLine::Group("Auf dem Parkplatz".into()));
-    assert_eq!(card(&lines[5]).name, "#9");
-    assert_eq!(lines.len(), 6);
-    let on_card: f64 = lines[..3].iter().map(ListLine::height).sum();
+    assert_eq!(lines[5], ListLine::Group("Auf dem Parkplatz".into()));
+    assert_eq!(card(&lines[6]).name, "#9");
+    assert_eq!(lines.len(), 7);
+    let on_card: f64 = lines[..4].iter().map(ListLine::height).sum();
     assert!(
         row_at(&lines, on_card + 5.0).is_some(),
         "a click brings it to the terminal"
@@ -2007,57 +2008,117 @@ fn test_inbox_groups_by_the_state_now() {
         inbox: true,
     };
     let lines = inbox_lines(&w, &list, Some(0), &ReadAnswers::new());
-    assert_eq!(
-        lines[0],
-        ListLine::InboxTabs {
-            tab: InboxTab::Waiting,
-            waiting: 2,
-            working: 1,
-            parked: 0
-        }
-    );
+    assert_eq!(lines[0], head(InboxTab::Waiting, 2, 1, 0));
     assert_eq!(card(&lines[2]).name, "Fragt jetzt");
     assert_eq!(lines[3], ListLine::Group("Fertig".into()));
     assert_eq!(card(&lines[4]).name, "Eben fertig");
 }
 
+/// Kevin 2026-11-10 ("H"): back to the overview from an area's head, Waiting from the amber strip, an area from its tile,
+/// weeks and days in the week strip; the + stays at the right.
 #[test]
-fn test_inbox_tabs_are_clicked_by_position() {
-    let lines = vec![
-        ListLine::InboxTabs {
-            tab: InboxTab::Waiting,
-            waiting: 1,
-            working: 2,
-            parked: 0,
-        },
-        ListLine::Group("Fertig".into()),
+fn test_inbox_clicks_lead_where_they_say() {
+    let w = 430.0;
+    let area = vec![
+        head(InboxTab::Working, 1, 2, 0),
+        ListLine::Group("Arbeitet".into()),
     ];
     assert_eq!(
-        tab_at(&lines, INBOX_TAB_X + 5.0, 20.0),
-        Some(InboxTab::Waiting)
+        nav_at(&area, w, INBOX_BACK_X + 5.0, 20.0),
+        Some(InboxNav::Open(InboxTab::Overview))
     );
     assert_eq!(
-        tab_at(&lines, INBOX_TAB_X + INBOX_TAB_W + 5.0, 20.0),
-        Some(InboxTab::Working)
+        nav_at(&area, w, 200.0, 20.0),
+        None,
+        "the title is no way back"
     );
     assert_eq!(
-        tab_at(&lines, INBOX_TAB_X + 2.0 * INBOX_TAB_W + 5.0, 20.0),
-        Some(InboxTab::Parked)
+        nav_at(&area, w, INBOX_BACK_X + 5.0, 60.0),
+        None,
+        "below the head"
     );
-    assert_eq!(tab_at(&lines, 400.0, 20.0), None, "right of the tabs");
-    assert!(plus_at(&lines, INBOX_PLUS_X + 5.0, 20.0));
-    assert!(!plus_at(&lines, INBOX_PLUS_X - 5.0, 20.0), "still the tabs");
-    assert!(!plus_at(&lines, INBOX_PLUS_X + 5.0, 60.0), "below it");
+    let overview = vec![head(InboxTab::Overview, 1, 2, 0)];
+    assert_eq!(
+        nav_at(&overview, w, INBOX_BACK_X + 5.0, 20.0),
+        None,
+        "no way back on the overview"
+    );
+    assert!(plus_at(&area, INBOX_PLUS_X + 5.0, 20.0));
+    assert!(!plus_at(&area, INBOX_PLUS_X - 5.0, 20.0), "left of it");
+    assert!(!plus_at(&area, INBOX_PLUS_X + 5.0, 60.0), "below it");
     assert!(
         !plus_at(&[ListLine::More(1)], INBOX_PLUS_X + 5.0, 20.0),
         "not an inbox"
     );
-    assert_eq!(tab_at(&lines, INBOX_TAB_X + 5.0, 60.0), None, "below them");
+
+    let bar = vec![ListLine::WaitBar {
+        n: 1,
+        text: "A".into(),
+    }];
     assert_eq!(
-        tab_at(&[ListLine::More(1)], 20.0, 20.0),
-        None,
-        "not an inbox"
+        nav_at(&bar, w, 300.0, 10.0),
+        Some(InboxNav::Open(InboxTab::Waiting))
     );
+
+    let tile = |tab| InboxTile {
+        tab,
+        title: String::new(),
+        count: 0,
+        lines: vec![],
+        hot: false,
+    };
+    let tiles = vec![
+        ListLine::Tiles(vec![tile(InboxTab::Waiting)]),
+        ListLine::Tiles(vec![tile(InboxTab::Working), tile(InboxTab::Planned)]),
+    ];
+    let row = INBOX_TILE_H + INBOX_TILE_GAP;
+    assert_eq!(
+        nav_at(&tiles, w, 400.0, 10.0),
+        Some(InboxNav::Open(InboxTab::Waiting)),
+        "across"
+    );
+    assert_eq!(
+        nav_at(&tiles, w, 20.0, row + 10.0),
+        Some(InboxNav::Open(InboxTab::Working))
+    );
+    assert_eq!(
+        nav_at(&tiles, w, 410.0, row + 10.0),
+        Some(InboxNav::Open(InboxTab::Planned))
+    );
+    assert_eq!(
+        nav_at(&tiles, w, w / 2.0, row + 10.0),
+        None,
+        "the gap between two tiles"
+    );
+    assert_eq!(
+        nav_at(&tiles, w, 20.0, row - 3.0),
+        None,
+        "the gap below a row"
+    );
+
+    let day = |k: u32| NaiveDate::from_ymd_opt(2026, 11, 9 + k).unwrap();
+    let week = vec![ListLine::Week(WeekStrip {
+        title: String::new(),
+        days: (0..7)
+            .map(|k| WeekDay {
+                date: day(k),
+                name: String::new(),
+                number: 9 + k,
+                today: false,
+                selected: false,
+                dots: vec![],
+            })
+            .collect(),
+    })];
+    assert_eq!(nav_at(&week, w, 20.0, 15.0), Some(InboxNav::Week(-1)));
+    assert_eq!(nav_at(&week, w, w - 20.0, 15.0), Some(InboxNav::Week(1)));
+    assert_eq!(nav_at(&week, w, w / 2.0, 15.0), None, "the title");
+    let (x, dw) = week_day_span(1, w);
+    assert_eq!(
+        nav_at(&week, w, x + dw / 2.0, 60.0),
+        Some(InboxNav::Day(day(1)))
+    );
+    assert_eq!(nav_at(&week, w, 5.0, 60.0), None, "left of Monday");
 }
 
 #[test]
@@ -2108,19 +2169,15 @@ fn test_inbox_parked_tab() {
             .collect()
     };
     let parked = inbox_lines_full(&w, &list, Some(1), &read, InboxTab::Parked, &snoozed, &[]);
-    assert_eq!(
-        parked[0],
-        ListLine::InboxTabs {
-            tab: InboxTab::Parked,
-            waiting: 1,
-            working: 1,
-            parked: 3
-        }
+    assert_eq!(parked[0], head(InboxTab::Parked, 1, 1, 3));
+    assert!(
+        matches!(parked[1], ListLine::WaitBar { n: 1, .. }),
+        "a parked session that asks waits"
     );
-    assert_eq!(parked[1], ListLine::Group("Von dir geparkt".into()));
+    assert_eq!(parked[2], ListLine::Group("Von dir geparkt".into()));
     assert_eq!(names(&parked), ["Fertig geparkt", "Postfach", "Gelesen"]);
     assert_eq!(
-        parked[3],
+        parked[4],
         ListLine::Buttons {
             ids: vec![w[1].sessions[0].id.clone()],
             buttons: vec![CardButton::Unpark]
@@ -2197,12 +2254,7 @@ fn test_inbox_pinned_on_top() {
     let lines = tab(InboxTab::Waiting, &none, &[id(2), id(3)]);
     assert_eq!(
         lines[0],
-        ListLine::InboxTabs {
-            tab: InboxTab::Waiting,
-            waiting: 3,
-            working: 1,
-            parked: 0
-        },
+        head(InboxTab::Waiting, 3, 1, 0),
         "the pinned one that works is not counted as waiting"
     );
     assert_eq!(lines[1], ListLine::Group("Angeheftet".into()));
@@ -2223,7 +2275,8 @@ fn test_inbox_pinned_on_top() {
 
     let lines = tab(InboxTab::Working, &none, &[id(2)]);
     assert_eq!(names(&lines), ["Vertrag"]);
-    assert!(card(&lines[2]).pinned);
+    assert!(matches!(lines[1], ListLine::WaitBar { n: 3, .. }));
+    assert!(card(&lines[3]).pinned);
 }
 
 /// Review quick 2026-11-09: pinning ends an old park, like "Bring back". A parked session that asked again and was pinned
@@ -2327,4 +2380,337 @@ fn test_inbox_open_card_height_follows_the_text() {
     assert_eq!(lines_of(0), 1);
     assert!(lines_of(1) >= 2);
     assert_eq!(lines_of(2), 6);
+}
+
+// ---------- Overview and Planned (Kevin 2026-11-10, "H") ----------
+
+fn plan_item(title: &str, day: NaiveDate, time: Option<&str>) -> PlannedItem {
+    PlannedItem {
+        title: title.into(),
+        project: "studio".into(),
+        day,
+        time: time.map(|t| chrono::NaiveTime::parse_from_str(t, "%H:%M").unwrap()),
+        detail: time.map(|_| "claude · sonnet".into()),
+        problem: None,
+        deadline: None,
+        since_days: 0,
+    }
+}
+
+fn plan_lines(
+    w: &[TermWindow],
+    list: &SideList,
+    tab: InboxTab,
+    plan: Option<&[PlannedItem]>,
+    plan_day: NaiveDate,
+) -> Vec<ListLine> {
+    let (since, lookout, read, none) = (
+        BTreeMap::new(),
+        BTreeMap::new(),
+        ReadAnswers::new(),
+        BTreeSet::new(),
+    );
+    let planned: Vec<u64> = w.iter().map(|x| x.id).collect();
+    let o = InboxInput {
+        planned: &planned,
+        windows: w,
+        since: &since,
+        lookout: &lookout,
+        now: 1000.0,
+        read: &read,
+        main: None,
+        tab,
+        snoozed: &none,
+        pinned: &[],
+        plan,
+        plan_day,
+        today: TEST_DAY,
+    };
+    inbox_target(list, &o, 7).lines
+}
+
+fn tiles(lines: &[ListLine]) -> Vec<Vec<&InboxTile>> {
+    lines
+        .iter()
+        .filter_map(|l| match l {
+            ListLine::Tiles(t) => Some(t.iter().collect()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The overview: Waiting across, amber with who waits; the other areas two by two; without a planner no Planned tile.
+#[test]
+fn test_inbox_overview_tiles() {
+    let w = inbox_windows();
+    let list = inbox_list(&[0, 1], 900.0);
+    let lines = plan_lines(&w, &list, InboxTab::Overview, None, TEST_DAY);
+    assert_eq!(lines[0], head(InboxTab::Overview, 2, 0, 0));
+    let rows = tiles(&lines);
+    assert_eq!(rows.iter().map(Vec::len).collect::<Vec<_>>(), [1, 2]);
+    let wait = rows[0][0];
+    assert!(wait.hot && wait.tab == InboxTab::Waiting && wait.count == 2);
+    assert_eq!(wait.title, "Wartet auf dich");
+    assert_eq!(wait.lines, ["? Italien", "✓ Spanien"]);
+    assert_eq!(
+        (rows[1][0].tab, rows[1][1].tab),
+        (InboxTab::Working, InboxTab::Parked)
+    );
+    assert_eq!(rows[1][0].lines, ["Gerade arbeitet niemand."]);
+    assert!(
+        !lines.iter().any(|l| matches!(l, ListLine::WaitBar { .. })),
+        "no strip on the overview"
+    );
+
+    let plan = vec![plan_item("Report", TEST_DAY, Some("10:00"))];
+    let lines = plan_lines(&w, &list, InboxTab::Overview, Some(&plan), TEST_DAY);
+    let rows = tiles(&lines);
+    assert_eq!(rows.iter().map(Vec::len).collect::<Vec<_>>(), [1, 2, 1]);
+    let planned = rows[1][1];
+    assert_eq!(
+        (planned.tab, planned.count, planned.hot),
+        (InboxTab::Planned, 1, false)
+    );
+    assert_eq!(
+        planned.lines,
+        ["▶ heute 10:00 Report", "1 heute · 0 morgen"]
+    );
+
+    let nobody = plan_lines(
+        &[],
+        &inbox_list(&[], 900.0),
+        InboxTab::Overview,
+        None,
+        TEST_DAY,
+    );
+    let wait = tiles(&nobody)[0][0];
+    assert!(!wait.hot && wait.title == "Wartet" && wait.lines == ["Niemand wartet auf dich."]);
+}
+
+/// Planned: the week with dots, the chosen day's items with their marks, a start that did not happen in amber (the tile
+/// too), a deadline on its day; without a planner the area is the overview.
+#[test]
+fn test_inbox_planned_area() {
+    let day = |d: u32| NaiveDate::from_ymd_opt(2026, 11, d).unwrap();
+    let mut failed = plan_item("Backup", day(9), Some("09:50"));
+    failed.problem = Some("no window".into());
+    let mut domain = plan_item("Domain", day(12), None);
+    domain.deadline = Some(day(13));
+    let mut old = plan_item("Alt", day(5), None);
+    old.since_days = 5;
+    let plan = vec![
+        plan_item("Report", TEST_DAY, Some("10:00")),
+        failed,
+        domain,
+        old,
+    ];
+    let list = inbox_list(&[], 900.0);
+
+    let lines = plan_lines(&[], &list, InboxTab::Planned, Some(&plan), TEST_DAY);
+    assert_eq!(
+        lines[0],
+        ListLine::InboxHead {
+            tab: InboxTab::Planned,
+            counts: InboxCounts {
+                waiting: 0,
+                working: 0,
+                parked: 0,
+                planned: Some(4)
+            },
+        }
+    );
+    let ListLine::Week(week) = &lines[1] else {
+        panic!("no week: {:?}", lines[1])
+    };
+    assert_eq!(week.title, "KW 46 · 9. bis 15. November");
+    assert_eq!(week.days.len(), 7);
+    let tue = &week.days[1];
+    assert!(tue.today && tue.selected && tue.number == 10 && tue.name == "Di");
+    assert_eq!(
+        tue.dots,
+        [PlanMark::Problem, PlanMark::Start, PlanMark::Task],
+        "overdue items stand on today"
+    );
+    assert_eq!(week.days[3].dots, [PlanMark::Task]);
+    assert_eq!(week.days[4].dots, [PlanMark::Deadline]);
+    assert_eq!(lines[2], ListLine::Group("Heute · Di 10.11.".into()));
+    let marks: Vec<(String, Option<PlanMark>, Option<String>)> = lines[3..]
+        .iter()
+        .map(|l| (card(l).name.clone(), card(l).mark, card(l).since.clone()))
+        .collect();
+    assert_eq!(
+        marks,
+        [
+            (
+                "Backup".into(),
+                Some(PlanMark::Problem),
+                Some("09:50".into())
+            ),
+            ("Report".into(), Some(PlanMark::Start), Some("10:00".into())),
+            ("Alt".into(), Some(PlanMark::Task), None),
+        ]
+    );
+    assert_eq!(
+        card(&lines[3]).what.as_deref(),
+        Some("Nicht gestartet: no window")
+    );
+    assert!(
+        card(&lines[4]).ids.is_empty() && card(&lines[4]).menu.is_empty(),
+        "no session behind it"
+    );
+
+    let friday = plan_lines(&[], &list, InboxTab::Planned, Some(&plan), day(13));
+    assert_eq!(friday[2], ListLine::Group("Fr 13.11.".into()));
+    let deadline = card(&friday[3]);
+    assert_eq!(
+        (deadline.mark, deadline.name.as_str()),
+        (Some(PlanMark::Deadline), "Domain")
+    );
+    assert_eq!(
+        deadline.what.as_deref(),
+        Some("Harte Frist Fr 13.11., steht am Do 12.11.")
+    );
+    let sunday = plan_lines(&[], &list, InboxTab::Planned, Some(&plan), day(15));
+    assert_eq!(
+        sunday[3],
+        ListLine::Empty("An diesem Tag ist nichts geplant.".into())
+    );
+
+    let overview = plan_lines(&[], &list, InboxTab::Overview, Some(&plan), TEST_DAY);
+    let planned = tiles(&overview)[1][1];
+    assert!(planned.hot, "a start that did not happen wants Kevin");
+    assert_eq!(planned.lines[0], "! Nicht gestartet: Backup");
+
+    let gone = plan_lines(&[], &list, InboxTab::Planned, None, TEST_DAY);
+    assert_eq!(
+        gone[0],
+        head(InboxTab::Overview, 0, 0, 0),
+        "no planner any more: the overview"
+    );
+}
+
+/// A dot per item the day lists, problems and deadlines first, so the cut at four never hides them (review quick
+/// 2026-11-10: one dot for any number of deadlines, two for a task due on its own deadline, a deadline cut after four
+/// starts).
+#[test]
+fn test_week_dots_one_per_item() {
+    let day = |d: u32| NaiveDate::from_ymd_opt(2026, 11, d).unwrap();
+    let task = |title: &str, on: u32, deadline: u32| PlannedItem {
+        deadline: Some(day(deadline)),
+        ..plan_item(title, day(on), None)
+    };
+    let mut plan = vec![task("A", 12, 13), task("B", 12, 13), task("Own", 11, 11)];
+    plan.extend(["09:00", "10:00", "11:00", "12:00"].map(|t| plan_item("Start", day(14), Some(t))));
+    plan.push(task("Late", 12, 14));
+    let list = inbox_list(&[], 900.0);
+    let lines = plan_lines(&[], &list, InboxTab::Planned, Some(&plan), TEST_DAY);
+    let ListLine::Week(week) = &lines[1] else {
+        panic!("no week: {:?}", lines[1])
+    };
+    let dots = |d: u32| {
+        week.days
+            .iter()
+            .find(|w| w.date == day(d))
+            .unwrap()
+            .dots
+            .clone()
+    };
+    assert_eq!(dots(11), [PlanMark::Task], "one item, one dot");
+    assert_eq!(dots(12), [PlanMark::Task; 3]);
+    assert_eq!(
+        dots(13),
+        [PlanMark::Deadline, PlanMark::Deadline],
+        "two deadlines, two dots"
+    );
+    assert_eq!(
+        dots(14),
+        [
+            PlanMark::Deadline,
+            PlanMark::Start,
+            PlanMark::Start,
+            PlanMark::Start
+        ],
+        "the deadline is not cut"
+    );
+}
+
+/// The Planned area stands on today until Kevin picks another day, also over midnight (review quick 2026-11-10: it stayed
+/// on the day before, which showed nothing).
+#[test]
+fn test_plan_day_follows_today() {
+    let day = |d: u32| NaiveDate::from_ymd_opt(2026, 11, d).unwrap();
+    let (tue, wed, thu) = (day(10), day(11), day(12));
+    let opened = plan_day_after(InboxNav::Open(InboxTab::Planned), Some(thu), tue);
+    assert_eq!(
+        opened.unwrap_or(wed),
+        wed,
+        "opened on Tuesday, open on Wednesday"
+    );
+    let tapped = plan_day_after(InboxNav::Day(tue), Some(thu), tue);
+    assert_eq!(tapped.unwrap_or(wed), wed, "today tapped");
+    assert_eq!(plan_day_after(InboxNav::Day(thu), None, tue), Some(thu));
+    let back = plan_day_after(InboxNav::Week(-1), None, tue);
+    assert_eq!(back, Some(day(2)));
+    assert_eq!(
+        plan_day_after(InboxNav::Week(1), back, tue),
+        None,
+        "back in this week: today"
+    );
+    assert_eq!(
+        plan_day_after(InboxNav::Open(InboxTab::Waiting), Some(thu), tue),
+        Some(thu),
+        "another area keeps it"
+    );
+}
+
+/// Kevin 2026-11-10: two fingers sideways in an area lead back to the overview, once per gesture, either direction; up and
+/// down scrolls as ever, so does a mouse wheel; the rest of a swipe does not scroll the list.
+#[test]
+fn test_swipe_back_needs_a_sideways_gesture() {
+    let start = (0.0, 0.0, false);
+    // Sideways: 5, 20, 20 points -> back on the third event, the fourth is still the swipe's but does not lead again.
+    let (s, mine, back) = swipe_step(start, true, true, true, 5.0, 0.0);
+    assert!(!mine && !back);
+    let (s, _, back) = swipe_step(s, false, true, true, 20.0, 1.0);
+    assert!(!back);
+    let (s, mine, back) = swipe_step(s, false, true, true, 20.0, 1.0);
+    assert!(mine && back, "45 points sideways");
+    let (s, mine, back) = swipe_step(s, false, true, true, 30.0, 0.0);
+    assert!(mine && !back, "once per gesture");
+    // A new gesture starts afresh, the other way round works too.
+    let (s, _, _) = swipe_step(s, true, true, true, -30.0, 0.0);
+    let (_, _, back) = swipe_step(s, false, true, true, -30.0, 2.0);
+    assert!(back, "to the left as well");
+    // Up and down, diagonal, a mouse wheel: no way back, the list scrolls.
+    let mut s = start;
+    for _ in 0..10 {
+        let (n, mine, back) = swipe_step(s, false, true, true, 2.0, 30.0);
+        assert!(!mine && !back);
+        s = n;
+    }
+    let (_, _, back) = swipe_step(start, true, true, true, 50.0, 30.0);
+    assert!(!back, "more down than half the way sideways");
+    for trackpad in [false, true] {
+        let (_, mine, back) = swipe_step(start, false, trackpad, false, 200.0, 0.0);
+        assert!(
+            !mine && !back,
+            "a mouse wheel, or two fingers on the overview"
+        );
+    }
+}
+
+/// Once a swipe led back, the rest of it stays the swipe's, the glide after lifting the fingers too, though the overview
+/// it opened is no area: the overview does not scroll with it (review quick 2026-11-10). A mouse wheel scrolls.
+#[test]
+fn test_swipe_back_keeps_the_rest_of_the_gesture() {
+    let (s, _, back) = swipe_step((0.0, 0.0, false), true, true, true, 50.0, 2.0);
+    assert!(back);
+    let (s, mine, back) = swipe_step(s, false, true, false, 10.0, 6.0);
+    assert!(mine && !back, "the rest of the swipe, on the overview now");
+    let (s, mine, _) = swipe_step(s, false, true, false, 4.0, 3.0);
+    assert!(mine, "its glide");
+    let (_, mine, _) = swipe_step(s, false, false, false, 0.0, 20.0);
+    assert!(!mine, "a mouse wheel scrolls");
+    let (_, mine, _) = swipe_step(s, true, true, false, 0.0, 20.0);
+    assert!(!mine, "a new gesture on the overview scrolls");
 }

@@ -38,42 +38,58 @@ Background story: [Why I run my company with AI agents](https://kevintheo.com/fi
     holds the waiting and done windows, and the working sessions become rows in a list there.
   - **Grid:** every window gets a fixed place (2 × 2 up to 5 × 2, only the sizes that fit). Nothing moves when a
     status changes, and a click doesn't change the order.
-  - **Inbox:** A window of 430 points holds a list of sessions, and the active terminal sits right beside it at
-    reading width. The pair is centred on the screen, and the rest of a wide screen stays free. On a narrower
-    screen the terminal gets what is left. All other AI windows wait behind the terminal. Inbox has no hotkey. You
-    choose it in the menu. It applies to all windows on one screen. In the control room the layout is fixed. The
-    list shows only while labels are on. Three tabs at the top show a count each: Waiting, Running and Parked.
-    Every card is shown, and if there are more than fit, the list below the tabs scrolls with the normal macOS
-    scrolling. The tabs stay at the top, and a tab you switch to starts at the top of its list. The scroll bar
-    follows the macOS setting, and with "Always" the cards get narrower so nothing is cut off on the right.
-    Waiting lists the sessions that want something from you, questions first, then done ones. Cards you pinned
-    stand above all of them. Within each of the two groups, whoever has waited longest stands on top, and a click
-    on a card does not change the order. Running lists the sessions at work, then the parking lot if you use one.
-    Parked has two groups, "Parked by you" and "Read". If something waits for you while you are on another tab,
-    the word Waiting turns amber. Lookout starts on the Waiting tab. The card of the terminal in front is open and
-    shows the whole question, up to 6 lines. A click on a card brings that session into the terminal. You answer
-    in the terminal as usual. A session counts as seen only once you move on to another card, not when you click
-    it. So a card does not leave the list under your mouse. A right-click on a card offers Pin, next to Park. On a
-    done card it also offers "Read: hide until the next answer". On a card in the Parked tab it offers "Bring
-    back", not Pin. On a pinned card it offers only Unpin. The open card in the Parked tab also has a "Bring back"
-    button. There are no other buttons on the cards. Parking is for a session you do not want to follow, for
-    example one that watches a mailbox all day. A parked session stays in the Parked tab whatever it does. If it
-    then asks something new, it comes to Waiting, and it goes back to Parked once answered. You can park a card
-    with an open question too. It leaves Waiting until the session asks something else. For sessions with no
-    answer time in their transcript (Codex, Grok) the question stays under Waiting, because a later question could
-    not be told apart. A pinned card stands in its own group, Pinned, at the top of the Waiting tab, with a pin
-    before its name. Pinned cards stand in the order you pinned them. The first one is on top, a new one goes
-    below. A pinned card stays there whatever its session does, whether it asks, is done or works, until you
-    choose Unpin. Below the Pinned group, Waiting stays as before: questions first, then done ones, whoever has
-    waited longest on top. A pinned session that is working is also listed under Running. The count on the Waiting
-    tab counts a pinned session only while it waits for you. Pinning or unpinning a card ends an earlier park or
-    read mark of that card. Pinning moves no window. There is no reordering by dragging. Parking and pins stay
-    through a restart of Lookout. An open question you parked shows under Waiting again after such a restart. If
-    you park the card in front or mark it read, the next waiting session comes to the terminal. Pinned cards are
-    skipped there. Doing the same on another card moves nothing. What you marked read is kept in memory only:
-    after quitting Lookout those cards are back. A + right of the tabs opens a new empty window of the terminal in
-    front: Warp in your home folder, or Ghostty. If no terminal is in front, it opens Warp. Ghostty needs version
-    1.3 or later for this.
+  - **Inbox:** A window of 430 points holds the Inbox, with its overview and its areas, and the active terminal sits
+    right beside it at reading width. The pair is centred on the screen, and the rest of a wide screen stays free. On
+    a narrower screen the terminal gets what is left. All other AI windows wait behind the terminal. Inbox has no
+    hotkey. You choose it in the menu. It applies to all windows on one screen. In the control room the layout is
+    fixed. The whole Inbox window, with its head, tiles, areas and strip, shows only while labels are on. The Inbox
+    has an overview with one tile per area. Waiting stands across the top. Below it, Running and Planned stand side by
+    side, and Parked stands across below them. The Planned tile comes with the setting `plannedFile`, see the section
+    "Planned (optional)". Without that setting, Running and Parked stand side by side. Each tile shows the name of its
+    area, its count, and up to two short lines of what is in it. Waiting shows up to two of the sessions that wait,
+    with their status sign and name, or "Nobody is waiting for you.". Running shows how many work and how many are in
+    the parking lot, or "Nobody is working right now.". Parked shows how many you parked and how many you marked read,
+    or "Nothing parked.". A click on a tile opens its area. The areas Waiting, Running and Parked list the same groups
+    as the old tabs did. At the top is a head, with the + at its right on the overview and in every area alike. On the
+    overview the head shows "Overview". In an area it shows "‹ Overview" at the left and the name of the area with its
+    count. A click on "‹ Overview" leads back to the overview. Two fingers swiped sideways on the trackpad, left or
+    right, lead back too, like "back" in a browser. The swipe has to go more than twice as far sideways as up or down.
+    One swipe leads back once, and the rest of that swipe does not move the overview. The head stays at the top, and
+    so does the amber strip while it shows. Everything below them scrolls with the normal macOS scrolling. Scrolling
+    up and down works as before, and so does a mouse wheel. Every card is shown. An area you open starts at its top.
+    The scroll bar follows the macOS setting, and with "Always" the cards get narrower so nothing is cut off on the
+    right. Waiting lists the sessions that want something from you, questions first, then done ones. Cards you pinned
+    stand above all of them. Within each of the two groups, whoever has waited longest stands on top, and a click on a
+    card does not change the order. Running lists the sessions at work, then the parking lot if you use one. Parked
+    has two groups, "Parked by you" and "Read". While somebody waits for you, the Waiting tile is amber and its title
+    reads "Waiting for you". In every other area, an amber strip stays right under the head. It says how many wait,
+    always starting with "?" ("? 1 is waiting for you" or "? 3 are waiting for you"), names the first of them with the
+    text of their card (their question, or what a done session answered), and ends with "view ›". A click on the strip
+    opens Waiting. Lookout starts on the overview. After that the Inbox shows what you had open last, the overview or
+    an area, also when you choose the Inbox again in the menu or turn the labels off and on. The card of the terminal
+    in front is open and shows the whole question, up to 6 lines. A click on a card brings that session into the
+    terminal. You answer in the terminal as usual. A session counts as seen only once you move on to another card, not
+    when you click it. So a card does not leave the list under your mouse. A right-click on a card offers Pin, next to
+    Park. On a done card it also offers "Read: hide until the next answer". On a card in the Parked area it offers
+    "Bring back", not Pin. On a pinned card it offers only Unpin. The open card in the Parked area also has a "Bring
+    back" button. There are no other buttons on the cards. Parking is for a session you do not want to follow, for
+    example one that watches a mailbox all day. A parked session stays in the Parked area whatever it does. If it then
+    asks something new, it comes to Waiting, and it goes back to Parked once answered. You can park a card with an
+    open question too. It leaves Waiting until the session asks something else. For sessions with no answer time in
+    their transcript (Codex, Grok) the question stays under Waiting, because a later question could not be told apart.
+    A pinned card stands in its own group, Pinned, at the top of the Waiting area, with a pin before its name. Pinned
+    cards stand in the order you pinned them. The first one is on top, a new one goes below. A pinned card stays there
+    whatever its session does, whether it asks, is done or works, until you choose Unpin. Below the Pinned group,
+    Waiting stays as before: questions first, then done ones, whoever has waited longest on top. A pinned session that
+    is working is also listed under Running. The count of Waiting, on its tile and in its head, counts a pinned
+    session only while it waits for you. Pinning or unpinning a card ends an earlier park or read mark of that card.
+    Pinning moves no window. There is no reordering by dragging. Parking and pins stay through a restart of Lookout.
+    An open question you parked shows under Waiting again after such a restart. If you park the card in front or mark
+    it read, the next waiting session comes to the terminal. Pinned cards are skipped there. Doing the same on another
+    card moves nothing. What you marked read is kept in memory only: after quitting Lookout those cards are back. A +
+    at the right of the head, on the overview and in every area alike, opens a new empty window of the terminal in
+    front: Warp in your home folder, or Ghostty. If no terminal is in front, it opens Warp. Ghostty needs version 1.3
+    or later for this.
 - **Control room:** with two or more screens, your active session and the windows that need you are on one
   screen, the busy ones on the other. There are three variants in the menu. The layout is fixed there, so the
   hotkeys don't apply.
@@ -220,6 +236,7 @@ Lookout (it reads the file once at start), for example:
 | `askUntilReadNames` | `[]` | parts of names of places outside the terminal where you handle a request (for example `"card page"`, any case); a `?` status line that ends with one of them in brackets, like `(card page)`, shows WAITING FOR YOU only until you have had its tab in front (see "The session's own status line") |
 | `resumeCommands` | `{}` | command to restore a session, per Claude configuration folder, as `{"folder": "command"}` with `{id}` standing for the session, for example `{"~/.claude": "my-launcher claude --resume {id}"}`. A folder without an entry uses `CLAUDE_CONFIG_DIR='<folder>' claude --resume <id>`. A command without `{id}` is ignored |
 | `workerNames` | `[]` | parts of session names (any case) that mark worker windows for the parking lot, for example `"Worker · "`; without them there is no parking lot |
+| `plannedFile` | none | path of a JSON file that another program writes, starting with `/` or `~`; it adds the Planned area, without it there is none |
 
 The menu remembers your choice of screen, layout, grid, control room screens, excluded windows and labels, and
 also which windows you sent to the parking lot or took off it by hand.
@@ -245,6 +262,9 @@ I want you to know exactly what it touches:
   directly.
 - It keeps the list of open Claude sessions in `~/Library/Application Support/Lookout/open-sessions.json`.
   The file holds the session id, the folder and the session name, and no conversation text.
+- It reads the JSON file named by `plannedFile`, if you set one, and shows its items in the Planned area. It never
+  writes to that file. Each time it updates its lists on screen, it checks when the file last changed and reads it
+  again if it changed.
 - Only when you choose to restore sessions, it writes one launch configuration per session into
   `~/.warp/launch_configurations`, in files whose names start with `lookout-restore-`. It opens each one through
   `open warp://launch/...` and removes it about a minute later.
@@ -409,6 +429,72 @@ brings your session back to the front; a click into any other window ends it too
 back. *To the parking lot* in the menu does the same for any window; a worker can be taken off the parking lot
 there too and then stays in the arrangement. Lookout remembers this per session.
 
+## Planned (optional)
+
+The setting `plannedFile` in `~/.config/lookout.json` names a JSON file that another program writes, for example a
+scheduler of yours. The path starts with `/` or `~`. Any other path is ignored. Without the setting there is no
+Planned tile and no Planned area.
+
+Lookout only reads the file, it never writes it. Each time Lookout updates its lists on screen (the Inbox, or the side
+lists of the other layouts), it checks when the file last changed, and reads it again if it changed. A missing or
+unreadable file shows an empty Planned area, and Lookout tries again at the next update. Times are shown in the Mac's
+time zone.
+
+The file holds `{"items": [...]}` or just the list `[...]`. Each item has a `title`, and either `at` or `date`. The
+other keys are optional.
+
+- `title`: the title of the item.
+- `at`: a time with its offset (RFC 3339, like "2026-11-12T09:30:00+01:00"). It makes the item a start: a session that
+  the program writing the file opens by itself at that time. Lookout itself does not start it. It only shows the item.
+- `date`: a day (YYYY-MM-DD). It makes the item a task due that day, started by hand.
+- `project`: shown below the title.
+- `detail`: one line, for example how the start runs.
+- `problem`: for a start that did not happen, why.
+- `deadline`: a day (YYYY-MM-DD) for a hard deadline.
+- `since_days`: a whole number, for how many days the task has been due.
+
+An example with one start and one task:
+
+```json
+{
+  "items": [
+    {"title": "Send the weekly report", "project": "reports", "at": "2026-11-12T09:30:00+01:00", "detail": "claude · sonnet"},
+    {"title": "Renew the domain", "date": "2026-11-10", "deadline": "2026-11-13", "since_days": 2}
+  ]
+}
+```
+
+Keys Lookout does not know are ignored. Broken items are skipped, and a file that is not valid JSON counts as empty.
+Runs of spaces and line breaks in the texts become one space.
+
+The Planned tile shows how many items stand in the current week from today on. Its first line is the next start, like
+"▶ today 10:00" and its title, or "tomorrow", or a date. If a start did not happen, the tile is amber and its first
+line reads "! Did not start:" and the title instead. Its second line counts the items of today and tomorrow, like "2
+today · 1 tomorrow".
+
+The Planned area shows a week strip at the top: the title of the week (like "Week 46 · November 9 to 15"), an arrow ‹
+for the week before and › for the week after, and the seven days from Monday to Sunday. Today's number is mint, and
+the chosen day is highlighted. A click on a day shows that day. When you open Planned, today is chosen, and it stays
+today after midnight. In another week the Monday is chosen. Back in the current week, today is chosen.
+
+Each day in the strip has a dot per card it lists, at most four. Amber is for a start that did not happen or a hard
+deadline, mint for a start, and an open ring for a task. Amber dots come first.
+
+Below the strip stands the chosen day ("Today · Tue Nov 10", "Tomorrow · Wed Nov 11", or a date like "Thu Nov 12"),
+then its cards. Starts come first, by their time, then tasks, the one due longest first. Then, for items listed on
+another day whose hard deadline is this day, comes a card like "Hard deadline Fri Nov 13, listed on Thu Nov 12". With
+nothing on the day, you see "Nothing planned that day."
+
+A task due before today, and a start whose time has passed, stand on today. A start stays there until the program that
+writes the file removes it. If that program gives it a `problem`, it still stays on today, as a card with the amber !
+mark that reads "Did not start:" and the problem. Only the round mark is amber, not the whole card.
+
+A card shows the title, the project below it, and for a start its time at the right. Its mark is ▶ for a start, ! for
+a start that did not happen and for a hard deadline (both amber), and an open ring for a task. Its line of text reads
+"Starts by itself", followed by " · " and the detail if there is one. For a start that did not happen it reads "Did
+not start:" and the problem. For a task it reads "Deadline Fri Nov 13", "Due for 5 days", "Due since yesterday", "Due
+from today" or "Due from Thu Nov 12". Planned cards open no session and have no right-click menu.
+
 ## Limits
 
 - Status files and transcript entries are **internal formats of Claude Code**. If the status files change,
@@ -442,13 +528,15 @@ braucht deine Freigabe oder deine Auswahl in einem Fragefenster. Endet eine Antw
 (`◌` / `?` / `✓ Lookout: …`, siehe oben), gilt, was die Session selbst sagt. Seit Version 4 ist Lookout in Rust
 neu geschrieben. Mit der Einstellung `workerNames` warten die Fenster von Worker-Sessions hinter deiner aktiven
 Session (Parkplatz); Ctrl+Opt+4 zeigt sie.
-Der neue «Eingang» ist ein viertes Layout: Er zeigt deine Sessions in einer Liste mit den Reitern «Wartet»,
-«Läuft» und «Geparkt», direkt neben dem aktiven Terminal. Mit «Parken» im Rechtsklick-Menü einer Karte parkst du
-eine Session, der du nicht folgen willst; im Reiter «Geparkt» holst du sie mit «Zurückholen» wieder. Mit «Anheften»
-im Rechtsklick-Menü einer Karte stellst du die Session in die Gruppe «Angeheftet» ganz oben im Reiter «Wartet»;
-dort bleibt sie, bis du «Lösen» wählst. Nach einem Absturz, einem Herunterfahren oder wenn Warp beendet wurde,
-zeigt das Menü «Sessions wiederherstellen»; jede Claude-Code-Session öffnet sich dann in einem eigenen Warp-Fenster
-und startet `claude --resume`.
+Der neue «Eingang» ist ein viertes Layout: Sein Fenster steht direkt neben dem aktiven Terminal und hat eine Übersicht
+mit einer Kachel pro Bereich, und Lookout startet auf ihr; ein Klick auf die Kachel öffnet den Bereich, und zurück
+geht es mit «‹ Übersicht» oder indem du mit zwei Fingern seitwärts wischst. Mit der Einstellung `plannedFile` gibt es
+zusätzlich den Bereich «Geplant». Mit «Parken» im Rechtsklick-Menü einer Karte parkst du eine Session, der du nicht
+folgen willst; im Bereich «Geparkt» holst du sie mit «Zurückholen» wieder. Mit «Anheften» im Rechtsklick-Menü einer
+Karte stellst du die Session in die Gruppe «Angeheftet» ganz oben im Bereich «Wartet»; dort bleibt sie, bis du «Lösen»
+wählst. Nach einem Absturz, einem Herunterfahren oder wenn Warp beendet wurde, zeigt das Menü «Sessions
+wiederherstellen»; jede Claude-Code-Session öffnet sich dann in einem eigenen Warp-Fenster und startet `claude
+--resume`.
 Installation wie oben (`git clone`, `./build.sh`,
 Bedienungshilfen freigeben). Die Sprache folgt dem Mac; fest auf Deutsch mit `{"language": "de"}` in
 `~/.config/lookout.json`. Die Schilder zeigen Text aus deinen Sessions: vor dem Bildschirmteilen unter
