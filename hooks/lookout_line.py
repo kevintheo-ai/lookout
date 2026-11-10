@@ -13,7 +13,7 @@ import sys
 
 LOOKOUT_LINE = """Lookout line: end every reply that ends your turn with exactly one final line for Lookout (it sorts the user's windows), nothing after it:
 ◌ Lookout: nothing needed (what you wait for) = the user has nothing to do in THIS window AND something else wakes you on its own (a background command, CI, another session, a timer).
-? Lookout: request (what the user should do) = the user should do anything in THIS window: answer, decide, approve, merge, test, click, type. Also when the rest says 'nothing needed'. If something waits for the user in ANOTHER window (e.g. 'approve the plan in the front desk'), that belongs there, not here.
+? Lookout: request (what the user should do) = the user should do anything in THIS window: answer, decide, approve, merge, test, click, type. Also when the rest says 'nothing needed'. If your reply ends with a question or a choice for the user (for example a line like 'Your answer: ...'), it is a request, even when the work itself is done. Do not close your window while a question to the user is open. If something waits for the user in ANOTHER window (e.g. 'approve the plan in the front desk'), that belongs there, not here.
 ✓ Lookout: done (result in a few words) = otherwise: work finished or answer given, it is the user's turn or the user can close the window.
 If in doubt, not ◌. Not in subagent replies and not when an output format (e.g. JSON) is prescribed."""
 
