@@ -135,6 +135,9 @@ pub struct Digest {
     /// Answer done (plan 1e): `system`/`turn_duration` came after the last answer, after the stop hooks. Every new
     /// prompt and every later answer clears it.
     pub turn_ended: bool,
+    /// Nothing came in after the turn end: no message, notice, tool result or answer line. Claude reports `busy` while
+    /// background agents run (live 2026-11-10); with this set, only they work, not the session itself.
+    pub quiet_since_end: bool,
     /// Swift `kevinTurn`: the user's own prompt started the running or last turn (Kevin 2026-10-01); then it is his
     /// turn and the session never counts as watching. Messages of other sessions, background notices and timers reset
     /// it. `None`: no trigger in the tail read; the transcript reader keeps the last one seen.
@@ -175,6 +178,7 @@ impl Default for Digest {
             question: None,
             question_id: None,
             turn_ended: false,
+            quiet_since_end: false,
             user_turn: None,
             user_prompt: None,
             user_prompt_at: None,

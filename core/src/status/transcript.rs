@@ -243,7 +243,17 @@ pub fn digest_transcript(text: &str) -> Digest {
         let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        match str_of(&obj, "type") {
+        let entry = str_of(&obj, "type");
+        // A message, notice, tool result or answer after the turn end: the session itself works again (Kevin
+        // 2026-11-10). Queued messages show up as `queue-operation` or a `queued_command` attachment first.
+        if matches!(entry, Some("user" | "assistant" | "queue-operation"))
+            || (entry == Some("attachment")
+                && obj_of(&obj, "attachment").and_then(|a| str_of(a, "type"))
+                    == Some("queued_command"))
+        {
+            d.quiet_since_end = false;
+        }
+        match entry {
             Some("ai-title") => {
                 if let Some(t) = str_of(&obj, "aiTitle").filter(|t| !t.is_empty()) {
                     d.title = Some(t.to_owned());
@@ -286,6 +296,7 @@ pub fn digest_transcript(text: &str) -> Digest {
                 let subtype = str_of(&obj, "subtype");
                 if subtype == Some("turn_duration") {
                     d.turn_ended = true;
+                    d.quiet_since_end = true;
                 }
                 // The wake prompt after it is a system insert (isMeta, without origin); the turn is not Kevin's
                 // (review quick 2026-10-01, GLM).

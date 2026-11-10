@@ -260,9 +260,16 @@ pub fn apply_lookout_lines(sessions: Vec<Session>, other_window_names: &[String]
     sessions
         .into_iter()
         .map(|mut s| {
+            // `busy` with nothing new since the turn end: only background agents run, the session waits like `shell`
+            // (Kevin 2026-11-10: a "?" stood 5.6 minutes as working). Terminal sessions only: background agents have
+            // no pid.
+            let only_agents = s.pid.is_some()
+                && s.digest
+                    .as_ref()
+                    .is_some_and(|d| d.turn_ended && d.quiet_since_end);
             let asks = s.engine == Engine::Claude
                 && !s.waiting
-                && (s.ready || s.background_only || s.watching)
+                && (s.ready || s.background_only || s.watching || only_agents)
                 && s.digest.as_ref().is_some_and(|d| {
                     d.turn_ended
                         && d.line(other_window_names)

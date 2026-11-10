@@ -354,7 +354,9 @@ lines, Lookout takes that instead of the rules above:
 ✓ Lookout: done (the result in a few words)
 ```
 
-- `?` shows **WAITING FOR YOU**, like an open question, also when only background commands are left. If the
+- `?` shows **WAITING FOR YOU**, like an open question, also when only background commands are left or only
+  background agents the session started are still running. Claude Code reports such a session as busy; Lookout
+  counts it as waiting when nothing came in after the answer. If the
   text in brackets only sends you to a window named in `otherWindowNames` ("approve the plan in the front desk",
   without "here" or "this window"), it counts as `◌`: you answer there, not here. In that window itself it stays `?`.
 - If a `?` line ends with the name of a place outside the terminal in brackets, for example `(card page)`, and

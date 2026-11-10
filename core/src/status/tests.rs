@@ -3959,6 +3959,49 @@ fn test_standby() {
     );
 }
 
+/// Kevin 2026-11-10: after the turn end nothing came in, so a `busy` from Claude only means background agents run.
+#[test]
+fn test_quiet_since_end() {
+    let end = concat!(
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"? Lookout: Bitte (x)"}]}}"#,
+        "\n",
+        r#"{"type":"system","subtype":"turn_duration"}"#
+    );
+    let d = digest_transcript(end);
+    assert!(
+        d.turn_ended && d.quiet_since_end,
+        "nothing after the turn end"
+    );
+    for (after, why) in [
+        (
+            r#"{"type":"user","isMeta":true,"origin":{"kind":"peer","from":"uds:/tmp/cc-socks/1.sock"},"message":{"content":"hi"}}"#,
+            "another session's message",
+        ),
+        (
+            r#"{"type":"user","origin":{"kind":"task-notification"},"message":{"content":"<task-notification>"}}"#,
+            "a background notice",
+        ),
+        (
+            r#"{"type":"queue-operation","operation":"enqueue"}"#,
+            "a queued message",
+        ),
+        (
+            r#"{"type":"attachment","attachment":{"type":"queued_command","commandMode":"prompt","prompt":"x"}}"#,
+            "a message mid-turn",
+        ),
+    ] {
+        assert!(
+            !digest_transcript(&format!("{end}\n{after}")).quiet_since_end,
+            "{why}"
+        );
+    }
+    let hook = r#"{"type":"attachment","attachment":{"type":"hook_success"}}"#;
+    assert!(
+        digest_transcript(&format!("{end}\n{hook}")).quiet_since_end,
+        "a hook note is no new input"
+    );
+}
+
 /// Kevin 2026-10-12: the session says at its turn end itself whether it needs Kevin ("◌ / ? / ✓ Lookout: …"); that goes
 /// before the word list; without the line everything stays as before.
 #[test]
@@ -4389,6 +4432,27 @@ fn test_lookout_line() {
     assert!(
         !arbeitet.waiting && !arbeitet.ready,
         "busy: the model works"
+    );
+    // Busy with nothing new since the turn end: only background agents run (Kevin 2026-11-10).
+    let quiet = |text: &str| {
+        let mut s = session(text, false, false, true, false, true);
+        s.digest.as_mut().unwrap().quiet_since_end = true;
+        s
+    };
+    let nur_helfer = applied(quiet("? Lookout: Bitte (x)"));
+    assert!(
+        nur_helfer.waiting && nur_helfer.ready,
+        "busy only through background agents: waits for you"
+    );
+    assert!(
+        !applied(quiet("✓ Lookout: fertig (x)")).ready,
+        "only a request is lifted, done stays working while agents run"
+    );
+    let mut ohne_fenster = quiet("? Lookout: Bitte (x)");
+    ohne_fenster.pid = None;
+    assert!(
+        !applied(ohne_fenster).waiting,
+        "a background agent without a window stays as reported"
     );
     assert!(
         !applied(session(
