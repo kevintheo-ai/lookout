@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
 
+use crate::launch::{self, NewSession};
 use crate::model::trim_ws;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,6 +48,8 @@ pub struct AppConfig {
     pub resume_commands: BTreeMap<String, String>,
     /// JSON file with what is planned (`planned`), written by another program; `None` = no "Planned" area.
     pub planned_file: Option<String>,
+    /// Places and programs the inbox's + starts new sessions with (`launch::parse`, Kevin 2026-11-10).
+    pub new_session: NewSession,
 }
 
 impl AppConfig {
@@ -71,6 +74,7 @@ impl AppConfig {
             worker_names: vec![],
             resume_commands: BTreeMap::new(),
             planned_file: None,
+            new_session: NewSession::defaults(home),
         }
     }
 }
@@ -157,6 +161,7 @@ pub fn parse_config(obj: &Map<String, Value>, home: &str) -> AppConfig {
     c.planned_file = string("plannedFile")
         .map(|p| standardize_path(trim_ws(p), home))
         .filter(|p| p.starts_with('/'));
+    c.new_session = launch::parse(obj.get("newSession"), home);
     c
 }
 
@@ -214,7 +219,7 @@ pub(crate) fn json_bool(v: &Value) -> Option<bool> {
 /// `NSString.standardizingPath` for configuration folders: `~` and `~/…` expanded, "//", "/./", ".." and a trailing
 /// slash resolved; relative paths unchanged. ponytail: lexical only. Foundation also expands `~user`, resolves ".."
 /// through symlinks and strips a leading "/private" when the result exists; that needs the file system.
-fn standardize_path(path: &str, home: &str) -> String {
+pub(crate) fn standardize_path(path: &str, home: &str) -> String {
     let expanded = match path.strip_prefix('~') {
         Some("") => home.to_owned(),
         Some(rest) if rest.starts_with('/') => format!("{home}{rest}"),

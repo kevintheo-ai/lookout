@@ -10,16 +10,22 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 mod parts {
+    use std::collections::BTreeMap;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    use objc2::MainThreadMarker;
-    use objc2::runtime::AnyObject;
-    use objc2_app_kit::{NSApplication, NSBitmapImageRep, NSScreen};
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyObject, Sel};
+    use objc2::{MainThreadMarker, sel};
+    use objc2_app_kit::{
+        NSApplication, NSBitmapImageRep, NSControlStateValueOn, NSMenu, NSMenuItem, NSScreen,
+    };
     use objc2_core_foundation::CGRect;
     use objc2_core_graphics::CGDisplayIsBuiltin;
     use objc2_foundation::{NSArray, NSBundle, NSNumber, NSString, NSUserDefaults, ns_string};
 
     use lookout_core::geom::Rect;
+    use lookout_core::launch::{Favorite, Field, NewSession, Place, Program};
+    use lookout_macos::plus::{self, Choice};
     use lookout_macos::{icon, prefs, screens};
 
     type Test = fn(MainThreadMarker);
@@ -32,10 +38,12 @@ mod parts {
         unsafe { std::env::set_var("LOOKOUT_LOG", &log) };
         let mtm = MainThreadMarker::new().expect("harness = false runs main on the main thread");
         let _app = NSApplication::sharedApplication(mtm);
-        let tests: [(&str, Test); 3] = [
+        let tests: [(&str, Test); 5] = [
             ("prefs_round_trip", prefs_round_trip),
             ("screens_match_nsscreen", screens_match_nsscreen),
             ("status_tile_image", status_tile_image),
+            ("plus_menu_offers_favorites", plus_menu_offers_favorites),
+            ("edit_menu_for_the_task_field", edit_menu_for_the_task_field),
         ];
         let mut failed = 0;
         for (name, test) in tests {
@@ -183,6 +191,183 @@ mod parts {
             assert!(
                 alpha(14.2, 3.8) < 0.1,
                 "bottom tile stays empty, filled={filled}"
+            );
+        }
+    }
+
+    /// The +'s menu, built without opening it (plan 2026-11-10): the favorites in their slots, one that no longer fits
+    /// the settings greyed out and "not available", an empty window, and "Change favorites" with the current choice
+    /// checked; model and effort of a favorite whose program is gone cannot be opened. Every click reads back.
+    fn plus_menu_offers_favorites(mtm: MainThreadMarker) {
+        let words = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        let settings = NewSession {
+            places: vec![
+                Place {
+                    name: "Acme".into(),
+                    folder: "/work/acme".into(),
+                    values: BTreeMap::new(),
+                },
+                Place {
+                    name: "Studio".into(),
+                    folder: "/work/studio".into(),
+                    values: BTreeMap::new(),
+                },
+            ],
+            programs: vec![
+                Program {
+                    name: "Tool".into(),
+                    models: words(&["big", "small"]),
+                    efforts: words(&["max", "low"]),
+                    command: words(&["tool", "--model", "{model}", "--", "{task}"]),
+                    models_command: vec![],
+                    model_labels: BTreeMap::new(),
+                },
+                Program {
+                    name: "Plain".into(),
+                    models: vec![],
+                    efforts: vec![],
+                    command: words(&["plain", "--", "{task}"]),
+                    models_command: vec![],
+                    model_labels: BTreeMap::new(),
+                },
+            ],
+        };
+        let favorite = |place: &str, program: &str, model: &str| Favorite {
+            place: place.into(),
+            program: program.into(),
+            model: model.into(),
+            effort: "max".into(),
+        };
+        let favorites = [
+            favorite("Acme", "Tool", "big"),
+            favorite("Studio", "Tool", "small"),
+            favorite("Acme", "Renamed", "big"),
+        ];
+        // The daily list names "big" (Kevin 2026-11-10: model names with their number); the favorites keep "big".
+        let mut settings = settings;
+        settings.set_models("Tool", &["big\tBig 5.5".to_owned(), "small".to_owned()]);
+        let menu = plus::menu(mtm, None, &settings, &favorites);
+        let items = |m: &NSMenu| m.itemArray().iter().collect::<Vec<Retained<NSMenuItem>>>();
+        let key = |it: &NSMenuItem| {
+            it.representedObject()
+                .and_then(|o| o.downcast::<NSString>().ok())
+                .map(|s| s.to_string())
+        };
+        let top = items(&menu);
+        assert_eq!(
+            top.len(),
+            7,
+            "3 favorites, choose freely, empty window, line, change"
+        );
+        assert_eq!(top[0].title().to_string(), "① Acme · Tool · Big 5.5 · max");
+        assert_eq!(top[1].title().to_string(), "② Studio · Tool · small · max");
+        assert!(top[0].isEnabled() && top[1].isEnabled());
+        assert!(!top[2].isEnabled(), "its program is gone");
+        assert!(top[2].subtitle().is_some());
+        assert_eq!(
+            plus::choice(&key(&top[1]).expect("a key")),
+            Some(Choice::Start(1))
+        );
+        assert_eq!(top[0].action(), Some(sel!(newSessionItem:)));
+        // Choose freely: place › program › model › effort, a click at the end starts exactly that; a program without
+        // models or efforts starts right from its row.
+        let free = items(&top[3].submenu().expect("choose freely"));
+        assert_eq!(free.len(), 2, "one row per place");
+        let programs = items(&free[1].submenu().expect("Studio's programs"));
+        assert_eq!(programs.len(), 2);
+        let models = items(&programs[0].submenu().expect("Tool's models"));
+        assert_eq!(models[0].title().to_string(), "Big 5.5");
+        let efforts = items(&models[1].submenu().expect("small's efforts"));
+        assert_eq!(efforts[1].title().to_string(), "low");
+        assert_eq!(
+            plus::choice(&key(&efforts[1]).expect("a key")),
+            Some(Choice::Custom(Favorite {
+                place: "Studio".into(),
+                program: "Tool".into(),
+                model: "small".into(),
+                effort: "low".into(),
+            }))
+        );
+        assert!(programs[1].submenu().is_none());
+        assert_eq!(
+            plus::choice(&key(&programs[1]).expect("a key")),
+            Some(Choice::Custom(Favorite {
+                place: "Studio".into(),
+                program: "Plain".into(),
+                ..Favorite::default()
+            }))
+        );
+        assert_eq!(
+            plus::choice(&key(&top[4]).expect("a key")),
+            Some(Choice::Blank)
+        );
+        assert!(top[5].isSeparatorItem());
+
+        let change = top[6].submenu().expect("change favorites");
+        let slots = items(&change);
+        assert_eq!(slots.len(), 3);
+        let fields = items(&slots[1].submenu().expect("the second favorite"));
+        assert_eq!(fields.len(), 4, "place, program, model, effort");
+        let places = items(&fields[0].submenu().expect("places"));
+        let checked: Vec<String> = places
+            .iter()
+            .filter(|it| it.state() == NSControlStateValueOn)
+            .map(|it| it.title().to_string())
+            .collect();
+        assert_eq!(checked, ["Studio"]);
+        assert_eq!(
+            plus::choice(&key(&places[0]).expect("a key")),
+            Some(Choice::Change(1, Field::Place, "Acme".into()))
+        );
+        let models = items(&fields[2].submenu().expect("models"));
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[1].state(), NSControlStateValueOn, "small is chosen");
+        assert_eq!(models[0].title().to_string(), "Big 5.5");
+        assert_eq!(
+            plus::choice(&key(&models[0]).expect("a key")),
+            Some(Choice::Change(1, Field::Model, "big".into())),
+            "the name is only shown, the model is kept"
+        );
+        let gone = items(&slots[2].submenu().expect("the third favorite"));
+        assert!(gone[0].isEnabled() && gone[1].isEnabled());
+        assert!(
+            !gone[2].isEnabled() && !gone[3].isEnabled(),
+            "no models or efforts without the program"
+        );
+        assert_eq!(plus::choice("change:x\nplace\nAcme"), None);
+        assert_eq!(plus::choice("change:0\nfolder\n/tmp"), None);
+        assert_eq!(
+            plus::choice("change:2\nmodel\na\nb"),
+            Some(Choice::Change(2, Field::Model, "a\nb".into())),
+            "a value may hold a line break"
+        );
+    }
+
+    /// Lookout has no menu bar, so the task field needs a main menu for ⌘V and ⌘A (plan review 2026-11-10).
+    fn edit_menu_for_the_task_field(mtm: MainThreadMarker) {
+        plus::install_edit_menu(mtm);
+        let main = NSApplication::sharedApplication(mtm)
+            .mainMenu()
+            .expect("a main menu");
+        let edit = main
+            .itemAtIndex(0)
+            .and_then(|it| it.submenu())
+            .expect("edit menu");
+        let actions: Vec<(Option<Sel>, String)> = edit
+            .itemArray()
+            .iter()
+            .map(|it| (it.action(), it.keyEquivalent().to_string()))
+            .collect();
+        for (action, key) in [
+            (sel!(paste:), "v"),
+            (sel!(selectAll:), "a"),
+            (sel!(copy:), "c"),
+            (sel!(cut:), "x"),
+            (sel!(undo:), "z"),
+        ] {
+            assert!(
+                actions.contains(&(Some(action), key.to_owned())),
+                "{action:?} on {key}"
             );
         }
     }

@@ -87,9 +87,11 @@ Background story: [Why I run my company with AI agents](https://kevintheo.com/fi
     An open question you parked shows under Waiting again after such a restart. If you park the card in front or mark
     it read, the next waiting session comes to the terminal. Pinned cards are skipped there. Doing the same on another
     card moves nothing. What you marked read is kept in memory only: after quitting Lookout those cards are back. A +
-    at the right of the head, on the overview and in every area alike, opens a new empty window of the terminal in
-    front: Warp in your home folder, or Ghostty. If no terminal is in front, it opens Warp. Ghostty needs version 1.3
-    or later for this.
+    at the right of the head, on the overview and in every area alike, opens a menu with the three favorites, "Choose
+    freely", "Empty window" and "Change favorites". "Empty window" does what the + did before: it opens a new empty
+    window of the terminal in front, Warp in your home folder or Ghostty, and Warp if no terminal is in front, and
+    Ghostty needs version 1.3 or later for this. The favorites and "Choose freely" start a new AI session, see "New
+    sessions from the +", while "Change favorites" only changes and saves the favorites.
 - **Control room:** with two or more screens, your active session and the windows that need you are on one
   screen, the busy ones on the other. There are three variants in the menu. The layout is fixed there, so the
   hotkeys don't apply.
@@ -121,7 +123,8 @@ Background story: [Why I run my company with AI agents](https://kevintheo.com/fi
   the session name, below it the project and what the session does or asks, and on the right how long it has been
   in that state. Hover over a session to see where its window is. Screens, layouts, the parking lot, *More* and
   *Quit* have symbols. The switches (labels, strip side, pause) and the window choices (*Choose windows*, *Without
-  window*) are under *More*.
+  window*) are under *More*. *New session* holds the same menu as the + in the Inbox, so a first session can start
+  from there too.
 - **"Watching":** some Claude Code sessions are done but only wait for their own background job (a CI run,
   workers), for another session, or for a timer they set themselves. They turn grey instead of "done": they don't
   need you, so they don't ask for your attention. Details and limits below.
@@ -237,6 +240,7 @@ Lookout (it reads the file once at start), for example:
 | `resumeCommands` | `{}` | command to restore a session, per Claude configuration folder, as `{"folder": "command"}` with `{id}` standing for the session, for example `{"~/.claude": "my-launcher claude --resume {id}"}`. A folder without an entry uses `CLAUDE_CONFIG_DIR='<folder>' claude --resume <id>`. A command without `{id}` is ignored |
 | `workerNames` | `[]` | parts of session names (any case) that mark worker windows for the parking lot, for example `"Worker · "`; without them there is no parking lot |
 | `plannedFile` | none | path of a JSON file that another program writes, starting with `/` or `~`; it adds the Planned area, without it there is none |
+| `newSession` | Home, Claude Code | places and programs for new sessions from the +, see "New sessions from the +" |
 
 The menu remembers your choice of screen, layout, grid, control room screens, excluded windows and labels, and
 also which windows you sent to the parking lot or took off it by hand.
@@ -268,8 +272,21 @@ I want you to know exactly what it touches:
 - Only when you choose to restore sessions, it writes one launch configuration per session into
   `~/.warp/launch_configurations`, in files whose names start with `lookout-restore-`. It opens each one through
   `open warp://launch/...` and removes it about a minute later.
-- Only when you click + in the Inbox: for Warp it runs `open warp://action/new_window`. For Ghostty it runs
-  `osascript` to tell Ghostty to open a window. The first time, macOS asks whether Lookout may control Ghostty.
+- Only when you start a new session from the + or from *New session* in the menu bar menu, with a favorite or a free
+  choice: Lookout writes a start script, readable only by you, into your temporary folder. It holds the folder and the
+  command with the task. The script removes itself when it runs. Lookout also writes a launch configuration into
+  `~/.warp/launch_configurations`, in a file whose name starts with `lookout-new-`, and opens it through `open
+  warp://launch/...`. It removes both files about a minute later, at once if Warp could not be asked. The launch
+  configuration only runs the start script. The task is not in it. The log names the favorite that was started, never
+  the task.
+- Only for a program with `modelsCommand`: once a day Lookout runs that command in the background, with no shell, one
+  program after the other and each for at most 30 seconds. It writes the answers with the day to
+  `~/Library/Application Support/Lookout/models.json`. The log notes per program how many models it named, that it
+  answered nothing usable, or that it could not be asked (failed, could not start, or took too long). Lookout itself
+  runs no AI model for this.
+- Only when you choose "Empty window" under the + (in the Inbox or under *New session* in the menu bar menu), or when
+  Lookout is busy at the very moment you click the +: for Warp it runs `open warp://action/new_window`. For Ghostty it
+  runs `osascript` to tell Ghostty to open a window. The first time, macOS asks whether Lookout may control Ghostty.
 - It writes a log to `~/Library/Logs/Lookout.log` (in German; rotated at 5 MB, one old file kept). The log
   contains session names, status changes and the titles of terminal windows you click, but no answer text.
 - The **labels show transcript text** (answers, questions), and so does the open menu. Before you share your
@@ -495,6 +512,102 @@ a start that did not happen and for a hard deadline (both amber), and an open ri
 not start:" and the problem. For a task it reads "Deadline Fri Nov 13", "Due for 5 days", "Due since yesterday", "Due
 from today" or "Due from Thu Nov 12". Planned cards open no session and have no right-click menu.
 
+## New sessions from the +
+
+A click on the + in the head of the Inbox opens a menu right below it. It lists three favorites, numbered ①, ② and ③.
+Each shows place, program, model and effort, separated by " · ", for example "① Home · Claude Code · opus · max".
+Below them stand "Choose freely", "Empty window" and, after a separator line, "Change favorites". "Empty window" does
+what the + did before. If Lookout is busy at the very moment you click the +, it opens such an empty window right away
+instead of the menu. The same menu is under *New session* in the menu bar menu. Without any AI session there is no
+Inbox and no +, so a first session can start from the menu bar.
+
+"Choose freely" opens submenus: the places, in each the programs, in each the program's models, in each the program's
+efforts. A level the program has no list for is left out. A program without models goes straight to its efforts. One
+without models and efforts starts from its own row. The last click opens the same "New task" window and starts exactly
+that choice. The favorites stay as they are.
+
+Choosing a favorite opens a small window "New task" that shows the favorite and has a text field. The text wraps in
+the field. Enter or the button "Start" starts. Esc or "Cancel" cancels, and the app that was in front before gets the
+front back. An empty field starts the session without a task. Copy, paste, cut, select all and undo work in the field
+with ⌘C, ⌘V, ⌘X, ⌘A and ⌘Z. The task becomes one line: line breaks and runs of spaces become one space.
+
+After Enter, a new Warp window opens in the place's folder, starts the program with the favorite's model and effort,
+and gives the task to the program as its first message. Lookout arranges that window like every other. The window
+closes when the session ends normally, and stays open with the error if the start fails.
+
+"Change favorites" has a submenu for each favorite, and in it Place, Program, Model and Effort. Each lists its choices
+with a check mark on the current one. Places, programs and efforts come from the settings. Models come from the
+program's current model list (see below), or from the settings if there is none. One click saves at once. There is no
+save button. Choosing another program keeps the model and the effort if the new program offers them. Otherwise the
+favorite gets the program's first model and first effort. Model and Effort cannot be opened while the favorite's
+program is missing from the settings. Lookout keeps the three favorites in its own memory (the macOS user defaults),
+not in the settings file, so they stay through a restart. A slot without a stored favorite gets the first place, the
+first program and that program's first model and effort.
+
+A favorite whose place or program is no longer in the settings (for example because it was renamed), or whose model or
+effort the program no longer offers, stands greyed out with "not available". It can still be changed under "Change
+favorites". A choice that no longer fits the settings never starts, for example because the model lists changed
+meanwhile. Usually no "New task" window opens at all. If the list changed while the window was open, nothing starts
+after Enter and the typed task is gone.
+
+Places and programs come from the setting `newSession` in `~/.config/lookout.json`. Lookout reads it once at start,
+like every other setting. For example:
+
+```json
+{
+  "newSession": {
+    "places": [
+      {"name": "Work", "folder": "~/work"},
+      {"name": "Home", "folder": "~"}
+    ],
+    "programs": [
+      {"name": "Claude Code", "models": ["opus", "sonnet"], "efforts": ["max", "high"],
+       "command": ["claude", "--model", "{model}", "--effort", "{effort}", "--", "{task}"]},
+      {"name": "Codex", "models": ["gpt-5.5"], "efforts": ["high", "medium"],
+       "command": ["codex", "--model", "{model}", "-c", "model_reasoning_effort={effort}", "--", "{task}"],
+       "modelsCommand": ["/usr/local/bin/list-models", "codex"]}
+    ]
+  }
+}
+```
+
+The path `/usr/local/bin/list-models` stands for a small script of your own that prints the models.
+
+The rules:
+
+- `places`: each place has a `name` and a `folder`. The folder starts with `/`, or is `~` or starts with `~/` (your
+  home folder). A place with any other folder is ignored, and `~name` is not read as a home folder. Any other text
+  value of a place, for example `"profile": "work"`, stands for `{profile}` in a command.
+- `programs`: each program has a `name`, `models` (a list), `efforts` (a list) and `command`. The command is a list of
+  words, not a shell line. Each word is kept exactly as written, an empty word too.
+- In the words, `{model}` and `{effort}` stand for the favorite's model and effort, `{task}` for the task, and `{key}`
+  for a place's value of that name. A placeholder can stand inside a word, for example
+  `model_reasoning_effort={effort}`. `{model}`, `{effort}` and `{task}` always come from the favorite and the task
+  window, so a place value with one of these names does not count.
+- After filling in, every word is put in single quotes for the shell as a whole, so nothing in a value or in the task
+  is ever read by the shell.
+- `{task}` must appear exactly once in the command, as a word of its own, right after a word `--`. Otherwise the
+  program is ignored. The `--` keeps a task that starts with a dash, like `--version`, from being read as an option.
+  Without a task, `--` and `{task}` are left out.
+- A command that uses `{model}` or `{effort}` needs a non-empty `models` or `efforts` list. Otherwise the program is
+  ignored.
+- If two places or two programs have the same name, the first valid one counts and later ones are ignored. An entry
+  ignored for one of the reasons above does not take the name.
+
+A program can also have `modelsCommand`. It is a word list like `command`, run as it is, with no shell and no
+placeholders filled in. It answers with the program's current models, one per line. A line may carry, after a tab, the
+name the menu shows. For example, the line "opus", a tab, "Opus 5.5" makes the menu, the task window and the
+favorites' text show "Opus 5.5". The command gets `opus`, and a favorite keeps `opus`. Lookout runs these commands
+once a day, in the background, one after the other, each for at most 30 seconds. It keeps the lists with the day in
+`~/Library/Application Support/Lookout/models.json`. A restart on the same day asks nothing again, unless a program
+has no list there yet. A command that fails, answers nothing or takes longer keeps the last list. Blank lines and
+repeated models are left out, and a program keeps at most 40 models. `models` stays the list until the first answer
+and whenever there is none. Running these commands costs whatever they do. Lookout itself runs no AI model for them.
+
+Without the setting, or with nothing usable in it, there is one place, "Home" (your home folder), and one program,
+"Claude Code". Its command is `["claude", "--model", "{model}", "--effort", "{effort}", "--", "{task}"]`, its models
+are opus, sonnet and haiku, and its efforts are max, xhigh, high, medium and low.
+
 ## Limits
 
 - Status files and transcript entries are **internal formats of Claude Code**. If the status files change,
@@ -518,6 +631,8 @@ from today" or "Due from Thu Nov 12". Planned cards open no session and have no 
   the menu sets it again.
 - A session whose own name contains a `workerNames` entry parks too, even if it is one of yours.
 - Parked windows show no sign on screen; the menu and Ctrl+Opt+4 show them.
+- New sessions from the + open only in Warp. The task becomes one line. There are three favorites, no more. A program
+  can only be used if it takes `--` as the end of its options.
 
 ## Kurz auf Deutsch
 
@@ -531,12 +646,16 @@ Session (Parkplatz); Ctrl+Opt+4 zeigt sie.
 Der neue «Eingang» ist ein viertes Layout: Sein Fenster steht direkt neben dem aktiven Terminal und hat eine Übersicht
 mit einer Kachel pro Bereich, und Lookout startet auf ihr; ein Klick auf die Kachel öffnet den Bereich, und zurück
 geht es mit «‹ Übersicht» oder indem du mit zwei Fingern seitwärts wischst. Mit der Einstellung `plannedFile` gibt es
-zusätzlich den Bereich «Geplant». Mit «Parken» im Rechtsklick-Menü einer Karte parkst du eine Session, der du nicht
-folgen willst; im Bereich «Geparkt» holst du sie mit «Zurückholen» wieder. Mit «Anheften» im Rechtsklick-Menü einer
-Karte stellst du die Session in die Gruppe «Angeheftet» ganz oben im Bereich «Wartet»; dort bleibt sie, bis du «Lösen»
-wählst. Nach einem Absturz, einem Herunterfahren oder wenn Warp beendet wurde, zeigt das Menü «Sessions
-wiederherstellen»; jede Claude-Code-Session öffnet sich dann in einem eigenen Warp-Fenster und startet `claude
---resume`.
+zusätzlich den Bereich «Geplant». Das «+» im Eingang öffnet ein Menü mit drei Favoriten (Ort, Programm, Modell,
+Effort), «Frei wählen», «Leeres Fenster» und «Favoriten ändern». Ein Favorit oder eine freie Wahl fragt nach einem
+Auftrag und startet damit eine neue Session in einem eigenen Warp-Fenster; Orte und Programme kommen aus der
+Einstellung `newSession`, die Modell-Listen auf Wunsch einmal am Tag über einen eigenen Befehl je Programm
+(`modelsCommand`). Dasselbe Menü steht in der Menüleiste unter «Neue Session». Mit «Parken» im Rechtsklick-Menü einer
+Karte parkst du eine Session, der du nicht folgen willst; im Bereich «Geparkt» holst du sie mit «Zurückholen» wieder.
+Mit «Anheften» im Rechtsklick-Menü einer Karte stellst du die Session in die Gruppe «Angeheftet» ganz oben im Bereich
+«Wartet»; dort bleibt sie, bis du «Lösen» wählst. Nach einem Absturz, einem Herunterfahren oder wenn Warp beendet
+wurde, zeigt das Menü «Sessions wiederherstellen»; jede Claude-Code-Session öffnet sich dann in einem eigenen
+Warp-Fenster und startet `claude --resume`.
 Installation wie oben (`git clone`, `./build.sh`,
 Bedienungshilfen freigeben). Die Sprache folgt dem Mac; fest auf Deutsch mit `{"language": "de"}` in
 `~/.config/lookout.json`. Die Schilder zeigen Text aus deinen Sessions: vor dem Bildschirmteilen unter

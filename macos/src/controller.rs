@@ -27,6 +27,7 @@ use objc2_foundation::{
 use lookout_core::config::{AppConfig, color_from_hex, config_from_json};
 use lookout_core::geom::{Point, Rect};
 use lookout_core::i18n::{is_german, prefers_german, set_german};
+use lookout_core::launch::{self, Favorite, Field, favorites_to_json};
 use lookout_core::layout::{
     DEFAULT_GRID, PlanInput, ReadAnswers, attention_order, first_ready_time, is_worker,
     layout_candidates, lot_member, plan_arrangement, plan_log_line, press_button, resolve_target,
@@ -82,6 +83,8 @@ pub(crate) const DEFAULTS_KEPT: &str = "lookout.kept";
 pub(crate) const DEFAULTS_SNOOZED: &str = "lookout.snoozed";
 /// Sessions Kevin pinned in the inbox, in the order he pinned them.
 pub(crate) const DEFAULTS_PINNED: &str = "lookout.pinned";
+/// The three favorites of the inbox's + (JSON text, `launch::favorites_to_json`).
+pub(crate) const DEFAULTS_FAVORITES: &str = "lookout.favorites";
 /// Control-room screens, chosen in the menu from three screens on (Kevin 2026-10-01).
 pub(crate) const DEFAULTS_PAIR_WORK: &str = "lookout.leitstand.work";
 pub(crate) const DEFAULTS_PAIR_CONTROL: &str = "lookout.leitstand.control";
@@ -249,6 +252,11 @@ pub(crate) struct App {
     /// Session ids Kevin pinned in the inbox, in the order he pinned them (`pin_rank`). ponytail: never thinned out
     /// either; a session that comes back with its id (`claude --resume`) is pinned again.
     pinned: Vec<String>,
+    /// The three favorites of the inbox's + (Kevin 2026-11-10), changed in its menu.
+    favorites: Vec<Favorite>,
+    /// The day the model lists were asked (`ask_models_daily`), and whether that is under way.
+    models_day: Option<String>,
+    models_asking: bool,
     /// The session that came to the front last, with when it was seen before that (`seen_outside_front`).
     in_front: Option<(String, Option<Time>)>,
     /// What Kevin marked read in the inbox.
@@ -383,10 +391,25 @@ fn suffix(s: &str, n: usize) -> &str {
 impl App {
     fn new(mtm: MainThreadMarker) -> App {
         let home = crate::home();
-        let cfg = config_from_json(
+        let mut cfg = config_from_json(
             &std::fs::read(crate::config_path()).unwrap_or_default(),
             &home,
         );
+        // The model lists asked last (`ask_models_daily`), for the programs that still ask.
+        let asking: Vec<String> = cfg
+            .new_session
+            .models_commands()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        // A program that asks but has no list there yet (new in the settings) is asked today too (review quick
+        // 2026-11-10).
+        let models_day = crate::models::load().and_then(|(day, lists)| {
+            for (program, models) in lists.iter().filter(|(p, _)| asking.contains(p)) {
+                cfg.new_session.set_models(program, models);
+            }
+            asking.iter().all(|p| lists.contains_key(p)).then_some(day)
+        });
         let languages: Vec<String> = NSLocale::preferredLanguages()
             .iter()
             .map(|s| s.to_string())
@@ -426,6 +449,9 @@ impl App {
             .into_iter()
             .collect();
         let labels_on = prefs::boolean(DEFAULTS_LABELS).unwrap_or(cfg.labels);
+        let favorites = cfg
+            .new_session
+            .favorites(prefs::string(DEFAULTS_FAVORITES).as_deref());
         let side = StackSide::parse(&cfg.stack_side);
 
         let status_item =
@@ -449,13 +475,23 @@ impl App {
                 Box::new(|ids: Vec<String>| with_app(move |a| a.list_clicked(&ids))),
                 Box::new(|button, ids: Vec<String>| with_app(move |a| a.list_button(button, &ids))),
                 Box::new(|nav| with_app(move |a| a.inbox_nav(nav))),
-                Box::new(|| with_app(|a| a.new_terminal_window())),
+                // The view opens the menu, outside the app slot. While the app is busy: an empty window, as before.
+                Box::new(|| {
+                    let menu = with_app_now(|a| a.new_session_menu());
+                    if menu.is_none() {
+                        with_app(|a| a.new_terminal_window());
+                    }
+                    menu
+                }),
             ),
             restore_list: restoring::load(&crate::restore::list_path()),
             restoring_since: BTreeMap::new(),
             restore_unsaved: false,
             snoozed,
             pinned: prefs::string_array(DEFAULTS_PINNED).unwrap_or_default(),
+            favorites,
+            models_day,
+            models_asking: false,
             in_front: None,
             read_answers: ReadAnswers::new(),
             inbox_tab: InboxTab::default(),
@@ -523,6 +559,7 @@ impl App {
     /// Swift `applicationDidFinishLaunching`.
     fn start(&mut self) {
         let mtm = self.mtm;
+        crate::plus::install_edit_menu(mtm);
         self.status_item.setMenu(Some(&self.menu));
         if let Some(button) = self.status_item.button(mtm) {
             button.setImage(Some(&self.tile_empty));
@@ -623,6 +660,7 @@ impl App {
     // ---------- Tick ----------
 
     pub(crate) fn tick(&mut self) {
+        self.ask_models_daily();
         if self.tick_in_flight {
             return;
         }
@@ -1942,10 +1980,78 @@ impl App {
         self.save_restore_list();
     }
 
-    /// The + in the inbox (Kevin 2026-11-09): a new window of the terminal in front, Warp when none is.
-    fn new_terminal_window(&self) {
+    /// "Empty window" at the inbox's + (Kevin 2026-11-09): a new window of the terminal in front, Warp when none is.
+    pub(crate) fn new_terminal_window(&self) {
         let front = self.main_index().map(|i| self.windows[i].bundle_id.clone());
         crate::restore::new_window(front.unwrap_or_else(|| WARP_BID.to_owned()));
+    }
+
+    /// The menu of the inbox's + and of "New session" in the menu bar menu (Kevin 2026-11-10).
+    pub(crate) fn new_session_menu(&self) -> Retained<NSMenu> {
+        crate::plus::menu(
+            self.mtm,
+            Some(&self.delegate),
+            &self.cfg.new_session,
+            &self.favorites,
+        )
+    }
+
+    pub(crate) fn favorite(&self, slot: usize) -> Option<Favorite> {
+        self.favorites.get(slot).cloned()
+    }
+
+    /// Favorite `f` with `task` in a new Warp window (`launch::start_script`); the log names the favorite, never the
+    /// task.
+    pub(crate) fn start_favorite(&self, f: &Favorite, task: &str) {
+        let Some((place, program)) = self.cfg.new_session.resolve(f) else {
+            log(&format!(
+                "Neue Session nicht gestartet: {} (nicht verfuegbar)",
+                f.label()
+            ));
+            return;
+        };
+        let script = launch::start_script(place, program, f, task);
+        crate::restore::start_new(script, place.folder.clone(), self.favorite_text(f));
+    }
+
+    /// The favorite as the menu shows it, with the model's name from the daily list ("Opus 5.5").
+    pub(crate) fn favorite_text(&self, f: &Favorite) -> String {
+        self.cfg.new_session.label(f)
+    }
+
+    /// The programs' model lists, once a day (Kevin 2026-11-10: "nur einmal am tag"), from the tick; the commands run
+    /// off the main thread (`models::refresh`).
+    fn ask_models_daily(&mut self) {
+        let today = planned::today().to_string();
+        let commands = self.cfg.new_session.models_commands();
+        if self.models_asking || commands.is_empty() || self.models_day.as_deref() == Some(&today) {
+            return;
+        }
+        self.models_asking = true;
+        let day = today.clone();
+        crate::models::refresh(commands, today, move |lists| {
+            with_app(move |a| {
+                for (program, models) in &lists {
+                    a.cfg.new_session.set_models(program, models);
+                }
+                a.models_day = Some(day);
+                a.models_asking = false;
+            });
+        });
+    }
+
+    /// Whether `f` can start with the settings as they are now.
+    pub(crate) fn resolves(&self, f: &Favorite) -> bool {
+        self.cfg.new_session.resolve(f).is_some()
+    }
+
+    /// A favorite changed in the menu, kept at once and across restarts.
+    pub(crate) fn change_favorite(&mut self, slot: usize, field: Field, value: &str) {
+        let Some(f) = self.favorites.get(slot) else {
+            return;
+        };
+        self.favorites[slot] = self.cfg.new_session.change(f, field, value);
+        prefs::set_string(DEFAULTS_FAVORITES, &favorites_to_json(&self.favorites));
     }
 
     /// A button on the inbox's open card (Kevin 2026-11-09): the session leaves the list, and the next one comes to the

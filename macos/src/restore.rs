@@ -10,6 +10,7 @@ use std::process::Command;
 use std::thread::sleep;
 use std::time::Duration;
 
+use lookout_core::launch::launch_exec;
 use lookout_core::motion::GHOSTTY_BID;
 use lookout_core::restore::{
     OpenSession, config_dir_of, resume_command, uuid_of, warp_launch_yaml, warp_new_window_url,
@@ -120,22 +121,71 @@ fn open_one(
     };
     let name = format!("lookout-restore-{uuid}");
     let file = dir.join(format!("{name}.yaml"));
-    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    write_private(&file, &warp_launch_yaml(&name, &cwd, &command))?;
+    let failed = match open_launch(&name) {
+        Ok(()) => return Ok(file),
+        Err(why) => why,
+    };
+    let _ = fs::remove_file(&file);
+    Err(failed)
+}
+
+/// A new session in a new Warp window (the inbox's +, Kevin 2026-11-10), off the main thread. The start script
+/// (`launch::start_script`) goes to the temporary folder; the launch configuration only runs `/bin/sh <script>`, so the
+/// task never meets the user's shell. The script removes itself when it runs; both files go after `KEEP_FILE`, at once
+/// if Warp cannot be asked.
+pub fn start_new(script: String, cwd: String, label: String) {
+    std::thread::spawn(move || {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let name = format!("lookout-new-{stamp}-{}", std::process::id());
+        let script_file = std::env::temp_dir().join(format!("{name}.sh"));
+        let launch_file = PathBuf::from(format!(
+            "{}/.warp/launch_configurations/{name}.yaml",
+            crate::home()
+        ));
+        let started = launch_exec(&script_file.to_string_lossy())
+            .ok_or_else(|| "Temp-Ordner mit Sonderzeichen im Pfad".to_owned())
+            .and_then(|exec| {
+                write_private(&script_file, &script)?;
+                write_private(&launch_file, &warp_launch_yaml(&name, &cwd, &exec))?;
+                open_launch(&name)
+            });
+        match started {
+            Ok(()) => {
+                crate::log(&format!("Neue Session: {label}"));
+                sleep(KEEP_FILE);
+            }
+            Err(why) => crate::log(&format!("Neue Session nicht gestartet: {label} ({why})")),
+        }
+        let _ = fs::remove_file(&script_file);
+        let _ = fs::remove_file(&launch_file);
+    });
+}
+
+/// Writes `text` to `file`, readable only by the user: a start line can hold a task.
+fn write_private(file: &Path, text: &str) -> Result<(), String> {
+    if let Some(dir) = file.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
     OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
-        .open(&file)
-        .and_then(|mut f| f.write_all(warp_launch_yaml(&name, &cwd, &command).as_bytes()))
-        .map_err(|e| e.to_string())?;
+        .open(file)
+        .and_then(|mut f| f.write_all(text.as_bytes()))
+        .map_err(|e| e.to_string())
+}
+
+/// Asks Warp to open the launch configuration `name`.
+fn open_launch(name: &str) -> Result<(), String> {
     let mut open = clean_command("/usr/bin/open");
     open.arg(format!("warp://launch/{name}"));
-    let failed = match open.status() {
-        Ok(status) if status.success() => return Ok(file),
-        Ok(status) => format!("open: {status}"),
-        Err(e) => e.to_string(),
-    };
-    let _ = fs::remove_file(&file);
-    Err(failed)
+    match open.status() {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("open: {status}")),
+        Err(e) => Err(e.to_string()),
+    }
 }

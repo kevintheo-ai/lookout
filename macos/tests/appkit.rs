@@ -268,7 +268,7 @@ fn list_click_reaches_on_click(mtm: MainThreadMarker) {
             }),
             Box::new(|_, _| {}),
             Box::new(|_| {}),
-            Box::new(|| {}),
+            Box::new(|| None),
         )
     });
     let target = ListTarget {
@@ -367,7 +367,7 @@ fn inbox_scrolls_below_its_tabs(mtm: MainThreadMarker) {
             Box::new(move |ids| clicks.borrow_mut().push(ids)),
             Box::new(|_, _| {}),
             Box::new(move |tab| tabs.borrow_mut().push(tab)),
-            Box::new(|| {}),
+            Box::new(|| None),
         )
     };
     lists.update(&[target(InboxTab::Waiting)], None);
@@ -485,7 +485,7 @@ fn inbox_tiles_and_strip_lead_on(mtm: MainThreadMarker) {
             Box::new(|_| {}),
             Box::new(|_, _| {}),
             Box::new(move |nav| navs.borrow_mut().push(nav)),
-            Box::new(|| {}),
+            Box::new(|| None),
         )
     };
     lists.update(&[overview], None);
@@ -607,7 +607,7 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
         Box::new(|_| {}),
         Box::new(|_, _| {}),
         Box::new(|_| {}),
-        Box::new(|| {}),
+        Box::new(|| None),
     );
     lists.set_tints(MINT, ORANGE);
     let li = Rect::new(860.0, 520.0, 300.0, 120.0);

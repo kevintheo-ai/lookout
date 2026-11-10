@@ -17,6 +17,7 @@ use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString};
 
 use lookout_core::config::color_from_hex;
 use lookout_core::i18n::tr;
+use lookout_core::launch::Favorite;
 use lookout_core::layout::{
     active_pair, attention_order, fitted_grid, grid_choices, is_excluded, is_worker,
     resolve_target, screen_names, target_options, target_title,
@@ -35,6 +36,7 @@ use lookout_core::status::windowless_sessions;
 
 use crate::controller::{App, with_app, with_app_now};
 use crate::overlay::srgb;
+use crate::plus::{self, Choice};
 use crate::{ax, now, screens};
 
 // Keys on the menu items: the preview tells by them what is hovered.
@@ -212,6 +214,27 @@ define_class!(
         fn quit_app(&self, _sender: Option<&AnyObject>) {
             with_app(App::quit);
         }
+
+        /// The inbox's + and "New session" (`plus::menu`). The task dialog runs here, outside the app slot: it spins a
+        /// loop of its own, and the app must stay reachable meanwhile.
+        #[unsafe(method(newSessionItem:))]
+        fn new_session_item(&self, sender: &NSMenuItem) {
+            match item_key(sender).and_then(|k| plus::choice(&k)) {
+                Some(Choice::Blank) => with_app(|a| a.new_terminal_window()),
+                Some(Choice::Change(slot, field, value)) => {
+                    with_app(move |a| a.change_favorite(slot, field, &value));
+                }
+                Some(Choice::Start(slot)) => {
+                    // The favorite as the dialog shows it: changed in the menu meanwhile, it must not start something
+                    // else (review quick 2026-11-10).
+                    if let Some(f) = with_app_now(|a| a.favorite(slot)).flatten() {
+                        ask_and_start(self.mtm(), f);
+                    }
+                }
+                Some(Choice::Custom(f)) => ask_and_start(self.mtm(), f),
+                None => {}
+            }
+        }
     }
 );
 
@@ -220,6 +243,19 @@ impl Delegate {
         let this = Self::alloc(mtm).set_ivars(());
         // SAFETY: NSObject's designated initializer.
         unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// The task dialog for `f`, then the start of exactly `f` (`newSessionItem:`). No dialog for a choice that no longer
+/// fits: the daily model lists can change while a menu is open (review quick 2026-11-10).
+fn ask_and_start(mtm: MainThreadMarker, f: Favorite) {
+    let (fits, text) = with_app_now(|a| (a.resolves(&f), a.favorite_text(&f)))
+        .unwrap_or_else(|| (true, f.label()));
+    if !fits {
+        return;
+    }
+    if let Some(task) = plus::ask_task(mtm, &text) {
+        with_app(move |a| a.start_favorite(&f, &task));
     }
 }
 
@@ -590,6 +626,12 @@ fn rebuild(a: &mut App) {
     add_sessions(a, &menu);
 
     menu.addItem(&NSMenuItem::separatorItem(a.mtm));
+    // The inbox's + once more (Kevin 2026-11-10): without a session there is no inbox and no +, and the first session
+    // starts from here.
+    let new = item(a, tr("Neue Session", "New session"), None, "");
+    show_image(&new, symbol("plus"));
+    new.setSubmenu(Some(&a.new_session_menu()));
+    menu.addItem(&new);
     // After a crash or shutdown (Kevin 2026-11-09); only when there is something to bring back.
     let lost = a.restorable_sessions();
     if !lost.is_empty() {

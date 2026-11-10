@@ -120,16 +120,33 @@ pub fn resume_command(
 
 /// Warp launch configuration: one window, one tab. `name` must equal the file's stem, or Warp opens nothing (measured
 /// 2026-10-24); no tab title, Warp would freeze it and Lookout recognises windows by the title the session sets. JSON
-/// strings are valid YAML double-quoted scalars. `&& exit`: the window closes with a session that ends normally, and
-/// stays open with the error if the resume fails.
+/// strings are valid YAML double-quoted scalars once the characters YAML does not take raw are escaped too
+/// (`yaml_quoted`). `&& exit`: the window closes with a session that ends normally, and stays open with the error if
+/// the start fails.
 pub fn warp_launch_yaml(name: &str, cwd: &str, command: &str) -> String {
-    let q = |s: &str| Value::from(s).to_string();
+    let q = yaml_quoted;
     format!(
         "---\nname: {}\nactive_window_index: 0\nwindows:\n  - active_tab_index: 0\n    tabs:\n      - layout:\n          cwd: {}\n          commands:\n            - exec: {}\n",
         q(name),
         q(cwd),
         q(&format!("{command} && exit"))
     )
+}
+
+/// A YAML double-quoted scalar: JSON escapes the control characters below U+0020, and every other character outside
+/// YAML's printable set goes in as `\uXXXX` too: DEL, the C1 block, U+FFFE/U+FFFF, and the line and paragraph
+/// separators that YAML 1.1 reads as line breaks (plan review 2026-11-10: a reader rejects them raw).
+fn yaml_quoted(s: &str) -> String {
+    Value::from(s)
+        .to_string()
+        .chars()
+        .map(|ch| match ch {
+            '\u{7F}'..='\u{9F}' | '\u{2028}' | '\u{2029}' | '\u{FFFE}' | '\u{FFFF}' => {
+                format!("\\u{:04X}", u32::from(ch))
+            }
+            _ => ch.to_string(),
+        })
+        .collect()
 }
 
 /// The URL for a new Warp window in folder `path`, the folder percent-encoded: in a URL `&`, `#` or a space would cut it.
@@ -323,6 +340,21 @@ mod tests {
         assert!(yaml.contains("cwd: \"/a \\\"b\\\"/c\"\n"));
         assert!(yaml.contains("exec: \"claude --resume x && exit\"\n"));
         assert!(!yaml.contains("title"), "a tab title would freeze Warp's");
+    }
+
+    /// Nothing outside YAML's printable characters goes in raw (plan review 2026-11-10), and the escapes read back as
+    /// the text (`\uXXXX` means the same in JSON and YAML).
+    #[test]
+    fn launch_file_escapes_what_yaml_does_not_take_raw() {
+        let text = "a\u{7F}b\u{85}c\u{9F}d\u{2028}e\u{FFFE}f\u{FFFF}g\u{1}h ä😀";
+        let quoted = yaml_quoted(text);
+        let printable = |ch: char| {
+            matches!(u32::from(ch), 0x20..=0x7E | 0xA0..=0xD7FF | 0xE000..=0xFFFD | 0x10000..=0x10FFFF)
+                && !matches!(ch, '\u{2028}' | '\u{2029}')
+        };
+        assert!(quoted.chars().all(printable), "{quoted:?}");
+        assert!(quoted.contains("\\u007F") && quoted.contains("\\uFFFF"));
+        assert_eq!(serde_json::from_str::<String>(&quoted).unwrap(), text);
     }
 
     #[test]

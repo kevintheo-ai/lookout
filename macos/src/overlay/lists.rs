@@ -38,6 +38,8 @@ const LIST_LINE_HEIGHT: f64 = 19.0;
 const INBOX_BG: Rgb = (0.149, 0.169, 0.180);
 const INBOX_LINE_ALPHA: f64 = 0.09;
 const GLYPH: f64 = 22.0;
+/// The + menu's top, just below the +, whose box ends at 36 pt (`draw_head`).
+const PLUS_MENU_Y: f64 = 40.0;
 
 /// Row title colours. Done and asking are white until `set_tints` (Swift's `tints[tone] ?? .white`).
 #[derive(Clone, PartialEq)]
@@ -62,7 +64,7 @@ struct ListIvars {
     on_click: Rc<dyn Fn(Vec<String>)>,
     on_button: Rc<dyn Fn(CardButton, Vec<String>)>,
     on_nav: Rc<dyn Fn(InboxNav)>,
-    on_plus: Rc<dyn Fn()>,
+    on_plus: Rc<dyn Fn() -> Option<Retained<NSMenu>>>,
     /// The card a right-click menu was opened on.
     menu_card: RefCell<Option<InboxCard>>,
     /// The inbox's cards inside their scroll view: no ground of their own, the tabs view behind them draws it.
@@ -628,8 +630,13 @@ define_class!(
                 )
             };
             if plus {
+                // The menu opens here in the view, below the +, outside the app slot: its loop runs until a choice,
+                // and the app must stay reachable meanwhile (plan 2026-11-10).
                 let on_plus = Rc::clone(&self.ivars().on_plus);
-                on_plus();
+                if let Some(menu) = on_plus() {
+                    let at = NSPoint::new(INBOX_PLUS_X, PLUS_MENU_Y);
+                    menu.popUpMenuPositioningItem_atLocation_inView(None, at, Some(self));
+                }
             } else if let Some(nav) = nav {
                 let on_nav = Rc::clone(&self.ivars().on_nav);
                 on_nav(nav);
@@ -651,7 +658,7 @@ impl ListView {
         on_click: Rc<dyn Fn(Vec<String>)>,
         on_button: Rc<dyn Fn(CardButton, Vec<String>)>,
         on_nav: Rc<dyn Fn(InboxNav)>,
-        on_plus: Rc<dyn Fn()>,
+        on_plus: Rc<dyn Fn() -> Option<Retained<NSMenu>>>,
         bare: bool,
     ) -> Retained<ListView> {
         let this = ListView::alloc(mtm).set_ivars(ListIvars {
@@ -720,19 +727,19 @@ pub struct ListOverlay {
     on_click: Rc<dyn Fn(Vec<String>)>,
     on_button: Rc<dyn Fn(CardButton, Vec<String>)>,
     on_nav: Rc<dyn Fn(InboxNav)>,
-    on_plus: Rc<dyn Fn()>,
+    on_plus: Rc<dyn Fn() -> Option<Retained<NSMenu>>>,
 }
 
 impl ListOverlay {
     /// `on_click`, `on_button` (the buttons on the inbox's open card), `on_nav` (the inbox's way between overview, areas,
-    /// weeks and days, also the two-finger swipe back) and `on_plus` (the inbox's +) run on the main thread from the click
-    /// (outside any other call into the overlay).
+    /// weeks and days, also the two-finger swipe back) and `on_plus` (the inbox's +: the menu to open below it, `None` for
+    /// none) run on the main thread from the click (outside any other call into the overlay).
     pub fn new(
         mtm: MainThreadMarker,
         on_click: Box<dyn Fn(Vec<String>)>,
         on_button: Box<dyn Fn(CardButton, Vec<String>)>,
         on_nav: Box<dyn Fn(InboxNav)>,
-        on_plus: Box<dyn Fn()>,
+        on_plus: Box<dyn Fn() -> Option<Retained<NSMenu>>>,
     ) -> ListOverlay {
         ListOverlay {
             mtm,
