@@ -1450,9 +1450,13 @@ impl App {
                 }
                 let mut apps: Vec<Pid> = tiles.iter().map(|&(_, pid)| pid).collect();
                 apps.dedup();
+                // The focus back to the middle: its app to the front only if it is not there with it already.
                 if focus_back && let Some((id, pid)) = raise {
                     ax::set_main(id);
-                    apps = vec![pid];
+                    apps.clear();
+                    if !ax::bring_app_front(id, pid) {
+                        refused.push(pid);
+                    }
                 }
                 for pid in apps {
                     if !ax::set_app_frontmost(pid) {
@@ -1534,7 +1538,7 @@ impl App {
         ax_queue().exec_async(move || {
             ax::raise(id);
             ax::set_main(id);
-            let refused = if ax::set_app_frontmost(pid) {
+            let refused = if ax::bring_app_front(id, pid) {
                 vec![]
             } else {
                 vec![pid]
@@ -2347,7 +2351,7 @@ impl App {
             }
             ax::raise(w.id);
             ax::set_main(w.id);
-            let front = ax::set_app_frontmost(w.owner_pid);
+            let front = ax::bring_app_front(w.id, w.owner_pid);
             let fresh = ax::reread_window(&w, h);
             on_main(move || {
                 with_app(move |a| {

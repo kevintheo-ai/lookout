@@ -451,6 +451,17 @@ pub fn set_app_frontmost(pid: Pid) -> bool {
     Ax::app(pid).set_bool(FRONTMOST, true)
 }
 
+/// Window `id`'s app in front (`set_app_frontmost`), unless it is in front already with `id` focused. `AXFrontmost` layers
+/// ALL the app's windows over other apps' windows, Lookout's list among them, also when the app is in front already:
+/// measured 2026-11-11, Warp windows Lookout does not arrange covered the list for 0.1 s to 3 s after every click (Kevin:
+/// "dann kommen immer die ganzen Fenster kurz nach vorne"). Call after `raise` and `set_main`. AX queue only.
+pub fn bring_app_front(id: u64, pid: Pid) -> bool {
+    if focused_app_pid() == Some(pid) && focused_window(pid) == Some(id) {
+        return true;
+    }
+    set_app_frontmost(pid)
+}
+
 // ---------- Focus ----------
 
 /// The focused window of an app (`AXFocusedWindow`), as a registry id (`known_id`). AX queue only.
