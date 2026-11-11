@@ -22,6 +22,7 @@ pub mod prefs;
 pub mod restore;
 pub mod screens;
 pub mod sys;
+pub mod team_dialog;
 
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

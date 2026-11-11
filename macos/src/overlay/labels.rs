@@ -148,6 +148,7 @@ impl LabelOverlay {
             let tint = match t.content.tone {
                 LabelTone::Waiting => self.waiting.borrow().clone(),
                 LabelTone::Ready => self.ready.borrow().clone(),
+                LabelTone::Stopped => super::srgb(super::STOPPED),
                 LabelTone::Running | LabelTone::Watching => self.running.clone(),
             };
             p.view.show(&t.content, tint);

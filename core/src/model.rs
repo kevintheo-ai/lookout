@@ -72,6 +72,12 @@ pub struct Session {
     /// Claude reports `shell`: turn over, only background commands run. `busy` always means the model works (CLI
     /// 2.1.294/2.1.295, measured 2026-10-09).
     pub background_only: bool,
+    /// Its last turn was broken off (Esc), from the engine's log (Codex `turn_aborted`); Claude's comes from the
+    /// transcript (`Digest::interrupted`). `is_stopped` decides.
+    pub stopped: bool,
+    /// The title Kevin gave it in Lookout (Kevin 2026-11-11: "den Titel selbst ändern"): shown instead of its own name and
+    /// deciding its team or card; window matching keeps using the session's own names.
+    pub title: Option<String>,
 }
 
 impl Session {
@@ -99,7 +105,33 @@ impl Session {
             digest: None,
             watching: false,
             background_only: false,
+            stopped: false,
+            title: None,
         }
+    }
+
+    /// Stopped (Kevin 2026-11-10, "1a 2a"): not working, no question, and the last turn was broken off rather than
+    /// finished, so it needs a nudge.
+    pub fn is_stopped(&self) -> bool {
+        self.ready
+            && !self.waiting
+            && (self.stopped || self.digest.as_ref().is_some_and(|d| d.interrupted))
+    }
+
+    /// The name it gives itself: the transcript's own name, else the status file's.
+    pub fn own_name(&self) -> &str {
+        self.digest
+            .as_ref()
+            .and_then(|d| d.name.as_deref())
+            .unwrap_or(&self.name)
+    }
+
+    /// The title to keep when Kevin types `typed` (Kevin 2026-11-11), spaces folded; none when empty or its own name
+    /// unchanged, so a save without a change keeps its team (review quick 2026-11-11).
+    pub fn title_for(&self, typed: &str) -> Option<String> {
+        let fold = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
+        let t = fold(typed);
+        (!t.is_empty() && t != fold(self.own_name())).then_some(t)
     }
 }
 
@@ -163,6 +195,13 @@ pub struct Digest {
     pub text_current: bool,
     /// Its "?" names an `ask_until_read_names` place and Kevin has read the answer (`mark_read_asks`, set per tick).
     pub ask_read: bool,
+    /// Model of the last answer (`claude-opus-5-5`), shown on the cards of a team's area.
+    pub model: Option<String>,
+    /// The last turn was broken off (Esc: "[Request interrupted by user]"); a new message or answer clears it.
+    pub interrupted: bool,
+    /// The tail read had a message, an answer or a break-off, so `interrupted` is known from it; else the reader keeps
+    /// the last one seen.
+    pub interrupt_known: bool,
 }
 
 impl Default for Digest {
@@ -189,6 +228,9 @@ impl Default for Digest {
             wakeups: BTreeMap::new(),
             text_current: true,
             ask_read: false,
+            model: None,
+            interrupted: false,
+            interrupt_known: false,
         }
     }
 }
@@ -440,6 +482,13 @@ impl TermWindow {
         !s.ready && !s.waiting && s.watching
     }
 
+    /// Done, but its turn was broken off in the visible tab (`Session::is_stopped`): stopped, not done.
+    pub fn is_stopped(&self) -> bool {
+        self.is_ready()
+            && !self.is_waiting()
+            && self.visible_session().is_some_and(Session::is_stopped)
+    }
+
     /// A session waits for Kevin but the window shows no question: it sits in a HIDDEN tab. Only a hint on the label
     /// (Kevin 2026-09-21: done hidden tabs are ignored).
     pub fn hidden_question(&self) -> bool {
@@ -460,6 +509,8 @@ pub enum LabelTone {
     Ready,
     Running,
     Watching,
+    /// The turn was broken off (Kevin 2026-11-10): waits for a nudge.
+    Stopped,
 }
 
 impl LabelTone {
@@ -469,6 +520,7 @@ impl LabelTone {
             LabelTone::Ready => "✓",
             LabelTone::Running => "●",
             LabelTone::Watching => "◌",
+            LabelTone::Stopped => "⏸",
         }
     }
 
@@ -480,6 +532,7 @@ impl LabelTone {
             LabelTone::Ready => tr("FERTIG", "DONE"),
             LabelTone::Running => tr("ARBEITET", "WORKING"),
             LabelTone::Watching => tr("ÜBERWACHT", "WATCHING"),
+            LabelTone::Stopped => tr("ANGEHALTEN", "STOPPED"),
         }
     }
 }
@@ -708,6 +761,11 @@ pub enum CardButton {
     Unpark,
     Pin,
     Unpin,
+    /// Kevin's own title for the session (Kevin 2026-11-11).
+    Rename,
+    /// An own card for the window's project, and its end (Kevin 2026-11-11, "3a").
+    MakeCard,
+    DissolveCard,
 }
 
 /// List entry: header, window (index in `windows`) or "+N more (in the menu)". `Working` and `Lot` are windows for the
@@ -764,6 +822,25 @@ mod tests {
     use super::*;
     use crate::layout::attention_order;
     use crate::testutil::*;
+
+    /// Saving the rename dialog unchanged keeps no title, so a window placed by its status-file name stays in its team
+    /// (review quick 2026-11-11); spaces are folded, empty gives the own name back.
+    #[test]
+    fn a_title_only_when_it_differs() {
+        let mut s = Session::new("1", Engine::Claude, None, "Acme · old", "/", true, true);
+        s.digest = Some(Digest {
+            name: Some("Notes".into()),
+            ..Digest::default()
+        });
+        assert_eq!(s.title_for(" Notes "), None, "unchanged");
+        assert_eq!(s.title_for("  "), None, "empty");
+        assert_eq!(
+            s.title_for("Acme ·  notes").as_deref(),
+            Some("Acme · notes")
+        );
+        s.digest = None;
+        assert_eq!(s.title_for("Acme · old"), None, "the status file's name");
+    }
 
     /// Claude writes the window title itself: spinner = working, ✳ = done/question (measured 2026-09-21).
     #[test]

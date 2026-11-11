@@ -25,6 +25,8 @@ mod parts {
 
     use lookout_core::geom::Rect;
     use lookout_core::launch::{Favorite, Field, NewSession, Place, Program};
+    use lookout_core::team::Role;
+    use lookout_core::team_start::TeamTexts;
     use lookout_macos::plus::{self, Choice};
     use lookout_macos::{icon, prefs, screens};
 
@@ -38,12 +40,16 @@ mod parts {
         unsafe { std::env::set_var("LOOKOUT_LOG", &log) };
         let mtm = MainThreadMarker::new().expect("harness = false runs main on the main thread");
         let _app = NSApplication::sharedApplication(mtm);
-        let tests: [(&str, Test); 5] = [
+        let tests: [(&str, Test); 6] = [
             ("prefs_round_trip", prefs_round_trip),
             ("screens_match_nsscreen", screens_match_nsscreen),
             ("status_tile_image", status_tile_image),
             ("plus_menu_offers_favorites", plus_menu_offers_favorites),
             ("edit_menu_for_the_task_field", edit_menu_for_the_task_field),
+            (
+                "team_form_presets_and_reads_back",
+                team_form_presets_and_reads_back,
+            ),
         ];
         let mut failed = 0;
         for (name, test) in tests {
@@ -231,6 +237,7 @@ mod parts {
                     model_labels: BTreeMap::new(),
                 },
             ],
+            team: TeamTexts::defaults(),
         };
         let favorite = |place: &str, program: &str, model: &str| Favorite {
             place: place.into(),
@@ -246,7 +253,7 @@ mod parts {
         // The daily list names "big" (Kevin 2026-11-10: model names with their number); the favorites keep "big".
         let mut settings = settings;
         settings.set_models("Tool", &["big\tBig 5.5".to_owned(), "small".to_owned()]);
-        let menu = plus::menu(mtm, None, &settings, &favorites);
+        let menu = plus::menu(mtm, None, &settings, &favorites, &settings.team_setup(None));
         let items = |m: &NSMenu| m.itemArray().iter().collect::<Vec<Retained<NSMenuItem>>>();
         let key = |it: &NSMenuItem| {
             it.representedObject()
@@ -256,8 +263,8 @@ mod parts {
         let top = items(&menu);
         assert_eq!(
             top.len(),
-            7,
-            "3 favorites, choose freely, empty window, line, change"
+            8,
+            "3 favorites, choose freely, new team, empty window, line, change"
         );
         assert_eq!(top[0].title().to_string(), "① Acme · Tool · Big 5.5 · max");
         assert_eq!(top[1].title().to_string(), "② Studio · Tool · small · max");
@@ -299,13 +306,51 @@ mod parts {
         );
         assert_eq!(
             plus::choice(&key(&top[4]).expect("a key")),
+            Some(Choice::Team)
+        );
+        assert!(
+            !top[4].isEnabled() && top[4].subtitle().is_some(),
+            "no program here names its session"
+        );
+        assert_eq!(
+            plus::choice(&key(&top[5]).expect("a key")),
             Some(Choice::Blank)
         );
-        assert!(top[5].isSeparatorItem());
+        assert!(top[6].isSeparatorItem());
 
-        let change = top[6].submenu().expect("change favorites");
+        let change = top[7].submenu().expect("change favorites");
         let slots = items(&change);
-        assert_eq!(slots.len(), 3);
+        assert_eq!(slots.len(), 5, "3 favorites, line, team");
+        let team = items(&slots[4].submenu().expect("the team"));
+        assert_eq!(team.len(), 4, "place, lead, key account, workers");
+        let worker_programs = items(
+            &items(&team[3].submenu().expect("the workers' fields"))[0]
+                .submenu()
+                .expect("the workers' programs"),
+        );
+        assert_eq!(
+            worker_programs.len(),
+            2,
+            "workers may use any program (Tool, Plain), also one that cannot name its session"
+        );
+        let team_places = items(&team[0].submenu().expect("the team's places"));
+        assert_eq!(
+            plus::choice(&key(&team_places[1]).expect("a key")),
+            Some(Choice::ChangeTeam(
+                Role::Lead,
+                Field::Place,
+                "Studio".into()
+            ))
+        );
+        assert_eq!(
+            plus::choice("team-change:key\neffort\nlow"),
+            Some(Choice::ChangeTeam(
+                Role::KeyAccount,
+                Field::Effort,
+                "low".into()
+            ))
+        );
+        assert_eq!(plus::choice("team-change:boss\neffort\nlow"), None);
         let fields = items(&slots[1].submenu().expect("the second favorite"));
         assert_eq!(fields.len(), 4, "place, program, model, effort");
         let places = items(&fields[0].submenu().expect("places"));
@@ -341,6 +386,139 @@ mod parts {
             Some(Choice::Change(2, Field::Model, "a\nb".into())),
             "a value may hold a line break"
         );
+    }
+
+    /// The team dialog's fields, built without showing them (Kevin 2026-11-10: lead and key account "open to choose",
+    /// preset): the preset is chosen, a changed choice reads back with the chosen place, a program without efforts
+    /// gets none.
+    fn team_form_presets_and_reads_back(mtm: MainThreadMarker) {
+        use lookout_core::team_start::TeamSetup;
+        use lookout_macos::team_dialog::TeamForm;
+        use objc2_app_kit::NSControlStateValueOff;
+
+        let words = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        let program = |name: &str, models: &[&str], efforts: &[&str], command: &[&str]| Program {
+            name: name.into(),
+            models: words(models),
+            efforts: words(efforts),
+            command: words(command),
+            models_command: vec![],
+            model_labels: BTreeMap::new(),
+        };
+        let place = |name: &str| Place {
+            name: name.into(),
+            folder: format!("/work/{name}"),
+            values: BTreeMap::new(),
+        };
+        let settings = NewSession {
+            places: vec![place("Acme"), place("Studio")],
+            programs: vec![
+                program(
+                    "Tool",
+                    &["big", "small"],
+                    &["max", "xhigh"],
+                    &[
+                        "tool", "--name", "{name}", "--model", "{model}", "-e", "{effort}", "--",
+                        "{task}",
+                    ],
+                ),
+                program("Bare", &[], &[], &["bare", "-n", "{name}", "--", "{task}"]),
+                program("Plain", &[], &[], &["plain", "--", "{task}"]),
+            ],
+            team: TeamTexts::defaults(),
+        };
+        let role = |model: &str, effort: &str| Favorite {
+            place: "Studio".into(),
+            program: "Tool".into(),
+            model: model.into(),
+            effort: effort.into(),
+        };
+        let setup = TeamSetup {
+            lead: role("big", "xhigh"),
+            key_account: role("small", "xhigh"),
+            worker: Favorite {
+                place: "Studio".into(),
+                program: "Plain".into(),
+                ..Favorite::default()
+            },
+            with_key_account: true,
+        };
+        let form = TeamForm::new(mtm, &settings, &setup);
+        let first = form.request();
+        assert_eq!(first.setup(), setup);
+        let lead_button = form.lead.button();
+        let lead_menu = lead_button.menu().expect("the lead's cascade");
+        assert_eq!(
+            lead_button
+                .itemAtIndex(0)
+                .expect("its title")
+                .title()
+                .to_string(),
+            "Studio · Tool · big · xhigh"
+        );
+        assert_eq!(
+            lead_button.title().to_string(),
+            "Studio · Tool · big · xhigh"
+        );
+        assert_eq!(
+            lead_menu.numberOfItems(),
+            3,
+            "the title, then Acme and Studio"
+        );
+        let key_menu = form
+            .key_account
+            .button()
+            .menu()
+            .expect("the key account's cascade");
+        assert_eq!(
+            key_menu.numberOfItems(),
+            3,
+            "the title, then the programs that name their session: Tool and Bare, not Plain"
+        );
+
+        // Acme › Tool › big › max, as a click in the cascade.
+        let sub = |m: &NSMenu, i: isize| {
+            m.itemAtIndex(i)
+                .and_then(|it| it.submenu())
+                .expect("a submenu")
+        };
+        let big = sub(&sub(&sub(&lead_menu, 1), 0), 0);
+        big.performActionForItemAtIndex(0);
+        key_menu.performActionForItemAtIndex(2);
+        form.with_key_account.setState(NSControlStateValueOff);
+        form.name.setStringValue(&NSString::from_str("Shop"));
+        let changed = form.request();
+        assert_eq!(changed.name, "Shop");
+        assert_eq!(
+            changed.lead,
+            Favorite {
+                place: "Acme".into(),
+                ..role("big", "max")
+            }
+        );
+        assert_eq!(
+            lead_button
+                .itemAtIndex(0)
+                .expect("its title")
+                .title()
+                .to_string(),
+            "Acme · Tool · big · max"
+        );
+        assert_eq!(
+            lead_button.title().to_string(),
+            "Acme · Tool · big · max",
+            "what the button shows (review quick 2026-11-10)"
+        );
+        assert_eq!(
+            changed.key_account,
+            Favorite {
+                place: "Acme".into(),
+                program: "Bare".into(),
+                ..Favorite::default()
+            },
+            "a program without models and efforts, in the lead's place"
+        );
+        assert!(!changed.with_key_account);
     }
 
     /// Lookout has no menu bar, so the task field needs a main menu for ⌘V and ⌘A (plan review 2026-11-10).

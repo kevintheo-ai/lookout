@@ -53,6 +53,7 @@ impl Tints {
         match tone {
             LabelTone::Ready => self.ready.clone(),
             LabelTone::Waiting => self.waiting.clone(),
+            LabelTone::Stopped => super::srgb(super::STOPPED),
             LabelTone::Running | LabelTone::Watching => NSColor::colorWithWhite_alpha(0.78, 1.0),
         }
     }
@@ -106,12 +107,19 @@ fn area_name(tab: InboxTab) -> &'static str {
         InboxTab::Working => tr("Läuft", "Running"),
         InboxTab::Parked => tr("Geparkt", "Parked"),
         InboxTab::Planned => tr("Geplant", "Planned"),
+        InboxTab::Team => "Team",
     }
 }
 
 /// The inbox's head (Kevin 2026-11-10, "H"): on the overview its title; in an area the way back ("‹ Übersicht"), the
 /// area's name and count. The + at the right, a thin line below.
-fn draw_head(tab: InboxTab, counts: InboxCounts, y: f64, width: f64) {
+fn draw_head(
+    tab: InboxTab,
+    counts: InboxCounts,
+    team: Option<&(String, usize)>,
+    y: f64,
+    width: f64,
+) {
     let left = paragraph(NSTextAlignment::Left, false);
     let centre = paragraph(NSTextAlignment::Center, false);
     let title_x = if tab == InboxTab::Overview {
@@ -135,10 +143,13 @@ fn draw_head(tab: InboxTab, counts: InboxCounts, y: f64, width: f64) {
         InboxTab::Working => Some(counts.working),
         InboxTab::Parked => Some(counts.parked),
         InboxTab::Planned => counts.planned,
+        InboxTab::Team => team.map(|t| t.1),
     };
+    // A team's area is called by the team's name.
+    let name = team.map_or(area_name(tab), |t| t.0.as_str());
     let title = match count {
-        Some(n) => format!("{}  {n}", area_name(tab)),
-        None => area_name(tab).to_owned(),
+        Some(n) => format!("{name}  {n}"),
+        None => name.to_owned(),
     };
     let title_w = (INBOX_PLUS_X - 8.0 - title_x).max(0.0);
     draw_text(
@@ -459,6 +470,12 @@ fn button_title(button: CardButton) -> &'static str {
         CardButton::Unpark => tr("Zurückholen", "Bring back"),
         CardButton::Pin => tr("Anheften", "Pin"),
         CardButton::Unpin => tr("Lösen", "Unpin"),
+        CardButton::Rename => tr("Umbenennen …", "Rename …"),
+        CardButton::MakeCard => tr(
+            "Eigene Karte für dieses Projekt",
+            "Own card for this project",
+        ),
+        CardButton::DissolveCard => tr("Karte auflösen", "Dissolve the card"),
     }
 }
 
@@ -560,7 +577,9 @@ define_class!(
                         FontWeight::Regular,
                         &white(0.6),
                     ),
-                    ListLine::InboxHead { tab, counts } => draw_head(*tab, *counts, y, width),
+                    ListLine::InboxHead { tab, counts, team } => {
+                        draw_head(*tab, *counts, team.as_ref(), y, width)
+                    }
                     ListLine::WaitBar { n, text } => draw_wait_bar(*n, text, y, width, &tints),
                     ListLine::Tiles(tiles) => draw_tiles(tiles, y, width, &tints),
                     ListLine::Week(week) => draw_week(week, y, width, &tints),
@@ -685,11 +704,20 @@ impl ListView {
         let mtm = self.mtm();
         let menu = NSMenu::new(mtm);
         for (tag, button) in card.menu.iter().enumerate() {
+            // "Own card for ‹Ringtop›": the project the card shows (Kevin 2026-11-11, "3a"), quotes of the language.
+            let title = match (button, card.project.as_deref()) {
+                (CardButton::MakeCard, Some(p)) => tr(
+                    &format!("Eigene Karte für „{p}“"),
+                    &format!("Own card for “{p}”"),
+                )
+                .to_owned(),
+                _ => button_title(*button).to_owned(),
+            };
             // SAFETY: designated initializer on a fresh allocation; the action is a method of this view.
             let item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(mtm),
-                    &NSString::from_str(button_title(*button)),
+                    &NSString::from_str(&title),
                     Some(sel!(cardMenuItem:)),
                     &NSString::new(),
                 )

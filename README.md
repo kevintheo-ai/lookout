@@ -21,6 +21,7 @@ Background story: [Why I run my company with AI agents](https://kevintheo.com/fi
   because it needs your approval or wants you to pick an answer in a question box, the frame is amber. If the AI
   only asks something at the end of its answer, that counts as done; the label then shows the first sentence of
   the answer, so open the window to see the question.
+  A stopped session, one whose turn you broke off with Esc, gets a calm blue-grey frame.
   The window you're working in never gets a frame; you're looking at it anyway.
 - **Labels:** every other AI window gets a small dark label with the status and how long it has been in it, the
   session name and, for Claude Code, the current step while it works, and once a turn is over the question, the
@@ -28,7 +29,11 @@ Background story: [Why I run my company with AI agents](https://kevintheo.com/fi
   name is the session's own name (`/rename`, `claude --name`, or set by a hook); Claude's automatic topic title
   changes as the session goes on, so Lookout never shows it and shows the folder instead. You see it all without
   clicking into the window. For Codex, Grok and Kimi the label is shorter: status, time and window title.
-- **Four states:** `? WAITING FOR YOU`, `✓ DONE`, `● WORKING` and `◌ WATCHING` (Claude Code only, see below).
+- **Five states:** `? WAITING FOR YOU`, `⏸ STOPPED`, `✓ DONE`, `● WORKING` and `◌ WATCHING` (Claude Code only, see
+  below). `⏸ STOPPED` is a turn that you broke off with Esc. It shows in a calm blue-grey, as its label, as its sign in
+  the menu and as its frame, and the label says where it stopped ("stopped at: …", the step) or shows the start of the
+  answer. Lookout recognizes it in Claude Code, by the entry "[Request interrupted by user]" in the transcript, and in
+  Codex, by the event `turn_aborted` in its log; your next message or a new answer ends it.
 - **Layouts:** four layouts for all AI windows on one screen. Focus, Focus 2 and Grid are switched with
   Ctrl+Opt+1, 2 and 3. Inbox is chosen in the menu.
   - **Focus:** the window you click goes to the middle. The others line up by who needs you first: waiting, then
@@ -58,7 +63,8 @@ Background story: [Why I run my company with AI agents](https://kevintheo.com/fi
     so does the amber strip while it shows. Everything below them scrolls with the normal macOS scrolling. Scrolling
     up and down works as before, and so does a mouse wheel. Every card is shown. An area you open starts at its top.
     The scroll bar follows the macOS setting, and with "Always" the cards get narrower so nothing is cut off on the
-    right. Waiting lists the sessions that want something from you, questions first, then done ones. Cards you pinned
+    right. Waiting lists the sessions that want something from you, questions first, then the group "Stopped", then done
+    ones. Cards you pinned
     stand above all of them. Within each of the two groups, whoever has waited longest stands on top, and a click on a
     card does not change the order. Running lists the sessions at work, then the parking lot if you use one. Parked
     has two groups, "Parked by you" and "Read". While somebody waits for you, the Waiting tile is amber and its title
@@ -80,7 +86,8 @@ Background story: [Why I run my company with AI agents](https://kevintheo.com/fi
     A pinned card stands in its own group, Pinned, at the top of the Waiting area, with a pin before its name. Pinned
     cards stand in the order you pinned them. The first one is on top, a new one goes below. A pinned card stays there
     whatever its session does, whether it asks, is done or works, until you choose Unpin. Below the Pinned group,
-    Waiting stays as before: questions first, then done ones, whoever has waited longest on top. A pinned session that
+    Waiting stays as before: questions first, then "Stopped", then done ones, whoever has waited longest on top. A
+    pinned session that
     is working is also listed under Running. The count of Waiting, on its tile and in its head, counts a pinned
     session only while it waits for you. Pinning or unpinning a card ends an earlier park or read mark of that card.
     Pinning moves no window. There is no reordering by dragging. Parking and pins stay through a restart of Lookout.
@@ -88,10 +95,14 @@ Background story: [Why I run my company with AI agents](https://kevintheo.com/fi
     it read, the next waiting session comes to the terminal. Pinned cards are skipped there. Doing the same on another
     card moves nothing. What you marked read is kept in memory only: after quitting Lookout those cards are back. A +
     at the right of the head, on the overview and in every area alike, opens a menu with the three favorites, "Choose
-    freely", "Empty window" and "Change favorites". "Empty window" does what the + did before: it opens a new empty
+    freely", "New team …", "Empty window" and "Change favorites". "Empty window" does what the + did before: it opens a
+    new empty
     window of the terminal in front, Warp in your home folder or Ghostty, and Warp if no terminal is in front, and
     Ghostty needs version 1.3 or later for this. The favorites and "Choose freely" start a new AI session, see "New
     sessions from the +", while "Change favorites" only changes and saves the favorites.
+    Teams and project cards get a tile of their own right below Waiting, two tiles side by side. Their windows show only
+    in their own area (pinned ones stay in Pinned as well). A right-click on a card also offers "Rename …" and, for a
+    window named "Project · …", "Own card for …". More in the section "Teams, project cards and renaming".
 - **Control room:** with two or more screens, your active session and the windows that need you are on one
   screen, the busy ones on the other. There are three variants in the menu. The layout is fixed there, so the
   hotkeys don't apply.
@@ -119,7 +130,8 @@ Background story: [Why I run my company with AI agents](https://kevintheo.com/fi
   sections with a count: WAITING FOR YOU, DONE and, with a parking lot, IN THE PARKING LOT, while working and
   watching sessions sit behind one row "Running" with an arrow and a count, and that submenu lists all of them.
   That last section is compact: three rows, then "… and N more", which opens the peek. Each session row has a
-  colored dot (amber: waiting for you, mint: done, grey: working, grey ring: watching, paler on the parking lot),
+  colored dot (amber: waiting for you, blue-grey pause sign: stopped and listed under WAITING FOR YOU, mint: done, grey:
+  working, grey ring: watching, paler on the parking lot),
   the session name, below it the project and what the session does or asks, and on the right how long it has been
   in that state. Hover over a session to see where its window is. Screens, layouts, the parking lot, *More* and
   *Quit* have symbols. The switches (labels, strip side, pause) and the window choices (*Choose windows*, *Without
@@ -234,17 +246,19 @@ Lookout (it reads the file once at start), for example:
 | `glowColor` | `"#5ECFA0"` | frame color for "done" (mint) |
 | `glowColorWaiting` | `"#E8B25C"` | frame color for "waiting for you" (amber) |
 | `labels` | `true` | whether labels show at first start; after that, your choice in the menu is used |
-| `leadNames` | `[]` | own names (`claude --name …` or `/rename`) of sessions that lead other sessions, written exactly the same; an automatic topic title does not count (see "Watching" below); these sessions never park |
+| `leadNames` | `[]` | own names (`claude --name …` or `/rename`) of sessions that lead other sessions, written exactly the same; an automatic topic title does not count (see "Watching" below); a name like "<team> · …" also makes the session the lead of that team; these sessions never park |
 | `otherWindowNames` | `[]` | parts of window names where you answer for other sessions (for example `"front desk"`, any case); a `?` status line that only sends you there does not bring this window forward (see "The session's own status line") |
 | `askUntilReadNames` | `[]` | parts of names of places outside the terminal where you handle a request (for example `"card page"`, any case); a `?` status line that ends with one of them in brackets, like `(card page)`, shows WAITING FOR YOU only until you have had its tab in front (see "The session's own status line") |
 | `resumeCommands` | `{}` | command to restore a session, per Claude configuration folder, as `{"folder": "command"}` with `{id}` standing for the session, for example `{"~/.claude": "my-launcher claude --resume {id}"}`. A folder without an entry uses `CLAUDE_CONFIG_DIR='<folder>' claude --resume <id>`. A command without `{id}` is ignored |
 | `workerNames` | `[]` | parts of session names (any case) that mark worker windows for the parking lot, for example `"Worker · "`; without them there is no parking lot |
 | `plannedFile` | none | path of a JSON file that another program writes, starting with `/` or `~`; it adds the Planned area, without it there is none |
-| `newSession` | Home, Claude Code | places and programs for new sessions from the +, see "New sessions from the +" |
+| `newSession` | Home, Claude Code | places and programs for new sessions from the +, the role texts of a new team (`team`), see "New sessions from the +" and "Teams, project cards and renaming" |
 
 The menu remembers your choice of screen, layout, grid, control room screens, excluded windows and labels, and
 also which windows you sent to the parking lot or took off it by hand.
-Lookout also remembers which sessions you parked or pinned in the Inbox, across restarts.
+Lookout also remembers which sessions you parked or pinned in the Inbox, the titles you gave to sessions, your project
+cards and your team presets, across restarts. A session that comes back with its id (`claude --resume`) gets its title
+back.
 Pause and the side of the strip (*More > Strip on the right/left*) start fresh after a restart.
 
 ## What Lookout does on your Mac
@@ -279,6 +293,10 @@ I want you to know exactly what it touches:
   warp://launch/...`. It removes both files about a minute later, at once if Warp could not be asked. The launch
   configuration only runs the start script. The task is not in it. The log names the favorite that was started, never
   the task.
+- When you start a team, Lookout writes one start script and one launch configuration per window, exactly as for a new
+  session from the +; the key account's window starts 3 seconds after the lead's. The log names the team and the roles
+  with their place, program, model and effort, never the task. When a session starts with a name, that is a window of a
+  team or a session on a card, its start script also sets the environment variable `CLAUDE_SESSION_NAME` to that name.
 - Only for a program with `modelsCommand`: once a day Lookout runs that command in the background, with no shell, one
   program after the other and each for at most 30 seconds. It writes the answers with the day to
   `~/Library/Application Support/Lookout/models.json`. The log notes per program how many models it named, that it
@@ -518,7 +536,8 @@ from today" or "Due from Thu Nov 12". Planned cards open no session and have no 
 
 A click on the + in the head of the Inbox opens a menu right below it. It lists three favorites, numbered ①, ② and ③.
 Each shows place, program, model and effort, separated by " · ", for example "① Home · Claude Code · opus · max".
-Below them stand "Choose freely", "Empty window" and, after a separator line, "Change favorites". "Empty window" does
+Below them stand "Choose freely", "New team …", "Empty window" and, after a separator line, "Change favorites". "Empty
+window" does
 what the + did before. If Lookout is busy at the very moment you click the +, it opens such an empty window right away
 instead of the menu. The same menu is under *New session* in the menu bar menu. Without any AI session there is no
 Inbox and no +, so a first session can start from the menu bar.
@@ -529,7 +548,9 @@ without models and efforts starts from its own row. The last click opens the sam
 that choice. The favorites stay as they are.
 
 Choosing a favorite opens a small window "New task" that shows the favorite and has a text field. The text wraps in
-the field. Enter or the button "Start" starts. Esc or "Cancel" cancels, and the app that was in front before gets the
+the field. Above the task stands a field "Card": leave it empty for none, pick a card from its list or type a new name.
+The session then starts on that card, see "Teams, project cards and renaming". Enter or the button "Start" starts. Esc
+or "Cancel" cancels, and the app that was in front before gets the
 front back. An empty field starts the session without a task. Copy, paste, cut, select all and undo work in the field
 with ⌘C, ⌘V, ⌘X, ⌘A and ⌘Z. The task becomes one line: line breaks and runs of spaces become one space.
 
@@ -591,6 +612,11 @@ The rules:
 - `{task}` must appear exactly once in the command, as a word of its own, right after a word `--`. Otherwise the
   program is ignored. The `--` keeps a task that starts with a dash, like `--version`, from being read as an option.
   Without a task, `--` and `{task}` are left out.
+- `{name}` stands for the session's name. It must be a word of its own, right after an option (a word that starts with
+  "-", but not `--`), and it may appear at most once; otherwise the program is ignored. When a session starts without a
+  name, the option and `{name}` are left out. When it starts with a name, the start script also sets the environment
+  variable `CLAUDE_SESSION_NAME` to it, so that a hook that names sessions by their first message can keep it. Only
+  programs with `{name}` can be the lead or the key account of a team, or start a session on a card.
 - A command that uses `{model}` or `{effort}` needs a non-empty `models` or `efforts` list. Otherwise the program is
   ignored.
 - If two places or two programs have the same name, the first valid one counts and later ones are ignored. An entry
@@ -607,8 +633,100 @@ repeated models are left out, and a program keeps at most 40 models. `models` st
 and whenever there is none. Running these commands costs whatever they do. Lookout itself runs no AI model for them.
 
 Without the setting, or with nothing usable in it, there is one place, "Home" (your home folder), and one program,
-"Claude Code". Its command is `["claude", "--model", "{model}", "--effort", "{effort}", "--", "{task}"]`, its models
+"Claude Code". Its command is `["claude", "--name", "{name}", "--model", "{model}", "--effort", "{effort}", "--",
+"{task}"]`, its models
 are opus, sonnet and haiku, and its efforts are max, xhigh, high, medium and low.
+
+## Teams, project cards and renaming
+
+A team is a group of AI windows whose names start with the team's name and " · " (space, middle dot, space), for example
+"Shop · Team lead", "Shop · Key account" and "Shop · checkout page". Lookout knows a team only by these names. A team
+exists while a window of it is open and one of these windows founds it: a window named "<team> · Team lead" (or
+"Team-Lead"), a window named "<team> · Key account", or a window whose own name is in the setting `leadNames`. Names
+compare in any case, a hyphen counts as a space and runs of spaces count as one. "Team lead" (or "Team-Lead") is the
+lead, "Key account" is the key account, and every other name is a worker. A `leadNames` entry is a lead too. The name of
+a window is the title you gave it in Lookout, else the session's own name, else the name from the status file of Claude
+Code. If two windows of a team have the same name, only the newest keeps its role; older ones stand under "To close" (a
+lead that handed over keeps its name, the successor takes it). Lookout does not start workers: the lead starts them
+itself, named "<team> · <step>", as its role text says.
+
+The menu of the + has "New team …" between "Choose freely" and "Empty window", and *New session* in the menu bar menu
+has it too. It is greyed out with "no program with {name}" while no program in the settings has `{name}` in its command.
+"New team …" opens a window "New team" with these fields:
+
+- "Team name", with the example "e.g. Shop".
+- "Team lead": a button that opens the same cascade as "Choose freely" (place, program, model, effort); the place chosen
+  here is the team's place.
+- "Key account": a tick box and a button with program, model and effort. It starts in the lead's place.
+- "Workers": a button with program, model and effort.
+- "Task": a text field.
+
+The buttons are "Start" and "Cancel" (Esc). Lead and key account can only use programs with `{name}`. Workers can use
+any program: the choice starts nothing, it goes into the lead's text. The team name must not be empty, must not contain
+"·", has at most 40 characters, and must not be the name of a team that is open or was just started (any case). A role
+whose choice no longer fits the settings also keeps the window open. The window says what is wrong and keeps the task.
+The choices in the window count only for this team.
+
+On "Start" the lead starts in a new Warp window named "<team> · Team lead". With the tick, the key account follows 3
+seconds later in a window named "<team> · Key account", because Warp opened only one of two windows asked for at the
+same moment. Each window gets its role text, then a space, then the task, as its first message.
+
+The role texts are the setting `newSession.team` in `~/.config/lookout.json`: `lead` for the lead of a team with a key
+account, `leadAlone` for a lead without one, and `keyAccount`. A text that is missing or empty keeps the built-in
+English text. These placeholders work in the texts: `{team}` (the team's name), `{lead}` and `{keyAccount}` (the names
+of the two windows), `{worker}` (the workers' choice as "program · model · effort", the model with the name from the
+daily model list), `{workerProgram}`, `{workerModel}` and `{workerEffort}`. For example:
+
+```json
+{
+  "newSession": {
+    "team": {
+      "lead": "You lead the team {team}. Workers start with {worker}. Questions go to \"{keyAccount}\". The task:",
+      "leadAlone": "You lead the team {team}. Workers start with {worker}. The task:",
+      "keyAccount": "You are the key account of the team {team}. The team's task:"
+    }
+  }
+}
+```
+
+Under "Change favorites › Team" you set the presets of the "New team" window: the place and, for "Team lead: …", "Key
+account: …" and "Workers: …", the program, model and effort. One click saves at once. Without a stored preset, lead and
+key account get the first place and the first program with `{name}`, with its first model and effort, workers get the
+first program with its first model and effort, and the key account tick is on.
+
+Each team has a tile on the overview of the Inbox, right below Waiting, two tiles side by side. The tile shows the
+team's name and how many windows it has. Its first line is "? <name> asks you" while one of its windows asks, else the
+state signs of lead and key account ("● Lead · ✓ Key account", or "no lead"). Its second line says how many workers run.
+The tile is amber while one of its windows asks, and it goes away when no window of the team is open any more.
+
+A click on the tile opens the team's area with the groups "Team lead", "Key account", "Workers" and "To close". Each
+card there shows the session's model under its name (for example "Opus 5.5", Claude Code only). If the team is gone
+while its area is open, the Inbox goes back to the overview. The windows of a team show only in its area: not under
+Waiting, Running or Parked, and they do not count there. Pinned ones stay in Pinned as well.
+
+A project card gathers every window whose name starts with "<project> · ", like a team but without roles. You make one
+in one of two ways. Right-click a card in Waiting, Running or Parked whose name starts with "<project> · " and that is
+in no team, and choose "Own card for “<project>”". Or use the field "Card" in the "New task" window of the +: pick a
+card from its list or type a new name. The session then starts named "<card> · <first words of the task>", with at most
+40 characters of the task, a longer first word cut, and a "·" in the card name turned into a space; without a task it is
+named "<card> · new". The card is kept. This works only with a program that has `{name}`; with another program the
+session starts without a card and the log says so.
+
+The windows of a card leave Waiting, Running and Parked, like those of a team. Its tile stands with the team tiles and
+shows its name and how many windows it has. Its first line is "? <name> asks you" while one window asks, else how many
+are done and, if any, how many are stopped ("1 done · 1 stopped"). Its second line says how many work. The tile is amber
+while one window asks. A click on it opens the card's area, grouped by state: "Questions for you", "Stopped", "Working"
+and "Done". Windows with the same name all stay. "Dissolve the card" in the right-click menu of each of its windows in
+its area ends the card. A card stays until you dissolve it, also across restarts. A card whose project is also a team
+shows as that team.
+
+A right-click on any card in the Inbox, also in the area of a team or a card, offers "Rename …". A small window "Rename"
+shows the session's current full name, for example "Shop · checkout page". "Save" keeps the title, "Cancel" or Esc
+cancels. An empty field, or the session's own name unchanged, gives the session its own name back. The title shows on
+the card, on the label and in the menu instead of the session's own name. It also decides the team or card: "<project> ·
+…" puts the window in that project's team or card if there is one, and a title without " · " leaves it on its own. The
+session itself keeps its name. Lookout does not rename the session, its tab or what `/resume` shows, and to find a
+window it still uses the session's own names.
 
 ## Limits
 
@@ -635,6 +753,12 @@ are opus, sonnet and haiku, and its efforts are max, xhigh, high, medium and low
 - Parked windows show no sign on screen; the menu and Ctrl+Opt+4 show them.
 - New sessions from the + open only in Warp. The task becomes one line. There are three favorites, no more. A program
   can only be used if it takes `--` as the end of its options.
+- Teams and project cards know their windows only by name; a window that gets another name, for example from a hook that
+  names sessions, leaves its team or card. Lookout starts only the lead and the key account, the lead starts the workers
+  with its own tools, and the workers' choice only goes into the lead's text. Team windows and sessions on a card open
+  only in Warp, like every new session from the +. A project card with no window open shows no tile; it stays in the
+  list of the field "Card" and can only be dissolved from one of its windows. "Rename …" changes only what Lookout
+  shows. STOPPED is recognized for Claude Code and Codex only.
 
 ## Kurz auf Deutsch
 
@@ -655,7 +779,11 @@ Einstellung `newSession`, die Modell-Listen auf Wunsch einmal am Tag über einen
 (`modelsCommand`). Dasselbe Menü steht in der Menüleiste unter «Neue Session». Mit «Parken» im Rechtsklick-Menü einer
 Karte parkst du eine Session, der du nicht folgen willst; im Bereich «Geparkt» holst du sie mit «Zurückholen» wieder.
 Mit «Anheften» im Rechtsklick-Menü einer Karte stellst du die Session in die Gruppe «Angeheftet» ganz oben im Bereich
-«Wartet»; dort bleibt sie, bis du «Lösen» wählst. Nach einem Absturz, einem Herunterfahren oder wenn Warp beendet
+«Wartet»; dort bleibt sie, bis du «Lösen» wählst. «Neues Team …» im «+» startet ein Fenster «Team-Lead» und auf Wunsch
+ein Fenster «Key account», jedes mit einem Rollentext vor dem Auftrag. Jedes Team und jede Projekt-Karte hat in der
+Übersicht eine eigene Kachel, und ihre Fenster stehen nur noch dort. Mit «Umbenennen …» im Rechtsklick-Menü gibst du
+einer Session in Lookout einen eigenen Titel. Ein mit Esc abgebrochener Zug zeigt ⏸ ANGEHALTEN in Blaugrau. Nach einem
+Absturz, einem Herunterfahren oder wenn Warp beendet
 wurde, zeigt das Menü «Sessions wiederherstellen»; jede Claude-Code-Session öffnet sich dann in einem eigenen
 Warp-Fenster und startet `claude --resume`.
 Installation wie oben (`git clone`, `./build.sh`,

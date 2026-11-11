@@ -88,13 +88,19 @@ struct GlowPanel {
     view: Retained<GlowView>,
     born_at: Time,
     dying_at: Option<Time>,
-    waiting: bool,
+    /// Why it glows: (asks, stopped); the colour follows.
+    cause: (bool, bool),
     /// Offset in the breathing rhythm: frames that breathe in unison look like a warning light.
     phase: f64,
 }
 
 impl GlowPanel {
-    fn new(mtm: MainThreadMarker, tint: Retained<NSColor>, waiting: bool, phase: f64) -> GlowPanel {
+    fn new(
+        mtm: MainThreadMarker,
+        tint: Retained<NSColor>,
+        cause: (bool, bool),
+        phase: f64,
+    ) -> GlowPanel {
         let view = GlowView::new(mtm, tint);
         // The windows' level; `update` orders it.
         let panel = make_overlay_panel(mtm, Level::Normal);
@@ -105,7 +111,7 @@ impl GlowPanel {
             view,
             born_at: crate::now(),
             dying_at: None,
-            waiting,
+            cause,
             phase,
         }
     }
@@ -146,7 +152,7 @@ impl GlowOverlay {
         *g.ready.borrow_mut() = srgb(ready);
         *g.waiting.borrow_mut() = srgb(waiting);
         for p in g.panels.borrow().values() {
-            p.view.set_tint(g.tint(p.waiting));
+            p.view.set_tint(g.tint(p.cause));
         }
     }
 
@@ -164,10 +170,10 @@ impl GlowOverlay {
             let p = match panels.entry(t.id.clone()) {
                 Entry::Occupied(e) => {
                     let p = e.into_mut();
-                    if p.waiting != t.waiting {
+                    if p.cause != (t.waiting, t.stopped) {
                         // The cause changed: the colour follows.
-                        p.waiting = t.waiting;
-                        p.view.set_tint(g.tint(t.waiting));
+                        p.cause = (t.waiting, t.stopped);
+                        p.view.set_tint(g.tint(p.cause));
                     }
                     p
                 }
@@ -175,8 +181,8 @@ impl GlowOverlay {
                     g.next_phase.set(g.next_phase.get() + GLOW_PHASE_STEP);
                     e.insert(GlowPanel::new(
                         g.mtm,
-                        g.tint(t.waiting),
-                        t.waiting,
+                        g.tint((t.waiting, t.stopped)),
+                        (t.waiting, t.stopped),
                         g.next_phase.get(),
                     ))
                 }
@@ -228,9 +234,15 @@ impl Drop for GlowOverlay {
 }
 
 impl Glow {
-    fn tint(&self, waiting: bool) -> Retained<NSColor> {
-        let tint = if waiting { &self.waiting } else { &self.ready };
-        tint.borrow().clone()
+    /// Asking in its colour, stopped in the stopped blue-grey (Kevin 2026-11-10, "2a"), done in its colour.
+    fn tint(&self, (waiting, stopped): (bool, bool)) -> Retained<NSColor> {
+        if waiting {
+            self.waiting.borrow().clone()
+        } else if stopped {
+            srgb(super::STOPPED)
+        } else {
+            self.ready.borrow().clone()
+        }
     }
 
     /// The 30 Hz ticker, in the run loop's default mode like Swift's `scheduledTimer`: while a menu is open the frames

@@ -23,6 +23,7 @@ use crate::model::{
 };
 use crate::motion::{WARP_BID, ax_origin, cocoa_to_ax, glide_path};
 use crate::planned::{self, NaiveDate, PlannedItem};
+use crate::team::{self, Team};
 use chrono::Datelike;
 
 // ---------- Glow frames ----------
@@ -66,6 +67,8 @@ pub struct GlowTarget {
     pub id: String,
     pub rect: Rect,
     pub waiting: bool,
+    /// Its turn was broken off (Kevin 2026-11-10): the frame in the stopped colour.
+    pub stopped: bool,
     /// CGWindowID of the terminal window; the frame is ordered right above it. `None` = unknown (window list not
     /// readable): in front on the normal level, as a fallback.
     pub window_number: Option<i64>,
@@ -251,6 +254,7 @@ pub fn glow_targets(o: &OverlayInput) -> Vec<GlowTarget> {
                 id,
                 rect: w.frame,
                 waiting: w.is_waiting(),
+                stopped: w.is_stopped(),
                 window_number,
             }
         })
@@ -305,6 +309,9 @@ pub fn whereabouts(w: &TermWindow, on_screen: bool) -> WindowWhereabouts {
 pub fn session_tone(s: &Session) -> LabelTone {
     if s.waiting {
         LabelTone::Waiting
+    } else if s.is_stopped() {
+        // Its own clock, like every state (review quick 2026-11-10, GLM: without it a stopped card showed no time).
+        LabelTone::Stopped
     } else if s.ready {
         LabelTone::Ready
     } else if s.watching {
@@ -318,6 +325,8 @@ pub fn session_tone(s: &Session) -> LabelTone {
 pub fn window_tone(w: &TermWindow) -> LabelTone {
     if w.is_waiting() {
         LabelTone::Waiting
+    } else if w.is_stopped() {
+        LabelTone::Stopped
     } else if w.is_ready() {
         LabelTone::Ready
     } else if w.is_watching() {
@@ -578,7 +587,9 @@ pub fn label_content(
     // v4: the own name ("Project · task", naming hook) carries the project already, no folder after it. Kevin 2026-10-12
     // ("immer klar sehen, welche Session welche ist"): never Claude's topic, it keeps changing ("Ja mach das ·
     // ClaudeCode"). Without an own name a Claude session shows only its folder until the hook names it.
-    let name = d.and_then(|d| d.name.as_deref());
+    let name = s
+        .and_then(|s| s.title.as_deref())
+        .or_else(|| d.and_then(|d| d.name.as_deref()));
     let folder = if name.is_none() {
         last_path_component(s.map_or("", |s| s.cwd.as_str()))
     } else {
@@ -612,6 +623,8 @@ pub fn label_content(
             .or_else(|| step(tr("Freigabe: ", "Approval: ")))
             .or_else(text),
         LabelTone::Ready | LabelTone::Watching => reason.or_else(text),
+        // Broken off (Kevin 2026-11-10): where it stopped, so the nudge knows where to go on.
+        LabelTone::Stopped => step(tr("angehalten bei: ", "stopped at: ")).or_else(text),
         // No "denkt nach" alternating with the step, it flickered every 6 s. Kevin 2026-10-12 evening: the step line is
         // back (the calm version of the midday was taken back, without it one no longer saw what the session does).
         LabelTone::Running => {
@@ -887,9 +900,11 @@ pub fn menu_row(
     let visible = w.visible_session();
     let entry = visible.and_then(|s| since.get(&s.id));
     let c = label_content(w, entry, visible.and_then(|s| lookout.get(&s.id)), now);
-    let own = visible
-        .and_then(|s| s.digest.as_ref())
-        .and_then(|d| d.name.as_deref());
+    let own = visible.and_then(|s| {
+        s.title
+            .as_deref()
+            .or_else(|| s.digest.as_ref().and_then(|d| d.name.as_deref()))
+    });
     let (project, name) = match own.and_then(|n| n.split_once(" · ")) {
         Some((project, task)) => (Some(project.to_owned()), task.to_owned()),
         None => (None, c.topic),
@@ -939,7 +954,8 @@ pub fn menu_groups(
             return MenuGroup::Lot;
         }
         match window_tone(&windows[i]) {
-            LabelTone::Waiting => MenuGroup::Waiting,
+            // A stopped one needs a nudge from Kevin (Kevin 2026-11-10, "1a").
+            LabelTone::Waiting | LabelTone::Stopped => MenuGroup::Waiting,
             LabelTone::Ready => MenuGroup::Ready,
             LabelTone::Running | LabelTone::Watching => MenuGroup::Working,
         }
@@ -1018,6 +1034,8 @@ pub struct InboxCounts {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboxTile {
     pub tab: InboxTab,
+    /// The team of a team's tile.
+    pub team: Option<String>,
     pub title: String,
     pub count: usize,
     pub lines: Vec<String>,
@@ -1044,9 +1062,11 @@ pub struct WeekDay {
 }
 
 /// Where a click in the inbox leads (`nav_at`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InboxNav {
     Open(InboxTab),
+    /// A team's area.
+    Team(String),
     /// A day in the week strip.
     Day(NaiveDate),
     /// A week back (-1) or ahead (+1).
@@ -1070,6 +1090,8 @@ pub enum ListLine {
     InboxHead {
         tab: InboxTab,
         counts: InboxCounts,
+        /// In a team's area: its name and how many windows it has.
+        team: Option<(String, usize)>,
     },
     /// In every area but Waiting while somebody waits: an amber strip with the first of them; a click opens Waiting.
     WaitBar {
@@ -1093,7 +1115,7 @@ pub enum ListLine {
 }
 
 /// What the inbox shows (Kevin 2026-11-10, "H"): the overview with one tile per area, or one area. The areas: who wants
-/// something from Kevin, what works, what he put away, and what is planned.
+/// something from Kevin, what works, what he put away, what is planned, and one per team (`InboxInput::team` says which).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum InboxTab {
     #[default]
@@ -1102,6 +1124,7 @@ pub enum InboxTab {
     Working,
     Parked,
     Planned,
+    Team,
 }
 
 /// The head: the way back to the overview from this x, this wide; the + for a new terminal window at the right.
@@ -1232,7 +1255,10 @@ pub fn nav_at(lines: &[ListLine], width: f64, x: f64, y: f64) -> Option<InboxNav
                     .into_iter()
                     .zip(tiles)
                     .find(|(span, _)| inside(x, *span))
-                    .map(|(_, t)| InboxNav::Open(t.tab)),
+                    .map(|(_, t)| match &t.team {
+                        Some(name) => InboxNav::Team(name.clone()),
+                        None => InboxNav::Open(t.tab),
+                    }),
                 ListLine::Week(week) if dy < INBOX_WEEK_DAYS_TOP => {
                     let [back, ahead] = week_arrows(width);
                     if inside(x, back) {
@@ -1292,7 +1318,7 @@ pub fn plan_day_after(
 ) -> Option<NaiveDate> {
     let day = match nav {
         InboxNav::Open(InboxTab::Planned) => return None,
-        InboxNav::Open(_) => return day,
+        InboxNav::Open(_) | InboxNav::Team(_) => return day,
         InboxNav::Day(d) => d,
         InboxNav::Week(k) => planned::shift_week(day.unwrap_or(today), k, today),
     };
@@ -1403,6 +1429,12 @@ pub struct InboxInput<'a> {
     /// The day the Planned area shows, and today.
     pub plan_day: NaiveDate,
     pub today: NaiveDate,
+    /// The teams that exist (`team::update_known`), the projects with an own card (Kevin 2026-11-11), `leadNames`, and the
+    /// team or card whose area is open (`InboxTab::Team`).
+    pub teams: &'a BTreeSet<String>,
+    pub cards: &'a [String],
+    pub lead_names: &'a [String],
+    pub team: Option<&'a str>,
 }
 
 /// Room a scroller that takes space leaves out of the cards ("Show scroll bars: Always", measured 17 pt on macOS 27).
@@ -1436,7 +1468,7 @@ fn inbox_card(i: usize, panel_w: f64, o: &InboxInput) -> Vec<ListLine> {
     let pinned = pin_rank(w, o.pinned).is_some();
     let parked = !pinned
         && (is_snoozed(w, o.snoozed, o.read) || (c.tone == LabelTone::Ready && is_read(w, o.read)));
-    let menu = if pinned {
+    let mut menu = if pinned {
         vec![CardButton::Unpin]
     } else if parked {
         vec![CardButton::Unpark]
@@ -1445,6 +1477,7 @@ fn inbox_card(i: usize, panel_w: f64, o: &InboxInput) -> Vec<ListLine> {
     } else {
         vec![CardButton::Pin, CardButton::Park]
     };
+    menu.push(CardButton::Rename);
     let mut out = vec![ListLine::Card(InboxCard {
         ids: ids.clone(),
         name: row.name,
@@ -1526,28 +1559,44 @@ pub fn inbox_target(list: &SideList, o: &InboxInput, window_number: i64) -> List
     pins.sort_by_key(|&i| pin_rank(&o.windows[i], o.pinned));
     let unpinned =
         |g: Vec<usize>| -> Vec<usize> { g.into_iter().filter(|&i| !is_pin(i)).collect() };
-    let snoozed: Vec<usize> = planned
-        .iter()
-        .map(|(i, _)| *i)
-        .filter(|&i| parked(i))
-        .collect();
-    let read: Vec<usize> = planned
-        .iter()
-        .map(|(i, _)| *i)
-        .filter(|&i| read_done(i) && !parked(i))
-        .collect();
-    let running = [LabelTone::Running, LabelTone::Watching];
-    let (asks, done) = (
-        unpinned(group(&[LabelTone::Waiting], None)),
-        unpinned(group(&[LabelTone::Ready], None)),
+    // A team's windows stay in its own area (Kevin 2026-11-11: "Die sollen nur noch bei sich drinnen sein"): not under
+    // Waiting, Running or Parked; its tile turns amber when one asks. Pinned ones stay pinned.
+    let indices: Vec<usize> = planned.iter().map(|(i, _)| *i).collect();
+    let teams = team::teams(o.windows, &indices, o.teams, o.cards, o.lead_names);
+    let in_team: BTreeSet<usize> = teams.iter().flat_map(Team::members).collect();
+    let not_team =
+        |g: Vec<usize>| -> Vec<usize> { g.into_iter().filter(|i| !in_team.contains(i)).collect() };
+    let snoozed: Vec<usize> = not_team(
+        planned
+            .iter()
+            .map(|(i, _)| *i)
+            .filter(|&i| parked(i))
+            .collect(),
     );
-    let (working, lot) = (group(&running, Some(false)), group(&running, Some(true)));
-    // Who waits, in the order Waiting lists them: pinned ones that do not work, questions, done.
+    let read: Vec<usize> = not_team(
+        planned
+            .iter()
+            .map(|(i, _)| *i)
+            .filter(|&i| read_done(i) && !parked(i))
+            .collect(),
+    );
+    let running = [LabelTone::Running, LabelTone::Watching];
+    let (asks, stopped, done) = (
+        not_team(unpinned(group(&[LabelTone::Waiting], None))),
+        not_team(unpinned(group(&[LabelTone::Stopped], None))),
+        not_team(unpinned(group(&[LabelTone::Ready], None))),
+    );
+    let (working, lot) = (
+        not_team(group(&running, Some(false))),
+        not_team(group(&running, Some(true))),
+    );
+    // Who waits, in the order Waiting lists them: pinned ones that do not work, questions, stopped, done.
     let waiting: Vec<usize> = pins
         .iter()
         .copied()
         .filter(|&i| !running.contains(&window_tone(&o.windows[i])))
         .chain(asks.iter().copied())
+        .chain(stopped.iter().copied())
         .chain(done.iter().copied())
         .collect();
     let counts = InboxCounts {
@@ -1556,12 +1605,22 @@ pub fn inbox_target(list: &SideList, o: &InboxInput, window_number: i64) -> List
         parked: snoozed.len() + read.len(),
         planned: o.plan.map(|p| planned::count_this_week(p, o.today)),
     };
-    // Without a planner (any more) the Planned area is the overview.
-    let tab = match (o.tab, o.plan) {
-        (InboxTab::Planned, None) => InboxTab::Overview,
-        (tab, _) => tab,
+    // Without a planner (any more) the Planned area is the overview, so is the area of a team that is gone.
+    let open_team = o
+        .team
+        .and_then(|name| teams.iter().find(|t| t.name == name));
+    let tab = match (o.tab, o.plan, open_team) {
+        (InboxTab::Planned, None, _) | (InboxTab::Team, _, None) => InboxTab::Overview,
+        (tab, _, _) => tab,
     };
-    let mut lines = vec![ListLine::InboxHead { tab, counts }];
+    let team_head = open_team
+        .filter(|_| tab == InboxTab::Team)
+        .map(|t| (t.name.clone(), t.members().count()));
+    let mut lines = vec![ListLine::InboxHead {
+        tab,
+        counts,
+        team: team_head,
+    }];
     if !matches!(tab, InboxTab::Overview | InboxTab::Waiting)
         && let Some(&first) = waiting.first()
     {
@@ -1578,7 +1637,13 @@ pub fn inbox_target(list: &SideList, o: &InboxInput, window_number: i64) -> List
     let (groups, nobody): (Vec<(&str, &Vec<usize>)>, &str) = match tab {
         InboxTab::Overview => {
             let parts = (working.len(), lot.len(), snoozed.len(), read.len());
-            lines.extend(overview(o, counts, &waiting, parts));
+            lines.extend(overview(o, counts, &waiting, parts, &teams));
+            return target(lines);
+        }
+        InboxTab::Team => {
+            if let Some(t) = open_team {
+                lines.extend(team_view::area(o, t, list.rect.width()));
+            }
             return target(lines);
         }
         InboxTab::Planned => {
@@ -1589,6 +1654,8 @@ pub fn inbox_target(list: &SideList, o: &InboxInput, window_number: i64) -> List
             vec![
                 (tr("Angeheftet", "Pinned"), &pins),
                 (tr("Fragen an dich", "Questions for you"), &asks),
+                // Broken off, waiting for a nudge (Kevin 2026-11-10, "1a").
+                (tr("Angehalten", "Stopped"), &stopped),
                 (tr("Fertig", "Done"), &done),
             ],
             tr("Niemand wartet auf dich.", "Nobody is waiting for you."),
@@ -1614,7 +1681,15 @@ pub fn inbox_target(list: &SideList, o: &InboxInput, window_number: i64) -> List
     for (label, group) in groups.into_iter().filter(|(_, g)| !g.is_empty()) {
         lines.push(ListLine::Group(label.to_owned()));
         for &i in group {
-            lines.extend(inbox_card(i, list.rect.width(), o));
+            let mut card = inbox_card(i, list.rect.width(), o);
+            // A window of a project gets "own card" (Kevin 2026-11-11, "3a"); team and card windows are in their area.
+            if !in_team.contains(&i)
+                && team::project(&o.windows[i]).is_some()
+                && let Some(ListLine::Card(c)) = card.first_mut()
+            {
+                c.menu.push(CardButton::MakeCard);
+            }
+            lines.extend(card);
         }
     }
     target(lines)
@@ -1642,10 +1717,12 @@ fn overview(
     counts: InboxCounts,
     waiting: &[usize],
     (working, lot, snoozed, read): (usize, usize, usize, usize),
+    teams: &[Team],
 ) -> Vec<ListLine> {
     let waits = counts.waiting > 0;
     let wait = InboxTile {
         tab: InboxTab::Waiting,
+        team: None,
         title: if waits {
             tr("Wartet auf dich", "Waiting for you")
         } else {
@@ -1673,6 +1750,7 @@ fn overview(
     };
     let run = InboxTile {
         tab: InboxTab::Working,
+        team: None,
         title: tr("Läuft", "Running").to_owned(),
         count: counts.working,
         // Two short lines: a half tile is about 200 pt wide (live 2026-11-10: one line was cut off).
@@ -1692,6 +1770,7 @@ fn overview(
     };
     let park = InboxTile {
         tab: InboxTab::Parked,
+        team: None,
         title: tr("Geparkt", "Parked").to_owned(),
         count: counts.parked,
         lines: vec![if counts.parked == 0 {
@@ -1705,17 +1784,22 @@ fn overview(
         }],
         hot: false,
     };
+    // The teams right below Waiting, two side by side (Kevin 2026-11-10, mockup "Teams").
+    let mut lines = vec![ListLine::Tiles(vec![wait])];
+    let team_tiles: Vec<InboxTile> = teams.iter().map(|t| team_view::tile(o, t)).collect();
+    lines.extend(
+        team_tiles
+            .chunks(2)
+            .map(|row| ListLine::Tiles(row.to_vec())),
+    );
     match o.plan {
-        Some(plan) => vec![
-            ListLine::Tiles(vec![wait]),
+        Some(plan) => lines.extend([
             ListLine::Tiles(vec![run, plan_tile(plan, counts, o)]),
             ListLine::Tiles(vec![park]),
-        ],
-        None => vec![
-            ListLine::Tiles(vec![wait]),
-            ListLine::Tiles(vec![run, park]),
-        ],
+        ]),
+        None => lines.push(ListLine::Tiles(vec![run, park])),
     }
+    lines
 }
 
 /// "heute" / "morgen" / "Do 12.11." before a time.
@@ -1759,6 +1843,7 @@ fn plan_tile(plan: &[PlannedItem], counts: InboxCounts, o: &InboxInput) -> Inbox
     ));
     InboxTile {
         tab: InboxTab::Planned,
+        team: None,
         title: tr("Geplant", "Planned").to_owned(),
         count: counts.planned.unwrap_or(0),
         lines,
@@ -2076,6 +2161,8 @@ impl Glide {
         self.finished.len() == self.paths.len()
     }
 }
+
+mod team_view;
 
 #[cfg(test)]
 mod tests;

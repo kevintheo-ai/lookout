@@ -15,6 +15,8 @@ pub mod overlay;
 pub mod planned;
 pub mod restore;
 pub mod status;
+pub mod team;
+pub mod team_start;
 
 #[cfg(test)]
 mod testutil;

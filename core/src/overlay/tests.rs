@@ -1702,6 +1702,10 @@ fn inbox_lines_full(
             plan: None,
             plan_day: TEST_DAY,
             today: TEST_DAY,
+            teams: &BTreeSet::new(),
+            cards: &[],
+            lead_names: &[],
+            team: None,
         },
         7,
     )
@@ -1721,6 +1725,7 @@ fn head(tab: InboxTab, waiting: usize, working: usize, parked: usize) -> ListLin
             parked,
             planned: None,
         },
+        team: None,
     }
 }
 
@@ -1788,7 +1793,13 @@ fn test_inbox_done_card_has_a_right_click_and_no_button() {
     assert_eq!(hit.ids, [w[1].sessions[0].id.clone()]);
     assert_eq!(
         hit.menu,
-        [CardButton::Pin, CardButton::Park, CardButton::ReadNext]
+        [
+            CardButton::Pin,
+            CardButton::Park,
+            CardButton::ReadNext,
+            CardButton::Rename,
+            CardButton::MakeCard
+        ]
     );
     assert_eq!(card_at(&lines, 5.0), None, "the tabs are no card");
 }
@@ -1828,7 +1839,10 @@ fn test_inbox_parked_card_button_is_hit() {
         "a click on the card"
     );
     assert_eq!(button_at(&lines, first, top + 5.0), None);
-    assert_eq!(card(&lines[k]).menu, [CardButton::Unpark]);
+    assert_eq!(
+        card(&lines[k]).menu,
+        [CardButton::Unpark, CardButton::Rename, CardButton::MakeCard]
+    );
 }
 
 #[test]
@@ -2014,6 +2028,66 @@ fn test_inbox_groups_by_the_state_now() {
     assert_eq!(card(&lines[4]).name, "Eben fertig");
 }
 
+/// A turn broken off with Esc (Kevin 2026-11-10, "1a 2a"): stopped, not done; it waits in its own group between the
+/// questions and the done ones, and a question still comes first.
+#[test]
+fn test_inbox_stopped_between_questions_and_done() {
+    let mut w = vec![
+        inbox_window(0, false, "A · Eben fertig", None),
+        inbox_window(1, false, "A · Abgebrochen", None),
+        inbox_window(2, true, "A · Fragt jetzt", Some("Ja?")),
+    ];
+    w[1].sessions[0].digest.as_mut().unwrap().interrupted = true;
+    assert_eq!(window_tone(&w[1]), LabelTone::Stopped);
+    assert_eq!(LabelTone::Stopped.symbol(), "⏸");
+    let mut asking = w[2].clone();
+    asking.sessions[0].digest.as_mut().unwrap().interrupted = true;
+    assert_eq!(
+        window_tone(&asking),
+        LabelTone::Waiting,
+        "a question beats stopped"
+    );
+    let lines = inbox_lines(
+        &w,
+        &inbox_list(&[0, 1, 2], 900.0),
+        None,
+        &ReadAnswers::new(),
+    );
+    let shown: Vec<String> = lines
+        .iter()
+        .filter_map(|l| match l {
+            ListLine::Group(g) => Some(format!("[{g}]")),
+            ListLine::Card(c) => Some(c.name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            "[Fragen an dich]",
+            "Fragt jetzt",
+            "[Angehalten]",
+            "Abgebrochen",
+            "[Fertig]",
+            "Eben fertig"
+        ]
+    );
+    assert_eq!(
+        lines[0],
+        head(InboxTab::Waiting, 3, 0, 0),
+        "stopped counts as waiting for Kevin"
+    );
+    let s = &w[1].sessions[0];
+    assert_eq!(
+        session_tone(s),
+        LabelTone::Stopped,
+        "its own clock (review quick 2026-11-10, GLM)"
+    );
+    let since = advance_since(&BTreeMap::new(), std::slice::from_ref(s), 1000.0);
+    let later = advance_since(&since, std::slice::from_ref(s), 1300.0);
+    assert_eq!(later[&s.id].tone, LabelTone::Stopped);
+}
+
 /// Kevin 2026-11-10 ("H"): back to the overview from an area's head, Waiting from the amber strip, an area from its tile,
 /// weeks and days in the week strip; the + stays at the right.
 #[test]
@@ -2062,6 +2136,7 @@ fn test_inbox_clicks_lead_where_they_say() {
 
     let tile = |tab| InboxTile {
         tab,
+        team: None,
         title: String::new(),
         count: 0,
         lines: vec![],
@@ -2206,11 +2281,27 @@ fn test_inbox_park_on_every_card() {
         inbox: true,
     };
     let lines = inbox_lines_of(&w, &list, None, &ReadAnswers::new(), InboxTab::Working);
-    assert_eq!(card(&lines[2]).menu, [CardButton::Pin, CardButton::Park]);
+    assert_eq!(
+        card(&lines[2]).menu,
+        [
+            CardButton::Pin,
+            CardButton::Park,
+            CardButton::Rename,
+            CardButton::MakeCard
+        ]
+    );
     let asks = vec![inbox_window(0, true, "A · B", Some("Ja?"))];
     let list = inbox_list(&[0], 900.0);
     let lines = inbox_lines(&asks, &list, Some(0), &ReadAnswers::new());
-    assert_eq!(card(&lines[2]).menu, [CardButton::Pin, CardButton::Park]);
+    assert_eq!(
+        card(&lines[2]).menu,
+        [
+            CardButton::Pin,
+            CardButton::Park,
+            CardButton::Rename,
+            CardButton::MakeCard
+        ]
+    );
     assert!(!lines.iter().any(|l| matches!(l, ListLine::Buttons { .. })));
 }
 
@@ -2263,8 +2354,20 @@ fn test_inbox_pinned_on_top() {
     assert_eq!(names(&lines), ["Vertrag", "Ton", "Italien", "Spanien"]);
     let (pin, other) = (card(&lines[2]), card(&lines[5]));
     assert!(pin.pinned && !other.pinned);
-    assert_eq!(pin.menu, [CardButton::Unpin], "only unpinning");
-    assert_eq!(other.menu, [CardButton::Pin, CardButton::Park]);
+    assert_eq!(
+        pin.menu,
+        [CardButton::Unpin, CardButton::Rename, CardButton::MakeCard],
+        "only unpinning (and renaming)"
+    );
+    assert_eq!(
+        other.menu,
+        [
+            CardButton::Pin,
+            CardButton::Park,
+            CardButton::Rename,
+            CardButton::MakeCard
+        ]
+    );
 
     let lines = tab(InboxTab::Waiting, &none, &[id(3), id(2)]);
     assert_eq!(
@@ -2333,7 +2436,7 @@ fn test_inbox_pin_outweighs_a_park_that_joins_later() {
     );
     assert_eq!(running[1], ListLine::Group("Arbeitet".into()));
     assert!(
-        matches!(running.get(2), Some(ListLine::Card(c)) if c.pinned && c.menu == [CardButton::Unpin]),
+        matches!(running.get(2), Some(ListLine::Card(c)) if c.pinned && c.menu.starts_with(&[CardButton::Unpin, CardButton::Rename])),
         "still under Running, pinned"
     );
     assert!(
@@ -2425,6 +2528,10 @@ fn plan_lines(
         plan,
         plan_day,
         today: TEST_DAY,
+        teams: &BTreeSet::new(),
+        cards: &[],
+        lead_names: &[],
+        team: None,
     };
     inbox_target(list, &o, 7).lines
 }
@@ -2517,6 +2624,7 @@ fn test_inbox_planned_area() {
                 parked: 0,
                 planned: Some(4)
             },
+            team: None,
         }
     );
     let ListLine::Week(week) = &lines[1] else {

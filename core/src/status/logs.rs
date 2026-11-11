@@ -16,7 +16,19 @@ pub enum TurnState {
     Working,
     Done,
     Waiting,
+    /// Broken off (Esc): Codex writes `turn_aborted` (reason "interrupted", seen 2026-11-10).
+    Aborted,
     Unknown,
+}
+
+/// The event that says the whole turn was broken off. Only where seen: Codex `turn_aborted`. Grok and Kimi were not
+/// seen breaking off a turn; a pattern would also catch a request broken off and retried inside a working turn
+/// (`llm.request.aborted`, review quick 2026-11-10, Codex).
+fn aborted_event(engine: Engine) -> Option<&'static str> {
+    match engine {
+        Engine::Codex => Some("turn_aborted"),
+        _ => None,
+    }
 }
 
 /// Events with which an engine reports a QUESTION. Measured 2026-09-18: Grok writes `permission_requested` /
@@ -75,6 +87,9 @@ pub fn last_turn_state(text: &str, engine: Engine) -> TurnState {
                 TurnState::Working
             };
         }
+        if aborted_event(engine).is_some_and(|a| types.contains(&a)) {
+            return TurnState::Aborted;
+        }
         if types.contains(&end) {
             return TurnState::Done;
         }
@@ -128,8 +143,9 @@ fn session(
     path: &str,
     threshold_sec: u64,
 ) -> Session {
-    let (ready, waiting) = match last_turn_state_in_file(path, engine, TAIL_BYTES) {
-        TurnState::Done => (true, false),
+    let turn = last_turn_state_in_file(path, engine, TAIL_BYTES);
+    let (ready, waiting) = match turn {
+        TurnState::Done | TurnState::Aborted => (true, false),
         TurnState::Waiting => (true, true),
         TurnState::Working => (false, false),
         TurnState::Unknown => (
@@ -139,6 +155,7 @@ fn session(
     };
     Session {
         waiting,
+        stopped: turn == TurnState::Aborted,
         ..Session::new(
             format!("{}:{id}", engine.raw()),
             engine,

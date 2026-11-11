@@ -27,7 +27,7 @@ use objc2_foundation::{
 use lookout_core::config::{AppConfig, color_from_hex, config_from_json};
 use lookout_core::geom::{Point, Rect};
 use lookout_core::i18n::{is_german, prefers_german, set_german};
-use lookout_core::launch::{self, Favorite, Field, favorites_to_json};
+use lookout_core::launch::{self, Favorite, Field, NewSession, favorites_to_json};
 use lookout_core::layout::{
     DEFAULT_GRID, PlanInput, ReadAnswers, attention_order, first_ready_time, is_worker,
     layout_candidates, lot_member, plan_arrangement, plan_log_line, press_button, resolve_target,
@@ -58,10 +58,13 @@ use lookout_core::status::{
     BackgroundWatch, ClaudeStatus, LogSessionFinder, Standby, TAIL_BYTES, TranscriptReader,
     apply_lookout_lines, fetch_agents, launch_corrected, mark_read_asks, seen_outside_front,
 };
+use lookout_core::team::{self, Role};
+use lookout_core::team_start::{TeamSetup, team_setup_to_json};
 
 use crate::animator::{Animator, WindowMove};
 use crate::focus::FocusWatcher;
 use crate::overlay::{GlowOverlay, LabelOverlay, ListOverlay, PreviewOverlay};
+use crate::team_dialog::TeamRequest;
 use crate::{
     ax, ax_queue, ax_sync, hotkeys, icon, log, menu, mouse, now, on_main, on_main_after, prefs,
     screens,
@@ -83,8 +86,16 @@ pub(crate) const DEFAULTS_KEPT: &str = "lookout.kept";
 pub(crate) const DEFAULTS_SNOOZED: &str = "lookout.snoozed";
 /// Sessions Kevin pinned in the inbox, in the order he pinned them.
 pub(crate) const DEFAULTS_PINNED: &str = "lookout.pinned";
+/// Kevin's own titles of sessions (Kevin 2026-11-11), "session id<TAB>title" each.
+pub(crate) const DEFAULTS_TITLES: &str = "lookout.titles";
+/// Projects with an own card in the inbox (Kevin 2026-11-11, "3a").
+pub(crate) const DEFAULTS_CARDS: &str = "lookout.cards";
 /// The three favorites of the inbox's + (JSON text, `launch::favorites_to_json`).
 pub(crate) const DEFAULTS_FAVORITES: &str = "lookout.favorites";
+/// How the + starts a team (JSON text, `team_start::team_setup_to_json`).
+pub(crate) const DEFAULTS_TEAM: &str = "lookout.team";
+/// How long a just started team's name stays taken before its windows show (seconds).
+const TEAM_START_GRACE: f64 = 120.0;
 /// Control-room screens, chosen in the menu from three screens on (Kevin 2026-10-01).
 pub(crate) const DEFAULTS_PAIR_WORK: &str = "lookout.leitstand.work";
 pub(crate) const DEFAULTS_PAIR_CONTROL: &str = "lookout.leitstand.control";
@@ -252,8 +263,19 @@ pub(crate) struct App {
     /// Session ids Kevin pinned in the inbox, in the order he pinned them (`pin_rank`). ponytail: never thinned out
     /// either; a session that comes back with its id (`claude --resume`) is pinned again.
     pinned: Vec<String>,
+    /// Kevin's own titles per session id (`Session::title`, Kevin 2026-11-11). ponytail: never thinned out, like `pinned`.
+    titles: BTreeMap<String, String>,
+    /// Projects with an own card (`DEFAULTS_CARDS`); a card stays until Kevin dissolves it.
+    cards: Vec<String>,
     /// The three favorites of the inbox's + (Kevin 2026-11-10), changed in its menu.
     favorites: Vec<Favorite>,
+    /// How the + starts a team, and the teams that exist (`team::update_known`, Kevin 2026-11-10). ponytail: the teams
+    /// live in memory; after a restart a team comes back with its lead or key account.
+    team_setup: TeamSetup,
+    teams_known: BTreeSet<String>,
+    /// Teams just started, with when: their windows take a while to show, meanwhile the name is taken
+    /// (`TEAM_START_GRACE`, review quick 2026-11-10).
+    teams_starting: Vec<(String, Time)>,
     /// The day the model lists were asked (`ask_models_daily`), and whether that is under way.
     models_day: Option<String>,
     models_asking: bool,
@@ -264,6 +286,8 @@ pub(crate) struct App {
     /// What the inbox shows: the overview or an area (Kevin 2026-11-10, "H"). ponytail: starts on the overview after a
     /// restart, store it like `mode` if that bothers.
     inbox_tab: InboxTab,
+    /// The team whose area is open (`InboxTab::Team`).
+    inbox_team: Option<String>,
     /// The day the Planned area shows; `None` = today, also after midnight (`plan_day_after`).
     plan_day: Option<NaiveDate>,
     /// `plannedFile` as last read, with its modification time: read again only when that changes.
@@ -452,6 +476,9 @@ impl App {
         let favorites = cfg
             .new_session
             .favorites(prefs::string(DEFAULTS_FAVORITES).as_deref());
+        let team_setup = cfg
+            .new_session
+            .team_setup(prefs::string(DEFAULTS_TEAM).as_deref());
         let side = StackSide::parse(&cfg.stack_side);
 
         let status_item =
@@ -473,7 +500,14 @@ impl App {
             lists: ListOverlay::new(
                 mtm,
                 Box::new(|ids: Vec<String>| with_app(move |a| a.list_clicked(&ids))),
-                Box::new(|button, ids: Vec<String>| with_app(move |a| a.list_button(button, &ids))),
+                Box::new(|button, ids: Vec<String>| {
+                    // The title dialog spins its own loop: outside the app slot.
+                    if button == CardButton::Rename {
+                        menu::rename(ids);
+                    } else {
+                        with_app(move |a| a.list_button(button, &ids));
+                    }
+                }),
                 Box::new(|nav| with_app(move |a| a.inbox_nav(nav))),
                 // The view opens the menu, outside the app slot. While the app is busy: an empty window, as before.
                 Box::new(|| {
@@ -489,12 +523,23 @@ impl App {
             restore_unsaved: false,
             snoozed,
             pinned: prefs::string_array(DEFAULTS_PINNED).unwrap_or_default(),
+            titles: prefs::string_array(DEFAULTS_TITLES)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|l| l.split_once('\t'))
+                .map(|(id, t)| (id.to_owned(), t.to_owned()))
+                .collect(),
+            cards: prefs::string_array(DEFAULTS_CARDS).unwrap_or_default(),
             favorites,
+            team_setup,
+            teams_known: BTreeSet::new(),
+            teams_starting: Vec::new(),
             models_day,
             models_asking: false,
             in_front: None,
             read_answers: ReadAnswers::new(),
             inbox_tab: InboxTab::default(),
+            inbox_team: None,
             plan_day: None,
             plan_cache: None,
             focus_watcher: FocusWatcher::new(Box::new(|| with_app(App::handle_focus_change))),
@@ -723,6 +768,7 @@ impl App {
             fresh.insert(w.id, since);
         }
         self.ready_since = fresh;
+        apply_titles(&mut stamped, &self.titles);
         let had_session: BTreeSet<u64> = self
             .windows
             .iter()
@@ -1108,6 +1154,18 @@ impl App {
         };
         let n = now();
         let has_plan = self.refresh_plan();
+        team::update_known(&mut self.teams_known, &self.windows, &self.cfg.lead_names);
+        // A team that is gone closes its area for good: a window of that name later must not pull the inbox back into it
+        // (review quick 2026-11-10).
+        if self.inbox_tab == InboxTab::Team
+            && !self
+                .inbox_team
+                .as_ref()
+                .is_some_and(|t| self.teams_known.contains(t) || team::listed(&self.cards, t))
+        {
+            self.inbox_tab = InboxTab::Overview;
+            self.inbox_team = None;
+        }
         let today = planned::today();
         let inbox = InboxInput {
             planned: &self.arrangement_ids,
@@ -1123,6 +1181,10 @@ impl App {
             plan: has_plan.then(|| self.plan_cache.as_ref().map_or(&[][..], |c| c.1.as_slice())),
             plan_day: self.plan_day.unwrap_or(today),
             today,
+            teams: &self.teams_known,
+            cards: &self.cards,
+            lead_names: &self.cfg.lead_names,
+            team: self.inbox_team.as_deref(),
         };
         Some(
             self.arrangement
@@ -1148,8 +1210,13 @@ impl App {
 
     /// The inbox's way between overview, areas, weeks and days (clicks, and the two-finger swipe back).
     fn inbox_nav(&mut self, nav: InboxNav) {
-        if let InboxNav::Open(tab) = nav {
-            self.inbox_tab = tab;
+        match &nav {
+            InboxNav::Open(tab) => self.inbox_tab = *tab,
+            InboxNav::Team(name) => {
+                self.inbox_tab = InboxTab::Team;
+                self.inbox_team = Some(name.clone());
+            }
+            _ => {}
         }
         self.plan_day = plan_day_after(nav, self.plan_day, planned::today());
         self.refresh_overlays();
@@ -1993,16 +2060,86 @@ impl App {
             Some(&self.delegate),
             &self.cfg.new_session,
             &self.favorites,
+            &self.team_setup,
         )
+    }
+
+    /// What the team dialog shows: the settings and how a team starts.
+    pub(crate) fn team_dialog_input(&self) -> (NewSession, TeamSetup) {
+        (self.cfg.new_session.clone(), self.team_setup.clone())
+    }
+
+    /// The dialog's choice as the team's name, or the text the dialog shows: the name (`team::check_name`) against the
+    /// teams open now and those just started, then whether both roles can start as chosen, so a role whose model is
+    /// gone keeps the dialog open with the task in it (review quick 2026-11-10).
+    pub(crate) fn check_team(&mut self, request: &TeamRequest) -> Result<String, String> {
+        team::update_known(&mut self.teams_known, &self.windows, &self.cfg.lead_names);
+        let t = now();
+        self.teams_starting
+            .retain(|(_, at)| t - at < TEAM_START_GRACE);
+        let mut taken = self.teams_known.clone();
+        taken.extend(self.teams_starting.iter().map(|(n, _)| n.clone()));
+        let name = team::check_name(&request.name, &taken).map_err(str::to_owned)?;
+        self.cfg
+            .new_session
+            .team_starts(&request.setup(), &name, "")
+            .map(|_| name)
+    }
+
+    /// A team role changed in the menu, kept at once and across restarts.
+    pub(crate) fn change_team(&mut self, role: Role, field: Field, value: &str) {
+        self.team_setup = self
+            .cfg
+            .new_session
+            .change_team(&self.team_setup, role, field, value);
+        prefs::set_string(DEFAULTS_TEAM, &team_setup_to_json(&self.team_setup));
+    }
+
+    /// A new team (Kevin 2026-11-10): checked once more (the dialog's check ran outside the app slot), then lead and key
+    /// account each in a new Warp window, as chosen in the dialog; the preset under "Change favorites › Team" stays. The
+    /// log names the team and the roles, never the task.
+    pub(crate) fn start_team(&mut self, request: TeamRequest) {
+        let name = match self.check_team(&request) {
+            Ok(name) => name,
+            Err(why) => {
+                log(&format!("Team nicht gestartet: {} ({why})", request.name));
+                return;
+            }
+        };
+        match self
+            .cfg
+            .new_session
+            .team_starts(&request.setup(), &name, &request.task)
+        {
+            Ok(starts) => {
+                self.teams_starting.push((name, now()));
+                // One after the other: Warp opens only one of two launch URLs sent at once (live 2026-11-10).
+                for (k, s) in starts.into_iter().enumerate() {
+                    crate::restore::start_new(
+                        s.script,
+                        s.folder,
+                        s.label,
+                        crate::restore::PAUSE * k as u32,
+                    );
+                }
+            }
+            Err(why) => log(&format!("Team nicht gestartet: {name} ({why})")),
+        }
     }
 
     pub(crate) fn favorite(&self, slot: usize) -> Option<Favorite> {
         self.favorites.get(slot).cloned()
     }
 
+    /// The projects with an own card.
+    pub(crate) fn cards(&self) -> &[String] {
+        &self.cards
+    }
+
     /// Favorite `f` with `task` in a new Warp window (`launch::start_script`); the log names the favorite, never the
-    /// task.
-    pub(crate) fn start_favorite(&self, f: &Favorite, task: &str) {
+    /// task. With `card` (Kevin 2026-11-11, "3a") the session is named "<card> · <first words>" and the card is kept;
+    /// a program that cannot name its session starts without it.
+    pub(crate) fn start_favorite(&mut self, f: &Favorite, task: &str, card: &str) {
         let Some((place, program)) = self.cfg.new_session.resolve(f) else {
             log(&format!(
                 "Neue Session nicht gestartet: {} (nicht verfuegbar)",
@@ -2010,8 +2147,34 @@ impl App {
             ));
             return;
         };
-        let script = launch::start_script(place, program, f, task);
-        crate::restore::start_new(script, place.folder.clone(), self.favorite_text(f));
+        // "·" would split the name; out before the spaces fold, so "A · B" is "A B" (review quick 2026-11-11).
+        let card = card
+            .replace('·', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let name = if card.is_empty() {
+            String::new()
+        } else if !program.takes_name() {
+            log(&format!(
+                "Karte nicht gesetzt: {} kann der Session keinen Namen geben",
+                program.name
+            ));
+            String::new()
+        } else {
+            if !team::listed(&self.cards, &card) {
+                self.cards.push(card.clone());
+                prefs::set_string_array(DEFAULTS_CARDS, &self.cards);
+            }
+            team::card_member_name(&card, task)
+        };
+        let script = launch::start_script_named(place, program, f, task, &name);
+        crate::restore::start_new(
+            script,
+            place.folder.clone(),
+            self.favorite_text(f),
+            std::time::Duration::ZERO,
+        );
     }
 
     /// The favorite as the menu shows it, with the model's name from the daily list ("Opus 5.5").
@@ -2054,6 +2217,44 @@ impl App {
         prefs::set_string(DEFAULTS_FAVORITES, &favorites_to_json(&self.favorites));
     }
 
+    /// The session a rename of the card with `ids` is for (the visible one) and the name it shows now.
+    pub(crate) fn title_target(&self, ids: &[String]) -> Option<(String, String)> {
+        let w = self
+            .windows
+            .iter()
+            .find(|w| w.sessions.iter().any(|s| ids.contains(&s.id)))?;
+        let s = w.visible_session()?;
+        let shown = s.title.as_deref().unwrap_or(s.own_name()).to_owned();
+        Some((s.id.clone(), shown))
+    }
+
+    /// Kevin's title for session `id`, kept across restarts; empty or its own name gives the session its own name back
+    /// (`Session::title_for`).
+    pub(crate) fn set_title(&mut self, id: &str, title: &str) {
+        let Some(s) = self
+            .windows
+            .iter()
+            .flat_map(|w| &w.sessions)
+            .find(|s| s.id == id)
+        else {
+            return;
+        };
+        match s.title_for(title) {
+            Some(t) => self.titles.insert(id.to_owned(), t),
+            None => self.titles.remove(id),
+        };
+        prefs::set_string_array(
+            DEFAULTS_TITLES,
+            &self
+                .titles
+                .iter()
+                .map(|(id, t)| format!("{id}\t{t}"))
+                .collect::<Vec<_>>(),
+        );
+        apply_titles(&mut self.windows, &self.titles);
+        self.refresh_overlays();
+    }
+
     /// A button on the inbox's open card (Kevin 2026-11-09): the session leaves the list, and the next one comes to the
     /// terminal's place, the same way as a click on its row; bringing back moves nothing, nor does pinning.
     fn list_button(&mut self, button: CardButton, ids: &[String]) {
@@ -2064,6 +2265,22 @@ impl App {
         else {
             return;
         };
+        // An own card for the window's project, or its end (Kevin 2026-11-11, "3a").
+        if matches!(button, CardButton::MakeCard | CardButton::DissolveCard) {
+            if let Some(p) = team::project(&self.windows[w]).map(str::to_owned) {
+                if button == CardButton::MakeCard {
+                    if !team::listed(&self.cards, &p) {
+                        self.cards.push(p);
+                    }
+                } else {
+                    self.cards
+                        .retain(|c| !team::listed(std::slice::from_ref(c), &p));
+                }
+                prefs::set_string_array(DEFAULTS_CARDS, &self.cards);
+            }
+            self.refresh_overlays();
+            return;
+        }
         let next = if matches!(button, CardButton::Pin | CardButton::Unpin) {
             set_pinned(
                 &self.windows[w],
@@ -2413,4 +2630,11 @@ fn ping_map(
     write(ping.finish());
     log(&ping.summary());
     (ping.map, ping.found)
+}
+
+/// Kevin's titles onto the sessions of `windows` (`Session::title`).
+fn apply_titles(windows: &mut [TermWindow], titles: &BTreeMap<String, String>) {
+    for s in windows.iter_mut().flat_map(|w| w.sessions.iter_mut()) {
+        s.title = titles.get(&s.id).cloned();
+    }
 }

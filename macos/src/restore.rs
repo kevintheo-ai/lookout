@@ -16,8 +16,9 @@ use lookout_core::restore::{
     OpenSession, config_dir_of, resume_command, uuid_of, warp_launch_yaml, warp_new_window_url,
 };
 
-/// Between two windows: every Claude start runs its hooks and servers, twenty at once would stall the Mac.
-const PAUSE: Duration = Duration::from_secs(3);
+/// Between two windows: every Claude start runs its hooks and servers, twenty at once would stall the Mac. Also Warp
+/// opened only one of two launch URLs sent in the same instant (a new team's lead and key account, live 2026-11-10).
+pub(crate) const PAUSE: Duration = Duration::from_secs(3);
 /// Warp reads the file when it handles the URL; a cold start takes a while. Left behind, it would stay in Warp's list.
 const KEEP_FILE: Duration = Duration::from_secs(60);
 /// The environment `open` passes on: Lookout may have been started from inside a session, whose markers must not reach
@@ -133,9 +134,10 @@ fn open_one(
 /// A new session in a new Warp window (the inbox's +, Kevin 2026-11-10), off the main thread. The start script
 /// (`launch::start_script`) goes to the temporary folder; the launch configuration only runs `/bin/sh <script>`, so the
 /// task never meets the user's shell. The script removes itself when it runs; both files go after `KEEP_FILE`, at once
-/// if Warp cannot be asked.
-pub fn start_new(script: String, cwd: String, label: String) {
+/// if Warp cannot be asked. `after`: wait this long first (the second window of a team, `PAUSE`).
+pub fn start_new(script: String, cwd: String, label: String, after: Duration) {
     std::thread::spawn(move || {
+        sleep(after);
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());

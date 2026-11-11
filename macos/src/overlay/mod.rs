@@ -155,6 +155,9 @@ fn core_rect(r: NSRect) -> Rect {
 }
 
 /// A tint as Swift's `colorFromHex` made it: `NSColor(srgbRed:green:blue:alpha: 1)`.
+/// Stopped (Kevin 2026-11-10, "2a"): a calm blue-grey, so the amber of a question stays the loudest.
+pub(crate) const STOPPED: Rgb = (0.50, 0.62, 0.74);
+
 pub(crate) fn srgb(c: Rgb) -> Retained<NSColor> {
     NSColor::colorWithSRGBRed_green_blue_alpha(c.0, c.1, c.2, 1.0)
 }

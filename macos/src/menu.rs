@@ -232,6 +232,10 @@ define_class!(
                     }
                 }
                 Some(Choice::Custom(f)) => ask_and_start(self.mtm(), f),
+                Some(Choice::Team) => ask_and_start_team(self.mtm()),
+                Some(Choice::ChangeTeam(role, field, value)) => {
+                    with_app(move |a| a.change_team(role, field, &value));
+                }
                 None => {}
             }
         }
@@ -249,13 +253,49 @@ impl Delegate {
 /// The task dialog for `f`, then the start of exactly `f` (`newSessionItem:`). No dialog for a choice that no longer
 /// fits: the daily model lists can change while a menu is open (review quick 2026-11-10).
 fn ask_and_start(mtm: MainThreadMarker, f: Favorite) {
-    let (fits, text) = with_app_now(|a| (a.resolves(&f), a.favorite_text(&f)))
-        .unwrap_or_else(|| (true, f.label()));
+    let (fits, text, cards) =
+        with_app_now(|a| (a.resolves(&f), a.favorite_text(&f), a.cards().to_vec()))
+            .unwrap_or_else(|| (true, f.label(), vec![]));
     if !fits {
         return;
     }
-    if let Some(task) = plus::ask_task(mtm, &text) {
-        with_app(move |a| a.start_favorite(&f, &task));
+    if let Some((task, card)) = plus::ask_task(mtm, &text, &cards) {
+        with_app(move |a| a.start_favorite(&f, &task, &card));
+    }
+}
+
+/// Kevin's own title for the card with `ids` (Kevin 2026-11-11), from its right-click menu; outside the app slot, the
+/// dialog spins its own loop.
+pub(crate) fn rename(ids: Vec<String>) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let Some((id, shown)) = with_app_now(|a| a.title_target(&ids)).flatten() else {
+        return;
+    };
+    if let Some(title) = plus::ask_title(mtm, &shown) {
+        with_app(move |a| a.set_title(&id, &title));
+    }
+}
+
+/// The team dialog, then the start of the team (`newSessionItem:`, Kevin 2026-11-10). The name is checked against the
+/// teams open right now, each time Start is clicked.
+fn ask_and_start_team(mtm: MainThreadMarker) {
+    let Some((settings, setup)) = with_app_now(|a| a.team_dialog_input()) else {
+        return;
+    };
+    // Busy app: no check, so no start either (review quick 2026-11-10); the dialog stays open.
+    let check = |request: &crate::team_dialog::TeamRequest| {
+        with_app_now(|a| a.check_team(request)).unwrap_or_else(|| {
+            Err(tr(
+                "Lookout ist gerade beschäftigt, bitte nochmal Starten.",
+                "Lookout is busy, please click Start again.",
+            )
+            .to_owned())
+        })
+    };
+    if let Some(request) = crate::team_dialog::ask_team(mtm, &settings, &setup, check) {
+        with_app(move |a| a.start_team(request));
     }
 }
 
@@ -361,6 +401,7 @@ fn dot(a: &App, tone: Option<LabelTone>) -> Option<Retained<NSImage>> {
             srgb(color_from_hex(&a.cfg.glow_color_waiting)),
         ),
         Some(LabelTone::Ready) => ("circle.fill", srgb(color_from_hex(&a.cfg.glow_color))),
+        Some(LabelTone::Stopped) => ("pause.circle.fill", srgb(crate::overlay::STOPPED)),
         Some(LabelTone::Running) => ("circle.fill", NSColor::secondaryLabelColor()),
         Some(LabelTone::Watching) => ("circle", NSColor::secondaryLabelColor()),
         None => ("circle.fill", NSColor::tertiaryLabelColor()),

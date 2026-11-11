@@ -208,6 +208,24 @@ fn is_prompt(obj: &Obj) -> bool {
     typed("text") && !typed("tool_result")
 }
 
+/// A user entry that says the turn was broken off: Claude Code writes "[Request interrupted by user]" (with " for tool
+/// use]" when it stopped a tool) as its text.
+fn interrupted(obj: &Obj) -> bool {
+    const MARK: &str = "[Request interrupted by user";
+    let Some(content) = obj_of(obj, "message").and_then(|m| m.get("content")) else {
+        return false;
+    };
+    if let Some(text) = content.as_str() {
+        return text.trim_start().starts_with(MARK);
+    }
+    content.as_array().into_iter().flatten().any(|b| {
+        b.get("type").and_then(Value::as_str) == Some("text")
+            && b.get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|t| t.trim_start().starts_with(MARK))
+    })
+}
+
 /// Text of a prompt: the string or the text blocks.
 fn prompt_text(obj: &Obj) -> Option<String> {
     let content = obj_of(obj, "message").and_then(|m| m.get("content"));
@@ -278,6 +296,15 @@ pub fn digest_transcript(text: &str) -> Digest {
                     .as_deref()
                     .is_some_and(|id| results.iter().any(|r| str_of(r, "tool_use_id") == Some(id)));
                 let prompt = is_prompt(&obj);
+                // Esc writes "[Request interrupted by user]" as a user entry (also "… for tool use" beside a tool
+                // result); Kevin's next message starts a new turn.
+                let broke_off = interrupted(&obj);
+                if broke_off {
+                    d.interrupted = true;
+                } else if prompt {
+                    d.interrupted = false;
+                }
+                d.interrupt_known |= broke_off || prompt;
                 if answered || prompt {
                     d.question = None;
                     d.question_id = None;
@@ -324,6 +351,11 @@ pub fn digest_transcript(text: &str) -> Digest {
             Some("assistant") => {
                 d.answer_at = transcript_date(&obj).or(d.answer_at);
                 d.turn_ended = false;
+                d.interrupted = false;
+                d.interrupt_known = true;
+                if let Some(m) = obj_of(&obj, "message").and_then(|m| str_of(m, "model")) {
+                    d.model = Some(m.to_owned());
+                }
                 let blocks = obj_of(&obj, "message")
                     .and_then(|m| m.get("content"))
                     .and_then(objects)
@@ -630,6 +662,14 @@ impl TranscriptReader {
         }
         if let Some((_, seen)) = seen {
             d.partners.extend(seen.partners.iter().cloned()); // older ones fall out of the tail
+            if d.model.is_none() {
+                d.model = seen.model.clone();
+            }
+            // Neither a message nor an answer in the tail: nothing cleared the break-off, it only fell out of the tail
+            // (review quick 2026-11-10, GLM).
+            if !d.interrupt_known {
+                d.interrupted = seen.interrupted;
+            }
             if d.peer_pid.is_none() && d.peer_name.is_none() {
                 // After a long turn the other session's message falls out of the tail: keep the last one seen; whether
                 // it still runs is checked by `Standby` (review quick 2026-10-10, GLM).

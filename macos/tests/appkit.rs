@@ -179,6 +179,7 @@ fn glow_follows_gliding_window(mtm: MainThreadMarker) {
         id: "a".into(),
         rect,
         waiting: false,
+        stopped: false,
         window_number: None,
     };
     glow.update(&[target(r1)], &BTreeSet::new(), None);
@@ -347,6 +348,7 @@ fn inbox_scrolls_below_its_tabs(mtm: MainThreadMarker) {
                     waiting: cards,
                     ..InboxCounts::default()
                 },
+                team: None,
             },
             ListLine::Group("Fertig".into()),
         ];
@@ -457,6 +459,7 @@ fn inbox_tiles_and_strip_lead_on(mtm: MainThreadMarker) {
     let at = Rect::new(240.0, 220.0, 430.0, 400.0);
     let tile = |tab, title: &str| InboxTile {
         tab,
+        team: None,
         title: title.into(),
         count: 1,
         lines: vec![],
@@ -468,6 +471,7 @@ fn inbox_tiles_and_strip_lead_on(mtm: MainThreadMarker) {
             ListLine::InboxHead {
                 tab: InboxTab::Overview,
                 counts: InboxCounts::default(),
+                team: None,
             },
             ListLine::Tiles(vec![tile(InboxTab::Waiting, "Wartet")]),
             ListLine::Tiles(vec![
@@ -519,6 +523,7 @@ fn inbox_tiles_and_strip_lead_on(mtm: MainThreadMarker) {
             ListLine::InboxHead {
                 tab: InboxTab::Working,
                 counts: InboxCounts::default(),
+                team: None,
             },
             ListLine::WaitBar {
                 n: 1,
@@ -580,6 +585,7 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
         id: "g".into(),
         rect: g,
         waiting: true,
+        stopped: false,
         window_number: None,
     };
     glow.update(&[glow_target], &BTreeSet::new(), None);
@@ -650,6 +656,7 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
                     parked: 3,
                     planned: Some(4),
                 },
+                team: Some(("Acme".into(), 3)),
             },
             ListLine::WaitBar {
                 n: 1,
@@ -658,6 +665,7 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
             ListLine::Tiles(vec![
                 InboxTile {
                     tab: InboxTab::Waiting,
+                    team: None,
                     title: "Wartet auf dich".into(),
                     count: 1,
                     lines: vec!["? alpha".into()],
@@ -665,6 +673,7 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
                 },
                 InboxTile {
                     tab: InboxTab::Planned,
+                    team: None,
                     title: "Geplant".into(),
                     count: 4,
                     lines: vec!["▶ heute 10:00 Report".into(), "1 heute · 0 morgen".into()],
@@ -707,6 +716,15 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
                 buttons: vec![CardButton::ReadNext, CardButton::Park],
             },
             ListLine::Empty("Niemand".into()),
+            // A team's tile at the end: the probes above keep their places.
+            ListLine::Tiles(vec![InboxTile {
+                tab: InboxTab::Team,
+                team: Some("Acme".into()),
+                title: "Acme".into(),
+                count: 3,
+                lines: vec!["? Key account fragt dich".into(), "1 Arbeiter läuft".into()],
+                hot: true,
+            }]),
         ],
         window_number: 0,
     };
@@ -781,6 +799,7 @@ fn fades_end_off_screen(mtm: MainThreadMarker) {
         id: "f".into(),
         rect: g,
         waiting: false,
+        stopped: false,
         window_number: None,
     };
     glow.update(&[target], &BTreeSet::new(), None);

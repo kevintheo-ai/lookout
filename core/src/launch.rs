@@ -14,6 +14,10 @@ use crate::model::trim_ws;
 /// a dash is then never read as an option (`--version` would print the version and close the window).
 pub const TASK: &str = "{task}";
 
+/// The word of a program's command that stands for the session's name (a team's windows, Kevin 2026-11-10): a word of
+/// its own, right after its option (`--name {name}`), at most once (`command_ok`). Without a name both words go.
+pub const NAME: &str = "{name}";
+
 /// Favorites at the +.
 pub const FAVORITES: usize = 3;
 
@@ -39,6 +43,14 @@ pub struct Program {
     pub model_labels: BTreeMap<String, String>,
 }
 
+impl Program {
+    /// Whether it can give the session a name (`{name}` in its command): only such programs can be a team's lead or key
+    /// account, Lookout knows the team by the name.
+    pub fn takes_name(&self) -> bool {
+        self.command.iter().any(|w| w == NAME)
+    }
+}
+
 /// At most this many models from a `modelsCommand`.
 pub const MODELS_MAX: usize = 40;
 
@@ -47,6 +59,8 @@ pub const MODELS_MAX: usize = 40;
 pub struct NewSession {
     pub places: Vec<Place>,
     pub programs: Vec<Program>,
+    /// The role texts of a new team (`newSession.team`, `team_start`).
+    pub team: crate::team_start::TeamTexts,
 }
 
 /// A favorite: names into the lists of `NewSession`.
@@ -99,11 +113,13 @@ impl NewSession {
                 models: words(&["opus", "sonnet", "haiku"]),
                 efforts: words(&["max", "xhigh", "high", "medium", "low"]),
                 command: words(&[
-                    "claude", "--model", "{model}", "--effort", "{effort}", "--", TASK,
+                    "claude", "--name", NAME, "--model", "{model}", "--effort", "{effort}", "--",
+                    TASK,
                 ]),
                 models_command: vec![],
                 model_labels: BTreeMap::new(),
             }],
+            team: crate::team_start::TeamTexts::defaults(),
         }
     }
 
@@ -314,7 +330,8 @@ fn favorite_value(f: &Favorite) -> Value {
 /// name came before (the first one counts, so a favorite never starts in the wrong folder or with the wrong command), a
 /// place whose folder is not absolute (after `~`), and a program whose command lacks `--` right before a single
 /// `{task}` word or uses `{model}` or `{effort}` without a list. Nothing usable left: the defaults. `{model}`,
-/// `{effort}` and `{task}` always come from the favorite and the dialog, a place value of that name never counts.
+/// `{effort}`, `{task}` and `{name}` always come from the favorite and the dialog, a place value of that name never
+/// counts. `team` holds the role texts of a new team (`team_start::TeamTexts`).
 pub fn parse(v: Option<&Value>, home: &str) -> NewSession {
     let defaults = NewSession::defaults(home);
     let Some(obj) = v.and_then(Value::as_object) else {
@@ -363,6 +380,7 @@ pub fn parse(v: Option<&Value>, home: &str) -> NewSession {
         } else {
             programs
         },
+        team: crate::team_start::TeamTexts::parse(obj.get("team")),
     }
 }
 
@@ -375,6 +393,19 @@ fn command_ok(p: &Program) -> bool {
             .is_some_and(|i| i > 0 && c[i - 1] == "--")
         && (!uses("{model}") || !p.models.is_empty())
         && (!uses("{effort}") || !p.efforts.is_empty())
+        && name_ok(c)
+}
+
+/// `{name}` only as a word of its own right after an option, at most once (review quick 2026-11-10): without a name the
+/// two words go together, so neither a dangling option (`--session team-{name}`) nor the program before it
+/// (`tool {name}`) can stay or go wrongly.
+fn name_ok(c: &[String]) -> bool {
+    let at: Vec<usize> = (0..c.len()).filter(|&i| c[i].contains(NAME)).collect();
+    match at[..] {
+        [] => true,
+        [i] => c[i] == NAME && i > 1 && c[i - 1].starts_with('-') && c[i - 1] != "--",
+        _ => false,
+    }
 }
 
 /// The start script for `/bin/sh`. It removes itself first (the task need not stay on disk), goes into the place's
@@ -383,7 +414,19 @@ fn command_ok(p: &Program) -> bool {
 /// in a value or in the task is ever read by the shell; the task becomes one line. An empty task leaves out `--` and
 /// `{task}`: the session starts without one.
 pub fn start_script(place: &Place, program: &Program, f: &Favorite, task: &str) -> String {
+    start_script_named(place, program, f, task, "")
+}
+
+/// `start_script` with the session's name for `{name}`; an empty name leaves out `{name}` and its option.
+pub fn start_script_named(
+    place: &Place,
+    program: &Program,
+    f: &Favorite,
+    task: &str,
+    name: &str,
+) -> String {
     let task = task.split_whitespace().collect::<Vec<_>>().join(" ");
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut vars: BTreeMap<&str, &str> = place
         .values
         .iter()
@@ -391,12 +434,15 @@ pub fn start_script(place: &Place, program: &Program, f: &Favorite, task: &str) 
         .collect();
     vars.insert("model", &f.model);
     vars.insert("effort", &f.effort);
+    vars.insert("name", &name);
     let c = &program.command;
+    let before = |i: usize, word: &str| c.get(i + 1).is_some_and(|next| next == word);
     let command: Vec<String> = c
         .iter()
         .enumerate()
         .filter(|(i, w)| {
-            !task.is_empty() || (*w != TASK && c.get(i + 1).is_none_or(|next| next != TASK))
+            (!task.is_empty() || (*w != TASK && !before(*i, TASK)))
+                && (!name.is_empty() || (*w != NAME && !before(*i, NAME)))
         })
         .map(|(_, w)| {
             if w == TASK {
@@ -406,8 +452,16 @@ pub fn start_script(place: &Place, program: &Program, f: &Favorite, task: &str) 
             }
         })
         .collect();
+    // A name also goes to the environment as `CLAUDE_SESSION_NAME`: a hook that names sessions by their first message
+    // keeps it then instead of renaming the window, so the team keeps its lead (live 2026-11-10: "Test · Team-Lead"
+    // became "Test · Arbeit in Stufen planen").
+    let env = if name.is_empty() {
+        String::new()
+    } else {
+        format!("export CLAUDE_SESSION_NAME={}\n", sh_quote(&name))
+    };
     format!(
-        "rm -f -- \"$0\"\ncd {} || exit 1\nexec {}\n",
+        "rm -f -- \"$0\"\ncd {} || exit 1\n{env}exec {}\n",
         sh_quote(&place.folder),
         command.join(" ")
     )
@@ -424,7 +478,7 @@ pub fn launch_exec(script: &str) -> Option<String> {
 
 /// `{name}` in `word` replaced from `vars` in one pass: a value that itself holds `{…}` is not expanded again. Unknown
 /// names stay as they are.
-fn fill(word: &str, vars: &BTreeMap<&str, &str>) -> String {
+pub(crate) fn fill(word: &str, vars: &BTreeMap<&str, &str>) -> String {
     let mut out = String::new();
     let mut rest = word;
     while let Some(open) = rest.find('{') {
@@ -582,7 +636,10 @@ mod tests {
                     {"name": "Quoted task", "models": ["m"], "efforts": ["e"], "command": ["x", "--", "\"{task}\""]},
                     {"name": "No models", "efforts": ["e"], "command": ["x", "--model", "{model}", "--", "{task}"]},
                     {"name": "Plain", "command": ["plain", "--", "{task}"]},
-                    {"name": "Wrapper", "command": ["/bin/sh", "-c", ECHO, "", "--", "{task}"]}
+                    {"name": "Wrapper", "command": ["/bin/sh", "-c", ECHO, "", "--", "{task}"]},
+                    {"name": "Name glued", "command": ["deploy", "--session", "team-{name}", "--", "{task}"]},
+                    {"name": "Name bare", "command": ["tool", "{name}", "--", "{task}"]},
+                    {"name": "Name twice", "command": ["t", "-n", "{name}", "-m", "{name}", "--", "{task}"]}
                 ]
             })),
             HOME,
@@ -590,7 +647,8 @@ mod tests {
     }
 
     /// Duplicate names, relative folders (they would start in whatever folder the terminal is in) and broken commands
-    /// are dropped, the first entry of a name counts, `~` is expanded.
+    /// are dropped, `{name}` other than a word of its own after an option too; the first entry of a name counts, `~` is
+    /// expanded.
     #[test]
     fn settings_drop_what_could_start_the_wrong_thing() {
         let s = settings();

@@ -614,6 +614,52 @@ const KIMI_WORKING: &str = r#"{"type":"agent.turn.ended","agentId":"main"}
 {"type":"agent.turn.started","agentId":"main"}
 {"type":"llm.request"}"#;
 
+/// Esc in Codex writes `turn_aborted` (reason "interrupted", Kevin's logs 2026-11-10): stopped until the next turn starts.
+#[test]
+fn test_turn_aborted_is_stopped() {
+    let aborted = r#"{"type":"event_msg","payload":{"type":"task_started"}}
+{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t1","reason":"interrupted"}}"#;
+    assert_eq!(last_turn_state(aborted, Engine::Codex), TurnState::Aborted);
+    let again = format!(
+        "{aborted}\n{}",
+        r#"{"type":"event_msg","payload":{"type":"task_started"}}"#
+    );
+    assert_eq!(last_turn_state(&again, Engine::Codex), TurnState::Working);
+    let done_after = format!(
+        "{again}\n{}",
+        r#"{"type":"event_msg","payload":{"type":"task_complete","completed_at":2}}"#
+    );
+    assert_eq!(
+        last_turn_state(&done_after, Engine::Codex),
+        TurnState::Done,
+        "an older abort does not hide a later finished turn (review quick 2026-11-10, Muse)"
+    );
+    let retried = r#"{"type":"agent.turn.started","agentId":"main"}
+{"type":"llm.request.aborted"}
+{"type":"llm.request"}"#;
+    assert_eq!(
+        last_turn_state(retried, Engine::Kimi),
+        TurnState::Working,
+        "a request broken off and retried inside the turn is no stop (review quick 2026-11-10, Codex)"
+    );
+}
+
+/// Esc in Claude Code: "[Request interrupted by user]" (also "… for tool use]" beside a tool result) after the answer
+/// marks the turn broken off; the next message or answer clears it.
+#[test]
+fn test_claude_interrupt_in_the_transcript() {
+    let prompt = r#"{"type":"user","message":{"role":"user","content":"Bau das"}}"#;
+    let answer = r#"{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"Ich baue."}]}}"#;
+    let esc = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
+    let esc_tool = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":"no"},{"type":"text","text":"[Request interrupted by user for tool use]"}]}}"#;
+    let d = digest_transcript(&[prompt, answer, esc].join("\n"));
+    assert!(d.interrupted);
+    assert_eq!(d.model.as_deref(), Some("claude-opus-5-5"));
+    assert!(digest_transcript(&[prompt, answer, esc_tool].join("\n")).interrupted);
+    assert!(!digest_transcript(&[prompt, answer, esc, prompt].join("\n")).interrupted);
+    assert!(!digest_transcript(&[prompt, answer].join("\n")).interrupted);
+}
+
 #[test]
 fn test_turn_state_from_tail() {
     assert_eq!(
@@ -938,6 +984,23 @@ fn test_transcript_reader() {
     assert!(
         later.is_some_and(|d| d.peer_pid == Some(55848) && d.peer_name.as_deref() == Some("Lead")),
         "fallen out of the tail: remembered"
+    );
+
+    // review quick 2026-11-10 (GLM): a break-off stays when its marker falls out of the tail without a message or
+    // answer after it.
+    let esc = r#"{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
+    append(&path, &format!("{esc}\n"));
+    assert!(small.digest("sid-1").is_some_and(|d| d.interrupted));
+    append(&path, &"{\"type\":\"progress\"}\n".repeat(40));
+    assert!(
+        small.digest("sid-1").is_some_and(|d| d.interrupted),
+        "fallen out of the tail: still stopped"
+    );
+    let answer = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Weiter."}]}}"#;
+    append(&path, &format!("{answer}\n"));
+    assert!(
+        small.digest("sid-1").is_some_and(|d| !d.interrupted),
+        "an answer ends it"
     );
 }
 
