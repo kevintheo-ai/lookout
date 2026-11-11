@@ -385,6 +385,8 @@ pub struct Ping {
     in_terminal: usize,
     /// Window id and title of the snapshot before the ping.
     before: Vec<(u64, String)>,
+    /// The session's own name per process (`with_names`), the title fallback before the folder name.
+    names: BTreeMap<Pid, String>,
 }
 
 impl Ping {
@@ -406,7 +408,16 @@ impl Ping {
             open,
             in_terminal: procs.iter().filter(|p| p.in_terminal).count(),
             before: before.iter().map(|w| (w.id, w.title.clone())).collect(),
+            names: BTreeMap::new(),
         }
+    }
+
+    /// Own session names ("custom-title": naming hook or /rename). A title that has to fall back gets the name, not the
+    /// folder: the name matching (`title_matches`) then finds the window again. With the folder name it never did: a
+    /// chat started in the home folder kept the user name as its title, and clicks on it were ignored (2026-11-11).
+    pub fn with_names(mut self, names: BTreeMap<Pid, String>) -> Ping {
+        self.names = names;
+        self
     }
 
     pub fn markers(&self) -> Vec<TitleWrite> {
@@ -439,7 +450,7 @@ impl Ping {
             }
             self.map.insert(pid, *id);
             let original = (!original.starts_with(PING_MARKER)).then_some(original.as_str());
-            back.push(restore_title(p, original));
+            back.push(restore_title(p, original, self.names.get(&pid)));
         }
         self.open.retain(|p| !self.found.contains(&p.pid));
         back
@@ -447,7 +458,10 @@ impl Ping {
 
     /// Titles of the processes whose marker never showed.
     pub fn finish(&self) -> Vec<TitleWrite> {
-        self.open.iter().map(|p| restore_title(p, None)).collect()
+        self.open
+            .iter()
+            .map(|p| restore_title(p, None, self.names.get(&p.pid)))
+            .collect()
     }
 
     /// Log line (the log stays German). Only processes under Warp/Ghostty can be matched (plan 1a).
@@ -469,12 +483,14 @@ impl Ping {
     }
 }
 
-/// Title back. Without a known original (background tab) the title falls back to the folder name: the usual terminal
-/// naming and never an empty tab. Control characters never go back: the title travels inside an OSC 0 sequence, and an
-/// ESC or BEL from a crafted title or folder name would end it early and turn the rest into terminal commands (review
-/// quick 2026-11-06, GLM; the Swift version wrote them unfiltered).
-fn restore_title(p: &EngineProc, original: Option<&str>) -> TitleWrite {
-    let fallback = if p.cwd.is_empty() {
+/// Title back. Without a known original (background tab) the title falls back to the session's own name, else to the
+/// folder name: the usual terminal naming and never an empty tab. Control characters never go back: the title travels
+/// inside an OSC 0 sequence, and an ESC or BEL from a crafted title, name or folder name would end it early and turn the
+/// rest into terminal commands (review quick 2026-11-06, GLM; the Swift version wrote them unfiltered).
+fn restore_title(p: &EngineProc, original: Option<&str>, name: Option<&String>) -> TitleWrite {
+    let fallback = if let Some(name) = name.map(|n| trim_ws(n)).filter(|n| !n.is_empty()) {
+        name
+    } else if p.cwd.is_empty() {
         p.engine.raw()
     } else {
         last_path_component(&p.cwd)

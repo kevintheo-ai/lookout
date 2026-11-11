@@ -882,6 +882,42 @@ fn match_sessions_puts_sessions_into_windows() {
     );
 }
 
+/// 2026-11-11: a title that has to fall back takes the session's own name, so the name matching finds the window again;
+/// only a session without a name gets the folder name (a chat in the home folder showed the user name and lost its clicks).
+#[test]
+fn fallback_title_is_the_session_name() {
+    let procs = [
+        engine_proc(31, Engine::Claude, "ttys031", "/Users/someone"),
+        engine_proc(32, Engine::Claude, "ttys032", "/Users/someone"),
+        engine_proc(33, Engine::Claude, "ttys033", "/Users/someone"),
+    ];
+    let mut before = vec![tab_window(vec![], "wg-map-31")];
+    before[0].id = 300;
+    let names = BTreeMap::from([
+        (31, "Demo · First task".to_string()),
+        (32, " Demo · Second task\u{7} ".to_string()),
+        (33, "   ".to_string()),
+    ]);
+    let mut ping = Ping::start(
+        &procs,
+        &BTreeMap::new(),
+        &before,
+        &BTreeSet::from([31, 32, 33]),
+    )
+    .with_names(names);
+    let back = ping.read(&["wg-map-31".to_string()]);
+    assert_eq!(
+        back[0].title, "Demo · First task",
+        "marker in the snapshot title: the name, not the folder"
+    );
+    let rest: Vec<String> = ping.finish().into_iter().map(|w| w.title).collect();
+    assert_eq!(
+        rest,
+        ["Demo · Second task", "someone"],
+        "never seen: the trimmed name without control characters; a blank name gives the folder"
+    );
+}
+
 /// review quick 2026-11-06 (GLM): the title read back from the window goes into an OSC 0 sequence on the session's tty.
 /// An ESC or BEL in it would end that sequence early and let the rest act as terminal commands (ESC[6n makes the
 /// terminal type its answer into the session), so control characters never go back.

@@ -2554,7 +2554,11 @@ fn tick_work(t: TickInput, engines: &Mutex<Engines>) -> TickOutput {
     if !schedule.due.is_empty() {
         // The full list: known pairs stay while their process lives, also when `in_terminal` flips once (review quick
         // 2026-09-26, GLM). Pinged are only the due ones anyway.
-        let (map, found) = ping_map(&procs, &pid_windows, &schedule.due, t.screen_h);
+        let names: BTreeMap<Pid, String> = live
+            .iter()
+            .filter_map(|s| Some((s.pid?, s.digest.as_ref()?.name.clone()?)))
+            .collect();
+        let (map, found) = ping_map(&procs, &pid_windows, &schedule.due, names, t.screen_h);
         pid_windows = map;
         pending = ping_result(&schedule.due, &found, &schedule.pending, n);
         windows = ax_sync(|| ax::collect_windows(&t.first_seen, now(), t.screen_h));
@@ -2595,10 +2599,11 @@ fn ping_map(
     procs: &[EngineProc],
     known: &BTreeMap<Pid, u64>,
     due: &BTreeSet<Pid>,
+    names: BTreeMap<Pid, String>,
     screen_h: f64,
 ) -> (BTreeMap<Pid, u64>, BTreeSet<Pid>) {
     let before = ax_sync(|| ax::collect_windows(&BTreeMap::new(), now(), screen_h));
-    let mut ping = Ping::start(procs, known, &before, due);
+    let mut ping = Ping::start(procs, known, &before, due).with_names(names);
     if ping.open.is_empty() {
         return (ping.map, BTreeSet::new());
     }
