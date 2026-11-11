@@ -1,7 +1,10 @@
 //! AppKit tests of the small parts (prefs, screens, icon). Runs on the main thread (harness = false): `main` creates
 //! the shared NSApplication, runs each test with its panic caught, prints one line per test and fails if any failed.
-//! Hotkeys and the click monitor have no live test here: registering Ctrl+Opt+<digit> would take Kevin's keys from his
-//! running Lookout.
+//! Every window stays invisible and lets clicks through (`invisible`), as in the overlay tests. Hotkeys and the click
+//! monitor have no live test here: registering Ctrl+Opt+<digit> would take Kevin's keys from his running Lookout.
+
+#[cfg(target_os = "macos")]
+mod invisible;
 
 fn main() {
     #[cfg(target_os = "macos")]
@@ -40,6 +43,7 @@ mod parts {
         unsafe { std::env::set_var("LOOKOUT_LOG", &log) };
         let mtm = MainThreadMarker::new().expect("harness = false runs main on the main thread");
         let _app = NSApplication::sharedApplication(mtm);
+        super::invisible::keep_windows_invisible(mtm);
         let tests: [(&str, Test); 6] = [
             ("prefs_round_trip", prefs_round_trip),
             ("screens_match_nsscreen", screens_match_nsscreen),

@@ -1,7 +1,9 @@
 //! AppKit tests of the overlays (Swift tests/LayoutTests.swift). AppKit wants the main thread, so this is its own
 //! harness (`harness = false`): `main` runs each test inside an autorelease pool, catches its panic, prints one line
-//! per test and exits 1 if any failed. Panels appear on screen for a moment, as in the Swift tests; every test orders
-//! its panels out, the overlays do it when dropped.
+//! per test and exits 1 if any failed. Every panel stays invisible and lets clicks through (`invisible`): the tests run
+//! while someone works at the same Mac. Every test orders its panels out, the overlays do it when dropped.
+
+mod invisible;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -43,6 +45,7 @@ fn main() {
     };
     let mtm = MainThreadMarker::new().expect("tests run on the main thread");
     let _ = NSApplication::sharedApplication(mtm);
+    invisible::keep_windows_invisible(mtm);
     let tests: [Test; 10] = [
         (
             "overlay_panels_do_not_animate",
