@@ -2136,11 +2136,7 @@ fn test_inbox_clicks_lead_where_they_say() {
 
     let tile = |tab| InboxTile {
         tab,
-        team: None,
-        title: String::new(),
-        count: 0,
-        lines: vec![],
-        hot: false,
+        ..InboxTile::default()
     };
     let tiles = vec![
         ListLine::Tiles(vec![tile(InboxTab::Waiting)]),
@@ -2251,6 +2247,22 @@ fn test_inbox_parked_tab() {
     );
     assert_eq!(parked[2], ListLine::Group("Von dir geparkt".into()));
     assert_eq!(names(&parked), ["Fertig geparkt", "Postfach", "Gelesen"]);
+    // Kevin 2026-11-12: what he parked stops its colour and says "pausiert"; a card only marked read keeps its look.
+    let looks: Vec<(bool, Option<&str>)> = parked
+        .iter()
+        .filter_map(|l| match l {
+            ListLine::Card(c) => Some((c.paused, c.since.as_deref())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        looks,
+        [
+            (true, Some("pausiert")),
+            (true, Some("pausiert")),
+            (false, None)
+        ]
+    );
     assert_eq!(
         parked[4],
         ListLine::Buttons {

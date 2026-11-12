@@ -64,7 +64,8 @@ Background story: [Why I run my company with AI agents](https://kevintheo.com/fi
     up and down works as before, and so does a mouse wheel. Every card is shown. An area you open starts at its top.
     The scroll bar follows the macOS setting, and with "Always" the cards get narrower so nothing is cut off on the
     right. Waiting lists the sessions that want something from you, questions first, then the group "Stopped", then done
-    ones. Cards you pinned
+    ones. Done ones also include the done cards of each project card, each project under its own heading, below the
+    loose done cards. Cards you pinned
     stand above all of them. Within each of the two groups, whoever has waited longest stands on top, and a click on a
     card does not change the order. Running lists the sessions at work, then the parking lot if you use one. Parked
     has two groups, "Parked by you" and "Read". While somebody waits for you, the Waiting tile is amber and its title
@@ -90,12 +91,16 @@ Background story: [Why I run my company with AI agents](https://kevintheo.com/fi
     pinned session that
     is working is also listed under Running. The count of Waiting, on its tile and in its head, counts a pinned
     session only while it waits for you. Pinning or unpinning a card ends an earlier park or read mark of that card.
-    Pinning moves no window. There is no reordering by dragging. Parking and pins stay through a restart of Lookout.
-    An open question you parked shows under Waiting again after such a restart. If you park the card in front or mark
-    it read, the next waiting session comes to the terminal. Pinned cards are skipped there. Doing the same on another
-    card moves nothing. What you marked read is kept in memory only: after quitting Lookout those cards are back. A +
-    at the right of the head, on the overview and in every area alike, opens a menu with the three favorites, "Choose
-    freely", "New team …", "Empty window" and "Change favorites". "Empty window" does what the + did before: it opens a
+    Pinning moves no window. There is no reordering by dragging. Parking, pins and what you marked read stay through a
+    restart of Lookout. An open question you parked stays parked after such a restart, and a card you marked read stays
+    read, with one exception under "Limits". If you park the card in front or mark it read in Waiting, the next waiting
+    session comes to the terminal. Pinned cards and cards you marked read in an area are skipped there. Doing the same
+    on another card moves nothing. A + at
+    the right of the head, on the overview and in every area alike, opens a menu with the three favorites, "Choose
+    freely", "New team …", "Empty window", "Change favorites" and "Cards". "Cards" lists every project card as "Dissolve
+    “name”". A click dissolves that card, also when none of its windows is open. "Cards" is greyed out while there is no
+    project card. The "New session" menu in the menu bar menu is the same menu. "Empty window" does what the + did
+    before: it opens a
     new empty
     window of the terminal in front, Warp in your home folder or Ghostty, and Warp if no terminal is in front, and
     Ghostty needs version 1.3 or later for this. The favorites and "Choose freely" start a new AI session, see "New
@@ -256,8 +261,9 @@ Lookout (it reads the file once at start), for example:
 
 The menu remembers your choice of screen, layout, grid, control room screens, excluded windows and labels, and
 also which windows you sent to the parking lot or took off it by hand.
-Lookout also remembers which sessions you parked or pinned in the Inbox, the titles you gave to sessions, your project
-cards and your team presets, across restarts. A session that comes back with its id (`claude --resume`) gets its title
+Lookout also remembers which sessions you parked, pinned or marked read in the Inbox, the titles you gave to sessions,
+your project cards and your team presets, across restarts. A session that comes back with its id (`claude --resume`)
+gets its title
 back.
 Pause and the side of the strip (*More > Strip on the right/left*) start fresh after a restart.
 
@@ -712,13 +718,37 @@ card from its list or type a new name. The session then starts named "<card> · 
 named "<card> · new". The card is kept. This works only with a program that has `{name}`; with another program the
 session starts without a card and the log says so.
 
-The windows of a card leave Waiting, Running and Parked, like those of a team. Its tile stands with the team tiles and
+The windows of a card leave Waiting, Running and Parked, like those of a team. Only its done cards also stand in
+Waiting, under the name of the card. Its tile stands with the team tiles and
 shows its name and how many windows it has. Its first line is "? <name> asks you" while one window asks, else how many
 are done and, if any, how many are stopped ("1 done · 1 stopped"). Its second line says how many work. The tile is amber
 while one window asks. A click on it opens the card's area, grouped by state: "Questions for you", "Stopped", "Working"
 and "Done". Windows with the same name all stay. "Dissolve the card" in the right-click menu of each of its windows in
-its area ends the card. A card stays until you dissolve it, also across restarts. A card whose project is also a team
+its area ends the card. Under "Cards" in the + menu you can dissolve it too, even when none of its windows is open. A
+card stays until you dissolve it, also across restarts. A card whose project is also a team
 shows as that team.
+
+In the area of a team or a project card, a card you parked stops showing its colour. It shows a grey ⏸ and "paused"
+instead of its time and moves to a group "Parked" at the foot of the area. Above "Parked" there is room down to the
+lower third of the visible area, at least 40 points, so the parked cards keep their distance from the others. A parked
+card no longer counts on the tile or in the head of the area. A window "To close" stays in its group. In the Parked area
+of the Inbox a parked card looks the same. A right-click on the tile of a project card or team, or on any card in its
+area, offers "Park the whole project" or "Park the whole team" while at least one of its windows can still be parked. It
+parks every window the way "Park" parks one card. Pinned windows stay pinned, windows "To close" stay where they are,
+and no window moves. "Bring the project back" or "Bring the team back" is offered while one of its windows is parked,
+and brings every parked window back. When nothing is left to park, at least one window is parked and none of the other
+windows asks, the tile rests: it turns grey, shows "⏸ paused" and "N parked", and moves to the foot of the overview,
+below Parked. A parked window that asks something new comes back, and with it the tile. While a pinned window or a
+window "To close" of the project or team asks, the tile stays amber.
+
+A right-click on a card in the area of a team or project card offers "Read: to the bottom until the next answer" when
+the card has a question, is stopped or is done. It is not offered on pinned, parked or working cards, and not on a
+question of a session without an answer time in its transcript (Codex, Grok). The card stays in the area: it moves to a
+group "Read" right below the other groups, without a gap, above "Parked". It keeps its state, its colour and its time.
+It no longer makes the tile amber, and the first line of the tile no longer names it. It comes back to its group by
+itself once the session does something new: a new answer, or it works again. "Bring back" ends it at once. A window "To
+close" you mark read stays in its group, but no longer makes the tile amber. In Waiting nothing changes: "Read: hide
+until the next answer" is still offered on done cards only.
 
 A right-click on any card in the Inbox, also in the area of a team or a card, offers "Rename …". A small window "Rename"
 shows the session's current full name, for example "Shop · checkout page". "Save" keeps the title, "Cancel" or Esc
@@ -757,8 +787,10 @@ window it still uses the session's own names.
   names sessions, leaves its team or card. Lookout starts only the lead and the key account, the lead starts the workers
   with its own tools, and the workers' choice only goes into the lead's text. Team windows and sessions on a card open
   only in Warp, like every new session from the +. A project card with no window open shows no tile; it stays in the
-  list of the field "Card" and can only be dissolved from one of its windows. "Rename …" changes only what Lookout
+  list of the field "Card" and can be dissolved under "Cards" in the + menu. "Rename …" changes only what Lookout
   shows. STOPPED is recognized for Claude Code and Codex only.
+- For sessions without an answer time in their transcript (Codex, Grok), a card you marked read comes back after a
+  restart of Lookout, because Lookout cannot tell whether the session finished again in the meantime.
 
 ## Kurz auf Deutsch
 
@@ -781,7 +813,14 @@ Karte parkst du eine Session, der du nicht folgen willst; im Bereich «Geparkt»
 Mit «Anheften» im Rechtsklick-Menü einer Karte stellst du die Session in die Gruppe «Angeheftet» ganz oben im Bereich
 «Wartet»; dort bleibt sie, bis du «Lösen» wählst. «Neues Team …» im «+» startet ein Fenster «Team-Lead» und auf Wunsch
 ein Fenster «Key account», jedes mit einem Rollentext vor dem Auftrag. Jedes Team und jede Projekt-Karte hat in der
-Übersicht eine eigene Kachel, und ihre Fenster stehen nur noch dort. Mit «Umbenennen …» im Rechtsklick-Menü gibst du
+Übersicht eine eigene Kachel, und ihre Fenster stehen nur noch dort; nur die erledigten Karten der Projekt-Karten
+erscheinen zusätzlich bei den Wartenden, jedes Projekt unter eigener Überschrift, ausser geparkte und gelesen markierte.
+«Ganzes Projekt parken» und «Ganzes Team parken» parken alle Fenster, angeheftete bleiben angeheftet; eine Kachel ruht
+grau ganz unten, wenn nichts mehr zu parken ist, mindestens ein Fenster geparkt ist und kein anderes Fenster etwas
+fragt. Im Bereich eines Teams oder Projekts bleibt eine mit «Gelesen: nach unten bis zur nächsten Antwort» markierte
+Karte stehen, unter «Gelesen» und mit ihrem Zustand; die Kachel wird durch sie nicht mehr bernsteinfarben, bis die
+Session etwas Neues tut. Park- und Gelesen-Markierungen bleiben über einen Neustart erhalten; nur bei Codex und Grok
+kommt eine als gelesen markierte Karte danach zurück. Mit «Umbenennen …» im Rechtsklick-Menü gibst du
 einer Session in Lookout einen eigenen Titel. Ein mit Esc abgebrochener Zug zeigt ⏸ ANGEHALTEN in Blaugrau. Nach einem
 Absturz, einem Herunterfahren oder wenn Warp beendet
 wurde, zeigt das Menü «Sessions wiederherstellen»; jede Claude-Code-Session öffnet sich dann in einem eigenen

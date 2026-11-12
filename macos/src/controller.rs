@@ -30,8 +30,9 @@ use lookout_core::i18n::{is_german, prefers_german, set_german};
 use lookout_core::launch::{self, Favorite, Field, NewSession, favorites_to_json};
 use lookout_core::layout::{
     DEFAULT_GRID, PlanInput, ReadAnswers, attention_order, first_ready_time, is_worker,
-    layout_candidates, lot_member, plan_arrangement, plan_log_line, press_button, resolve_target,
-    rest_sequence, set_pinned, status_swap, swapped_rest, unique_screen_ids, walk_skips,
+    layout_candidates, lot_member, park_all, pin_rank, plan_arrangement, plan_log_line,
+    press_button, read_answers_from, read_answers_lines, resolve_target, rest_sequence, set_pinned,
+    stamps_after_restart, status_swap, swapped_rest, unique_screen_ids, walk_skips,
 };
 use lookout_core::mapping::{
     PING_POLL, PING_ROUNDS, PING_WAIT, Ping, PingState, attach_processes, index_of_window,
@@ -84,6 +85,8 @@ pub(crate) const DEFAULTS_PARKED: &str = "lookout.parked";
 pub(crate) const DEFAULTS_KEPT: &str = "lookout.kept";
 /// Sessions Kevin parked in the inbox.
 pub(crate) const DEFAULTS_SNOOZED: &str = "lookout.snoozed";
+/// The stamps of what Kevin parked or marked read (`ReadAnswers`, Kevin 2026-11-12), `layout::read_answers_lines`.
+pub(crate) const DEFAULTS_READ: &str = "lookout.read";
 /// Sessions Kevin pinned in the inbox, in the order he pinned them.
 pub(crate) const DEFAULTS_PINNED: &str = "lookout.pinned";
 /// Kevin's own titles of sessions (Kevin 2026-11-11), "session id<TAB>title" each.
@@ -537,7 +540,9 @@ impl App {
             models_day,
             models_asking: false,
             in_front: None,
-            read_answers: ReadAnswers::new(),
+            read_answers: stamps_after_restart(read_answers_from(
+                &prefs::string_array(DEFAULTS_READ).unwrap_or_default(),
+            )),
             inbox_tab: InboxTab::default(),
             inbox_team: None,
             plan_day: None,
@@ -2065,7 +2070,57 @@ impl App {
             &self.cfg.new_session,
             &self.favorites,
             &self.team_setup,
+            &self.cards,
         )
+    }
+
+    /// "Ganzes Projekt/Team parken" or "… zurückholen" (Kevin 2026-11-12): every window of the project card or team window
+    /// `w` stands on, grouped as the inbox groups it. Parking leaves pinned ones and those to close alone; bringing back
+    /// takes every one. Moves nothing.
+    fn park_whole(&mut self, w: usize, on: bool) {
+        let all: Vec<usize> = (0..self.windows.len()).collect();
+        let teams = team::teams(
+            &self.windows,
+            &all,
+            &self.teams_known,
+            &self.cards,
+            &self.cfg.lead_names,
+        );
+        let Some(t) = teams.iter().find(|t| t.members().any(|i| i == w)) else {
+            return;
+        };
+        let members: Vec<usize> = t
+            .members()
+            .filter(|&i| {
+                !on || (!t.stale.contains(&i) && pin_rank(&self.windows[i], &self.pinned).is_none())
+            })
+            .collect();
+        park_all(
+            &self.windows,
+            &members,
+            on,
+            &mut self.read_answers,
+            &mut self.snoozed,
+        );
+        self.save_parks();
+        self.refresh_overlays();
+    }
+
+    /// The parked sessions and the stamps of what Kevin parked or read, both kept over a restart (Kevin 2026-11-12).
+    fn save_parks(&self) {
+        prefs::set_string_array(
+            DEFAULTS_SNOOZED,
+            &self.snoozed.iter().cloned().collect::<Vec<_>>(),
+        );
+        prefs::set_string_array(DEFAULTS_READ, &read_answers_lines(&self.read_answers));
+    }
+
+    /// "Cards › …" at the + (Kevin 2026-11-11): the card goes, whether a window of it is open or not; its windows
+    /// return to the areas.
+    pub(crate) fn dissolve_card(&mut self, card: &str) {
+        self.cards.retain(|c| c != card);
+        prefs::set_string_array(DEFAULTS_CARDS, &self.cards);
+        self.refresh_overlays();
     }
 
     /// What the team dialog shows: the settings and how a team starts.
@@ -2269,6 +2324,17 @@ impl App {
         else {
             return;
         };
+        if matches!(
+            button,
+            CardButton::ParkProject
+                | CardButton::UnparkProject
+                | CardButton::ParkTeam
+                | CardButton::UnparkTeam
+        ) {
+            let on = matches!(button, CardButton::ParkProject | CardButton::ParkTeam);
+            self.park_whole(w, on);
+            return;
+        }
         // An own card for the window's project, or its end (Kevin 2026-11-11, "3a").
         if matches!(button, CardButton::MakeCard | CardButton::DissolveCard) {
             if let Some(p) = team::project(&self.windows[w]).map(str::to_owned) {
@@ -2307,10 +2373,7 @@ impl App {
                 &mut self.snoozed,
             )
         };
-        prefs::set_string_array(
-            DEFAULTS_SNOOZED,
-            &self.snoozed.iter().cloned().collect::<Vec<_>>(),
-        );
+        self.save_parks();
         match next {
             Some(i) => {
                 let ids = self.windows[i]

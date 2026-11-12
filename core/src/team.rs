@@ -338,11 +338,8 @@ mod tests {
     /// both "<card> · new" (review quick 2026-11-11).
     #[test]
     fn a_card_keeps_windows_of_the_same_name() {
-        let w = vec![
-            named(1, "Ringtop · neu", 1.0),
-            named(2, "Ringtop · neu", 2.0),
-        ];
-        let t = teams(&w, &[0, 1], &BTreeSet::new(), &["Ringtop".into()], &[]);
+        let w = vec![named(1, "Harbor · neu", 1.0), named(2, "Harbor · neu", 2.0)];
+        let t = teams(&w, &[0, 1], &BTreeSet::new(), &["Harbor".into()], &[]);
         assert_eq!(
             (t[0].card, t[0].stale.len(), t[0].members().count()),
             (true, 0, 2)
@@ -456,10 +453,10 @@ mod tests {
         assert!(check_name(&"x".repeat(41), &known).is_err());
         assert_eq!(member_name("Shop", Role::KeyAccount), "Shop · Key account");
         assert_eq!(
-            card_member_name("Ringtop", "  Fix  the   ring view now "),
-            "Ringtop · Fix the ring view now"
+            card_member_name("Harbor", "  Fix  the   ring view now "),
+            "Harbor · Fix the ring view now"
         );
-        assert_eq!(card_member_name("Ringtop", ""), "Ringtop · neu");
+        assert_eq!(card_member_name("Harbor", ""), "Harbor · neu");
         assert_eq!(
             card_member_name("R", &"word ".repeat(30)).chars().count(),
             "R · ".chars().count() + 39,

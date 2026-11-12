@@ -28,6 +28,8 @@ const BLANK: &str = "blank";
 /// A new team; a team role changed (role, field and value follow, one per line).
 const TEAM: &str = "team";
 const TEAM_CHANGE: &str = "team-change:";
+/// A project card dissolved (its name follows).
+const CARD_OFF: &str = "card-off:";
 
 /// The favorites' places in the menu (`launch::FAVORITES`).
 const SLOTS: [&str; 3] = ["①", "②", "③"];
@@ -41,6 +43,7 @@ pub enum Choice {
     Blank,
     Team,
     ChangeTeam(Role, Field, String),
+    DissolveCard(String),
 }
 
 /// A team role in a menu item's key.
@@ -59,6 +62,9 @@ pub fn choice(key: &str) -> Option<Choice> {
     }
     if key == TEAM {
         return Some(Choice::Team);
+    }
+    if let Some(card) = key.strip_prefix(CARD_OFF) {
+        return Some(Choice::DissolveCard(card.to_owned()));
     }
     if let Some(rest) = key.strip_prefix(TEAM_CHANGE) {
         let mut parts = rest.splitn(3, '\n');
@@ -84,15 +90,16 @@ pub fn choice(key: &str) -> Option<Choice> {
 }
 
 /// The favorites (one that no longer fits the settings is greyed out, "not available"), "Choose freely" (place, program,
-/// model and effort for one start, the favorites stay), an empty window, and "Change favorites" with place, program,
-/// model and effort of each, the current one checked. A click sends `newSessionItem:` to `target` (the menu
-/// delegate); `None` in tests.
+/// model and effort for one start, the favorites stay), an empty window, "Change favorites" with place, program,
+/// model and effort of each, the current one checked, and "Cards" with the project `cards`, a click dissolving one
+/// (Kevin 2026-11-11). A click sends `newSessionItem:` to `target` (the menu delegate); `None` in tests.
 pub fn menu(
     mtm: MainThreadMarker,
     target: Option<&AnyObject>,
     settings: &NewSession,
     favorites: &[Favorite],
     team: &TeamSetup,
+    cards: &[String],
 ) -> Retained<NSMenu> {
     let entry = |title: &str, key: Option<String>| {
         // SAFETY: designated initializer on a fresh allocation; the action is a method of the target.
@@ -250,6 +257,16 @@ pub fn menu(
     change.addItem(&nest("Team", roles));
     let it = entry(tr("Favoriten ändern", "Change favorites"), None);
     it.setSubmenu(Some(&change));
+    menu.addItem(&it);
+    // A card stays until Kevin dissolves it, also with none of its windows open (Kevin 2026-11-11).
+    let list = plain(mtm);
+    for card in cards {
+        let title = tr(&format!("„{card}“ auflösen"), &format!("Dissolve “{card}”")).to_owned();
+        list.addItem(&entry(&title, Some(format!("{CARD_OFF}{card}"))));
+    }
+    let it = entry(tr("Karten", "Cards"), None);
+    it.setSubmenu(Some(&list));
+    it.setEnabled(!cards.is_empty());
     menu.addItem(&it);
     menu
 }

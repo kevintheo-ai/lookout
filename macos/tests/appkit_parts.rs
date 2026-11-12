@@ -257,7 +257,15 @@ mod parts {
         // The daily list names "big" (Kevin 2026-11-10: model names with their number); the favorites keep "big".
         let mut settings = settings;
         settings.set_models("Tool", &["big\tBig 5.5".to_owned(), "small".to_owned()]);
-        let menu = plus::menu(mtm, None, &settings, &favorites, &settings.team_setup(None));
+        let cards = ["Garden".to_owned()];
+        let menu = plus::menu(
+            mtm,
+            None,
+            &settings,
+            &favorites,
+            &settings.team_setup(None),
+            &cards,
+        );
         let items = |m: &NSMenu| m.itemArray().iter().collect::<Vec<Retained<NSMenuItem>>>();
         let key = |it: &NSMenuItem| {
             it.representedObject()
@@ -267,8 +275,29 @@ mod parts {
         let top = items(&menu);
         assert_eq!(
             top.len(),
-            8,
-            "3 favorites, choose freely, new team, empty window, line, change"
+            9,
+            "3 favorites, choose freely, new team, empty window, line, change, cards"
+        );
+        // "Cards ›" below "Change favorites" (Kevin 2026-11-11): a click dissolves the card, with or without its windows.
+        assert!(top[8].isEnabled());
+        let dissolve = items(&top[8].submenu().expect("the cards"));
+        assert_eq!(dissolve.len(), 1);
+        assert!(dissolve[0].title().to_string().contains("Garden"));
+        assert_eq!(
+            plus::choice(&key(&dissolve[0]).expect("a key")),
+            Some(Choice::DissolveCard("Garden".into()))
+        );
+        let no_cards = plus::menu(
+            mtm,
+            None,
+            &settings,
+            &favorites,
+            &settings.team_setup(None),
+            &[],
+        );
+        assert!(
+            !items(&no_cards)[8].isEnabled(),
+            "no card, nothing to dissolve"
         );
         assert_eq!(top[0].title().to_string(), "① Acme · Tool · Big 5.5 · max");
         assert_eq!(top[1].title().to_string(), "② Studio · Tool · small · max");

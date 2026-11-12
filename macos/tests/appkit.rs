@@ -46,7 +46,7 @@ fn main() {
     let mtm = MainThreadMarker::new().expect("tests run on the main thread");
     let _ = NSApplication::sharedApplication(mtm);
     invisible::keep_windows_invisible(mtm);
-    let tests: [Test; 10] = [
+    let tests: [Test; 11] = [
         (
             "overlay_panels_do_not_animate",
             overlay_panels_do_not_animate,
@@ -62,6 +62,10 @@ fn main() {
         (
             "inbox_tiles_and_strip_lead_on",
             inbox_tiles_and_strip_lead_on,
+        ),
+        (
+            "project_tile_parks_on_right_click",
+            project_tile_parks_on_right_click,
         ),
         ("every_panel_kind_draws", every_panel_kind_draws),
         ("fades_end_off_screen", fades_end_off_screen),
@@ -339,6 +343,7 @@ fn inbox_scrolls_below_its_tabs(mtm: MainThreadMarker) {
             lines: 1,
             menu: vec![CardButton::Park],
             pinned: false,
+            paused: false,
             mark: None,
         })
     };
@@ -462,11 +467,9 @@ fn inbox_tiles_and_strip_lead_on(mtm: MainThreadMarker) {
     let at = Rect::new(240.0, 220.0, 430.0, 400.0);
     let tile = |tab, title: &str| InboxTile {
         tab,
-        team: None,
         title: title.into(),
         count: 1,
-        lines: vec![],
-        hot: false,
+        ..InboxTile::default()
     };
     let overview = ListTarget {
         rect: at,
@@ -563,6 +566,84 @@ fn inbox_tiles_and_strip_lead_on(mtm: MainThreadMarker) {
     );
 }
 
+/// Kevin 2026-11-12: "ich will auch ganze projekte parken können". A right-click on a project's tile offers what the tile
+/// carries, and the choice reaches `on_button` with the sessions of the project's windows.
+fn project_tile_parks_on_right_click(mtm: MainThreadMarker) {
+    let at = Rect::new(260.0, 240.0, 430.0, 300.0);
+    let project = InboxTile {
+        tab: InboxTab::Team,
+        team: Some("Garden".into()),
+        title: "Garden".into(),
+        count: 2,
+        menu: vec![CardButton::ParkProject],
+        ids: vec!["a".into(), "b".into()],
+        ..InboxTile::default()
+    };
+    let target = ListTarget {
+        rect: at,
+        lines: vec![
+            ListLine::InboxHead {
+                tab: InboxTab::Overview,
+                counts: InboxCounts::default(),
+                team: None,
+            },
+            ListLine::Tiles(vec![project]),
+        ],
+        window_number: 0,
+    };
+    type Pressed = Vec<(CardButton, Vec<String>)>;
+    let pressed: Rc<RefCell<Pressed>> = Rc::default();
+    let lists = {
+        let pressed = Rc::clone(&pressed);
+        ListOverlay::new(
+            mtm,
+            Box::new(|_| {}),
+            Box::new(move |button, ids| pressed.borrow_mut().push((button, ids))),
+            Box::new(|_| {}),
+            Box::new(|| None),
+        )
+    };
+    lists.update(&[target], None);
+    let panel = window_at(mtm, at);
+    let scroll = panel
+        .contentView()
+        .expect("content view")
+        .subviews()
+        .firstObject()
+        .expect("a view under the head")
+        .downcast::<NSScrollView>()
+        .expect("a scroll view");
+    let cards = scroll.documentView().expect("the tiles");
+    // 20 pt into the tile, below the head (44 pt); window coordinates count from the bottom.
+    let location = NSPoint::new(40.0, rect(panel.frame()).height() - (44.0 + 20.0));
+    let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+        NSEventType::RightMouseDown,
+        location,
+        NSEventModifierFlags::empty(),
+        0.0,
+        panel.windowNumber(),
+        None,
+        0,
+        1,
+        1.0,
+    )
+    .expect("mouse event");
+    let menu = cards.menuForEvent(&event).expect("the tile's menu");
+    assert_eq!(menu.numberOfItems(), 1);
+    assert_eq!(
+        menu.itemAtIndex(0).expect("its item").title().to_string(),
+        lookout_core::i18n::tr("Ganzes Projekt parken", "Park the whole project")
+    );
+    menu.performActionForItemAtIndex(0);
+    assert_eq!(
+        *pressed.borrow(),
+        [(
+            CardButton::ParkProject,
+            vec!["a".to_owned(), "b".to_owned()]
+        )]
+    );
+}
+
 /// What `view` paints at (x, y), its points from the bottom left, drawn into a bitmap at the window's scale.
 fn painted(view: &NSView, x: f64, y: f64) -> Retained<NSColor> {
     let bounds = view.bounds();
@@ -642,12 +723,14 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
             open,
             lines: 2,
             menu: vec![CardButton::Park],
-            // The open card is the pinned one: its pin is probed below.
+            // The open card is the pinned one: its pin is probed below. The other one is parked: its circle too.
             pinned: open,
+            paused: !open,
             mark: None,
         })
     };
-    let ib = Rect::new(60.0, 200.0, 430.0, 500.0);
+    // Tall enough to show the parked card below the open one.
+    let ib = Rect::new(60.0, 200.0, 430.0, 620.0);
     let inbox = ListTarget {
         rect: ib,
         lines: vec![
@@ -673,6 +756,7 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
                     count: 1,
                     lines: vec!["? alpha".into()],
                     hot: true,
+                    ..InboxTile::default()
                 },
                 InboxTile {
                     tab: InboxTab::Planned,
@@ -680,7 +764,7 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
                     title: "Geplant".into(),
                     count: 4,
                     lines: vec!["▶ heute 10:00 Report".into(), "1 heute · 0 morgen".into()],
-                    hot: false,
+                    ..InboxTile::default()
                 },
             ]),
             ListLine::Week(WeekStrip {
@@ -708,6 +792,7 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
                 lines: 1,
                 menu: vec![],
                 pinned: false,
+                paused: false,
                 mark: Some(PlanMark::Task),
             }),
             ListLine::Group("Fragen".into()),
@@ -727,10 +812,12 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
                 count: 3,
                 lines: vec!["? Key account fragt dich".into(), "1 Arbeiter läuft".into()],
                 hot: true,
+                ..InboxTile::default()
             }]),
         ],
         window_number: 0,
     };
+    let inbox_lines = inbox.lines.clone();
     lists.update(&[list_target, inbox], None);
 
     let preview = PreviewOverlay::new(mtm);
@@ -782,15 +869,47 @@ fn every_panel_kind_draws(mtm: MainThreadMarker) {
         red > green && green > blue,
         "waiting tint: {red} {green} {blue}"
     );
-    // The pin before the name of the pinned card (tabs 44, group 28, then the card) takes the waiting tint; the same
-    // place on the card that is not pinned shows the inbox's ground.
+    // A card's top in the panel: the fixed head (tabs and strip) and every line before it stand above (scrolled to the
+    // top). Measured 2026-11-12: fixed numbers from before the tiles came had the pin probes land on the amber tile.
+    let top = |which: fn(&InboxCard) -> bool| {
+        let k = inbox_lines
+            .iter()
+            .position(|l| matches!(l, ListLine::Card(c) if which(c)))
+            .expect("the card");
+        inbox_lines[..k].iter().map(ListLine::height).sum::<f64>()
+    };
+    let (pinned_top, parked_top) = (top(|c| c.pinned), top(|c| c.paused));
+    // The pin before the name of the pinned card takes the waiting tint; the same place on the other card shows the
+    // inbox's ground.
     let inbox_view = window_at(mtm, ib).contentView().expect("content view");
     let amber = |y: f64| {
         let c = painted(&inbox_view, 57.6, y);
         c.redComponent() > c.greenComponent() && c.greenComponent() > c.blueComponent()
     };
-    assert!(amber(500.0 - 89.5), "pin on the pinned card");
-    assert!(!amber(500.0 - 220.5), "no pin on the other card");
+    assert!(amber(ib.h - (pinned_top + 17.5)), "pin on the pinned card");
+    assert!(
+        !amber(ib.h - (parked_top + 17.5)),
+        "no pin on the other card"
+    );
+    // What Kevin parked stops its colour (Kevin 2026-11-12): the other card's circle is grey, the asking one's amber.
+    // Probed left of the symbol, 21 pt below the card's top (the circle's centre).
+    let circle = |card_top: f64| painted(&inbox_view, 19.0, ib.h - (card_top + 21.0));
+    let asking = circle(pinned_top);
+    assert!(
+        asking.redComponent() > asking.greenComponent()
+            && asking.greenComponent() > asking.blueComponent(),
+        "asking circle amber"
+    );
+    let parked = circle(parked_top);
+    let (r, g, b) = (
+        parked.redComponent(),
+        parked.greenComponent(),
+        parked.blueComponent(),
+    );
+    assert!(
+        (r - g).abs() < 0.05 && (g - b).abs() < 0.05 && (0.3..0.6).contains(&g),
+        "parked circle grey: {r} {g} {b}"
+    );
 }
 
 /// The fades run: the glow's ticker breathes a new frame in and a dropped one out until it leaves the screen, a label's

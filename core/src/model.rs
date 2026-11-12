@@ -757,6 +757,9 @@ pub struct RailSplit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CardButton {
     ReadNext,
+    /// Read in a project's or team's area, also a question (Kevin 2026-11-12): the card moves under "Gelesen", keeps
+    /// its state and leaves the tile quiet until it does something new (`layout::marked_read`).
+    MarkRead,
     Park,
     Unpark,
     Pin,
@@ -766,6 +769,12 @@ pub enum CardButton {
     /// An own card for the window's project, and its end (Kevin 2026-11-11, "3a").
     MakeCard,
     DissolveCard,
+    /// Every window of the window's project card parked, or brought back (Kevin 2026-11-12: "ganze projekte parken").
+    ParkProject,
+    UnparkProject,
+    /// The same for a team (Kevin 2026-11-12: "teams sollten auch geparkt werden können").
+    ParkTeam,
+    UnparkTeam,
 }
 
 /// List entry: header, window (index in `windows`) or "+N more (in the menu)". `Working` and `Lot` are windows for the

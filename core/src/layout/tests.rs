@@ -1322,6 +1322,134 @@ fn test_is_read_without_an_answer_time() {
     assert!(!is_read(&w, &read), "done anew brings it back");
 }
 
+/// Kevin 2026-11-12 ("1. ja"): the stamps go with the settings, so after a restart a parked open question stays parked
+/// and a card marked read stays read. A line that cannot be read is dropped: its card shows again.
+#[test]
+fn test_stamps_survive_a_restart() {
+    let none = BTreeSet::new();
+    let mut w = spread_windows(); // 0 runs, 1 done, 2 question
+    let seen = |w: &mut TermWindow, now: Time| w.ready_since = Some(first_ready_time(w, now));
+    for i in [1, 2] {
+        w[i].sessions[0].digest = Some(Digest {
+            answer_at: Some(500.25),
+            ..Digest::default()
+        });
+        seen(&mut w[i], 1000.0);
+    }
+    // A quick new answer (review quick 2026-11-12, Grok): Lookout never saw it run, so it stands done since before.
+    w[1].ready_since = Some(400.0);
+    // An answer time that came after the window was seen done (GLM, Grok): a question is done too, and seen anew.
+    w[2].ready_since = Some(1200.0);
+    let (mut read, mut snoozed) = (ReadAnswers::new(), BTreeSet::new());
+    mark_read(&w[1], &mut read);
+    press_button(
+        CardButton::Park,
+        &w,
+        &none,
+        Some(0),
+        2,
+        &mut read,
+        &mut snoozed,
+    );
+
+    let mut lines = read_answers_lines(&read);
+    lines.extend(["broken".to_owned(), "x\tnot a time\t".to_owned()]);
+    assert_eq!(
+        read_answers_from(&lines),
+        read,
+        "every stamp comes back exactly, broken lines are dropped"
+    );
+    let back = stamps_after_restart(read_answers_from(&lines));
+    // After the restart the controller sees both windows anew.
+    for i in [1, 2] {
+        seen(&mut w[i], 2000.0);
+    }
+    assert!(is_read(&w[1], &back), "still read");
+    assert!(
+        is_snoozed(&w[2], &snoozed, &back),
+        "the open question stays parked"
+    );
+
+    let odd: ReadAnswers = [
+        ("a\tb".to_owned(), (Some(100.0), None)),
+        ("c".to_owned(), (None, None)),
+    ]
+    .into();
+    assert_eq!(
+        read_answers_from(&read_answers_lines(&odd)),
+        odd,
+        "no time, a tab in the id"
+    );
+}
+
+/// "Read, next" passes over a question Kevin read in its area (review quick 2026-11-12, GLM), as over one he parked.
+#[test]
+fn test_next_waiting_passes_a_read_question() {
+    let none = BTreeSet::new();
+    let mut w = spread_windows(); // 1 done, 2 question
+    w[2].sessions[0].digest = Some(Digest {
+        answer_at: Some(500.0),
+        ..Digest::default()
+    });
+    let (mut read, mut snoozed) = (ReadAnswers::new(), BTreeSet::new());
+    assert_eq!(next_waiting(&w, &none, &snoozed, Some(1), &read), Some(2));
+    press_button(
+        CardButton::MarkRead,
+        &w,
+        &none,
+        None,
+        2,
+        &mut read,
+        &mut snoozed,
+    );
+    assert_eq!(
+        next_waiting(&w, &none, &snoozed, Some(1), &read),
+        None,
+        "read: nobody else waits"
+    );
+}
+
+/// "Gelesen" ends an old park (review quick 2026-11-12, Codex): a parked card that asked anew and is then read stands
+/// under "Gelesen", not parked again by the fresh stamp.
+#[test]
+fn test_mark_read_ends_an_old_park() {
+    let none = BTreeSet::new();
+    let mut w = spread_windows(); // 2 question
+    w[2].sessions[0].digest = Some(Digest {
+        answer_at: Some(500.0),
+        ..Digest::default()
+    });
+    let (mut read, mut snoozed) = (ReadAnswers::new(), BTreeSet::new());
+    press_button(
+        CardButton::Park,
+        &w,
+        &none,
+        None,
+        2,
+        &mut read,
+        &mut snoozed,
+    );
+    w[2].sessions[0].digest.as_mut().unwrap().answer_at = Some(600.0);
+    assert!(
+        !is_snoozed(&w[2], &snoozed, &read),
+        "the new question came back"
+    );
+    press_button(
+        CardButton::MarkRead,
+        &w,
+        &none,
+        None,
+        2,
+        &mut read,
+        &mut snoozed,
+    );
+    assert!(marked_read(&w[2], &read));
+    assert!(
+        !is_snoozed(&w[2], &snoozed, &read),
+        "read, not parked again"
+    );
+}
+
 /// A window whose visible tab is not recognisable can be marked read as well.
 #[test]
 fn test_is_read_without_a_visible_tab() {

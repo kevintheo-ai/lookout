@@ -23,7 +23,7 @@ use lookout_core::overlay::{
     INBOX_MARGIN, INBOX_OPEN_LINE_H, INBOX_PLUS_W, INBOX_PLUS_X, INBOX_TEXT_X, INBOX_TILE_H,
     INBOX_WHAT_TOP, InboxCard, InboxCounts, InboxNav, InboxTab, InboxTile, LABEL_BG_ALPHA,
     ListLine, ListTarget, PlanMark, WeekStrip, button_at, card_at, more_text, nav_at, plus_at,
-    row_at, swipe_step, tile_spans, week_arrows, week_day_span,
+    row_at, swipe_step, tile_at, tile_spans, week_arrows, week_day_span,
 };
 
 use super::{
@@ -66,8 +66,8 @@ struct ListIvars {
     on_button: Rc<dyn Fn(CardButton, Vec<String>)>,
     on_nav: Rc<dyn Fn(InboxNav)>,
     on_plus: Rc<dyn Fn() -> Option<Retained<NSMenu>>>,
-    /// The card a right-click menu was opened on.
-    menu_card: RefCell<Option<InboxCard>>,
+    /// What a right-click menu was opened on: its commands and the sessions they act on (a card's, or a project tile's).
+    menu_target: RefCell<Option<(Vec<CardButton>, Vec<String>)>>,
     /// The inbox's cards inside their scroll view: no ground of their own, the tabs view behind them draws it.
     bare: bool,
 }
@@ -231,8 +231,11 @@ fn draw_tiles(tiles: &[InboxTile], y: f64, width: f64, tints: &Tints) {
             fill_rounded(r, 11.0, &white(0.05));
             stroke_rounded(r, 11.0, &white(0.08));
         }
+        // A project Kevin parked whole is grey (Kevin 2026-11-12).
         let title_color = if tile.hot {
             amber.clone()
+        } else if tile.paused {
+            white(0.45)
         } else {
             NSColor::whiteColor()
         };
@@ -250,7 +253,13 @@ fn draw_tiles(tiles: &[InboxTile], y: f64, width: f64, tints: &Tints) {
             &title_color,
             &right,
         );
-        let line_color = if tile.hot { white(0.88) } else { white(0.62) };
+        let line_color = if tile.hot {
+            white(0.88)
+        } else if tile.paused {
+            white(0.4)
+        } else {
+            white(0.62)
+        };
         for (k, line) in tile.lines.iter().take(2).enumerate() {
             let ly = y + 37.0 + k as f64 * 21.0;
             draw_text(
@@ -384,20 +393,25 @@ fn draw_card(c: &InboxCard, y: f64, width: f64, block: f64, tints: &Tints) {
         fill_rounded(Rect::new(8.0, y, width - 16.0, block), 9.0, &white(0.075));
     }
     let circle = Rect::new(16.0, y + 10.0, GLYPH, GLYPH);
-    // A planned item shows its mark: a ring for a task started by hand, a filled circle with ▶ or ! otherwise.
+    // A planned item shows its mark: a ring for a task started by hand, a filled circle with ▶ or ! otherwise. What Kevin
+    // parked stops its colour (Kevin 2026-11-12): a grey circle with ⏸.
     let symbol = match c.mark {
+        None if c.paused => "⏸",
         None => c.tone.symbol(),
         Some(PlanMark::Start) => "▶",
         Some(PlanMark::Problem | PlanMark::Deadline) => "!",
         Some(PlanMark::Task) => "",
     };
-    if c.mark == Some(PlanMark::Task) {
-        ring(
-            Rect::new(17.0, y + 11.0, GLYPH - 2.0, GLYPH - 2.0),
-            &tints.color(c.tone),
-        );
+    // Darker than the light grey of a running card (0.78), so the two do not look alike.
+    let color = if c.paused {
+        NSColor::colorWithWhite_alpha(0.45, 1.0)
     } else {
-        tints.color(c.tone).setFill();
+        tints.color(c.tone)
+    };
+    if c.mark == Some(PlanMark::Task) {
+        ring(Rect::new(17.0, y + 11.0, GLYPH - 2.0, GLYPH - 2.0), &color);
+    } else {
+        color.setFill();
         NSBezierPath::bezierPathWithOvalInRect(ns_rect(circle)).fill();
     }
     draw_text(
@@ -466,6 +480,10 @@ fn button_title(button: CardButton) -> &'static str {
             "Gelesen: ausblenden bis zur nächsten Antwort",
             "Read: hide until the next answer",
         ),
+        CardButton::MarkRead => tr(
+            "Gelesen: nach unten bis zur nächsten Antwort",
+            "Read: to the bottom until the next answer",
+        ),
         CardButton::Park => tr("Parken", "Park"),
         CardButton::Unpark => tr("Zurückholen", "Bring back"),
         CardButton::Pin => tr("Anheften", "Pin"),
@@ -476,6 +494,10 @@ fn button_title(button: CardButton) -> &'static str {
             "Own card for this project",
         ),
         CardButton::DissolveCard => tr("Karte auflösen", "Dissolve the card"),
+        CardButton::ParkProject => tr("Ganzes Projekt parken", "Park the whole project"),
+        CardButton::UnparkProject => tr("Projekt zurückholen", "Bring the project back"),
+        CardButton::ParkTeam => tr("Ganzes Team parken", "Park the whole team"),
+        CardButton::UnparkTeam => tr("Team zurückholen", "Bring the team back"),
     }
 }
 
@@ -587,6 +609,13 @@ define_class!(
                         let font = system_font(13.0, FontWeight::Semibold);
                         draw_text(t, Rect::new(16.0, y + 8.0, width - 32.0, 18.0), &font, &white(0.6), &para);
                     }
+                    ListLine::Gap(_) => {}
+                    // A project's heading inside its group: in line with the cards' text, brighter than the group.
+                    ListLine::Project(t) => {
+                        let font = system_font(13.0, FontWeight::Bold);
+                        let rect = Rect::new(INBOX_TEXT_X, y + 8.0, width - INBOX_TEXT_X - INBOX_MARGIN, 18.0);
+                        draw_text(t, rect, &font, &white(0.85), &para);
+                    }
                     ListLine::Card(c) => {
                         // The highlight takes in the card's own note or button, never the next card.
                         let extra = lines
@@ -621,14 +650,14 @@ define_class!(
         // SAFETY: an action method: one object argument, no result.
         #[unsafe(method(cardMenuItem:))]
         fn card_menu_item(&self, item: &NSMenuItem) {
-            let Some(card) = self.ivars().menu_card.borrow_mut().take() else {
+            let Some((menu, ids)) = self.ivars().menu_target.borrow_mut().take() else {
                 return;
             };
-            let Some(&button) = card.menu.get(item.tag() as usize) else {
+            let Some(&button) = menu.get(item.tag() as usize) else {
                 return;
             };
             let on_button = Rc::clone(&self.ivars().on_button);
-            on_button(button, card.ids);
+            on_button(button, ids);
         }
 
         // SAFETY: the signature of -[NSResponder mouseDown:].
@@ -687,25 +716,36 @@ impl ListView {
             on_button,
             on_nav,
             on_plus,
-            menu_card: RefCell::default(),
+            menu_target: RefCell::default(),
             bare,
         });
         // SAFETY: NSView's designated initializer; Swift's `ListView()` ends there with a zero frame.
         unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
     }
 
-    /// The right-click menu of the card under `event`, remembering the card for `cardMenuItem:`.
+    /// The right-click menu of the card or the project tile under `event` (Kevin 2026-11-12: a whole project parks from
+    /// its tile), remembering its commands and sessions for `cardMenuItem:`.
     fn card_menu(&self, event: &NSEvent) -> Option<Retained<NSMenu>> {
         let p = self.convertPoint_fromView(event.locationInWindow(), None);
-        let card = card_at(&self.ivars().lines.borrow(), p.y)?.clone();
-        if card.menu.is_empty() {
+        let width = core_rect(self.bounds()).width();
+        let (buttons, ids, project) = {
+            let lines = self.ivars().lines.borrow();
+            match card_at(&lines, p.y) {
+                Some(c) => (c.menu.clone(), c.ids.clone(), c.project.clone()),
+                None => {
+                    let t = tile_at(&lines, width, p.x, p.y)?;
+                    (t.menu.clone(), t.ids.clone(), None)
+                }
+            }
+        };
+        if buttons.is_empty() {
             return None;
         }
         let mtm = self.mtm();
         let menu = NSMenu::new(mtm);
-        for (tag, button) in card.menu.iter().enumerate() {
-            // "Own card for ‹Ringtop›": the project the card shows (Kevin 2026-11-11, "3a"), quotes of the language.
-            let title = match (button, card.project.as_deref()) {
+        for (tag, button) in buttons.iter().enumerate() {
+            // "Own card for ‹Harbor›": the project the card shows (Kevin 2026-11-11, "3a"), quotes of the language.
+            let title = match (button, project.as_deref()) {
                 (CardButton::MakeCard, Some(p)) => tr(
                     &format!("Eigene Karte für „{p}“"),
                     &format!("Own card for “{p}”"),
@@ -727,7 +767,7 @@ impl ListView {
             item.setTag(tag as isize);
             menu.addItem(&item);
         }
-        *self.ivars().menu_card.borrow_mut() = Some(card);
+        *self.ivars().menu_target.borrow_mut() = Some((buttons, ids));
         Some(menu)
     }
 

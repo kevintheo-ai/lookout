@@ -1060,10 +1060,52 @@ fn inbox_arrange(
 
 /// First session id of a window -> where it stood when Kevin marked it read in the inbox: since when it is done, and its
 /// latest answer. Both, because only Claude sessions have an answer time, and a quick new answer need not be seen as
-/// "running" in between.
-/// ponytail: in memory only and never thinned out, a restart brings read cards back; store it like `excluded` if that
-/// bothers.
+/// "running" in between. Kept with the settings over a restart (Kevin 2026-11-12, `read_answers_lines`).
+/// ponytail: never thinned out, like the parked ones; drop the stamps of sessions long gone if the settings grow.
 pub type ReadAnswers = BTreeMap<String, (Option<Time>, Option<Time>)>;
+
+/// The stamps as lines for the settings (Kevin 2026-11-12: kept over a restart): "session id<TAB>done since<TAB>latest
+/// answer" each, an unknown time left empty. Rust prints a time so that it reads back exactly.
+pub fn read_answers_lines(read: &ReadAnswers) -> Vec<String> {
+    let time = |t: &Option<Time>| t.map(|t| t.to_string()).unwrap_or_default();
+    read.iter()
+        .map(|(id, (since, answer))| format!("{id}\t{}\t{}", time(since), time(answer)))
+        .collect()
+}
+
+/// The stamps back from `read_answers_lines`, the times read from the right (an id may hold a tab). A line that cannot
+/// be read is dropped: its card shows again, nothing is hidden by mistake.
+pub fn read_answers_from(lines: &[String]) -> ReadAnswers {
+    let time = |s: &str| -> Option<Option<Time>> {
+        if s.is_empty() {
+            Some(None)
+        } else {
+            s.parse().ok().map(Some)
+        }
+    };
+    lines
+        .iter()
+        .filter_map(|l| {
+            let mut parts = l.rsplitn(3, '\t');
+            let answer = time(parts.next()?)?;
+            let since = time(parts.next()?)?;
+            Some((parts.next()?.to_owned(), (since, answer)))
+        })
+        .collect()
+}
+
+/// The loaded stamps as a restarted Lookout sees them: it meets every done window anew, done since its latest answer
+/// (`first_ready_time`), so a stamp taken while the window stood done since earlier (a quick new answer, or an answer
+/// time that came late) takes that time too (review quick 2026-11-12, Grok, GLM). Without an answer time (Codex, Grok)
+/// nothing tells the same done from a new one: such a card shows again after a restart.
+pub fn stamps_after_restart(mut read: ReadAnswers) -> ReadAnswers {
+    for (since, answer) in read.values_mut() {
+        if since.is_some() && answer.is_some() {
+            *since = *answer;
+        }
+    }
+    read
+}
 
 fn last_answer(w: &TermWindow) -> Option<Time> {
     w.sessions
@@ -1099,11 +1141,23 @@ pub fn is_read(w: &TermWindow, read: &ReadAnswers) -> bool {
     !w.is_waiting() && stamped(w, read)
 }
 
+/// Read in its project's or team's area (Kevin 2026-11-12), a question too: until it does something new (a new answer,
+/// work again), it stands under "Gelesen" and leaves the tile quiet.
+pub fn marked_read(w: &TermWindow, read: &ReadAnswers) -> bool {
+    can_mark_read(w) && stamped(w, read)
+}
+
+/// Whether "Gelesen" can hold the window: a question without an answer time (Codex, Grok) could not be told from a
+/// later one, so it is never read, as it is never parked (`is_snoozed`).
+pub fn can_mark_read(w: &TermWindow) -> bool {
+    !w.is_waiting() || last_answer(w).is_some()
+}
+
 /// Parked by Kevin (Kevin 2026-11-09: a session that watches a mailbox all day belongs neither under waiting nor under
 /// running). Whatever it is doing it stays out of the way, until it asks something new: the question he parked stays
 /// parked (`press_button` stamps it), a later one comes through. Without an answer time (Codex, Grok) a later question
-/// could not be told from the parked one, so a question there stays under Waiting.
-/// ponytail: the stamp lives in memory like `ReadAnswers`, after a restart a parked open question shows under Waiting.
+/// could not be told from the parked one, so a question there stays under Waiting. The stamp outlives a restart with
+/// `ReadAnswers`.
 pub fn is_snoozed(w: &TermWindow, snoozed: &BTreeSet<String>, read: &ReadAnswers) -> bool {
     is_excluded(w, snoozed) && (!w.is_waiting() || (last_answer(w).is_some() && stamped(w, read)))
 }
@@ -1154,6 +1208,7 @@ pub fn walk_skips(excluded: &BTreeSet<String>, pinned: &[String]) -> BTreeSet<St
 /// Who comes to the middle after "read, next": the next in the waiting list after `main`, from the end back to the top;
 /// the top one if `main` does not wait. Stepping past `main` is what walks the list: "the most urgent other one" would
 /// only swap the top two, as a session Kevin looked at without answering stays where it was. `None`: nobody else waits.
+/// What Kevin read is passed over, a question read in its area too (review quick 2026-11-12, GLM).
 pub fn next_waiting(
     windows: &[TermWindow],
     excluded: &BTreeSet<String>,
@@ -1165,7 +1220,7 @@ pub fn next_waiting(
         .into_iter()
         .filter(|&i| {
             windows[i].is_ready()
-                && !is_read(&windows[i], read)
+                && !marked_read(&windows[i], read)
                 && !is_snoozed(&windows[i], snoozed, read)
         })
         .collect();
@@ -1173,6 +1228,29 @@ pub fn next_waiting(
     match main.and_then(|m| order.iter().position(|&i| i == m)) {
         Some(p) => Some(order[(p + 1) % order.len()]).filter(|&i| Some(i) != main),
         None => order.first().copied(),
+    }
+}
+
+/// Parks every window in `members` the way "Park" parks one card, or brings each back like "Bring back" (Kevin
+/// 2026-11-12: "ganze projekte parken"): a question there now stays parked, a later one comes through (`is_snoozed`).
+/// Moves nothing: no window comes to the middle.
+pub fn park_all(
+    windows: &[TermWindow],
+    members: &[usize],
+    on: bool,
+    read: &mut ReadAnswers,
+    snoozed: &mut BTreeSet<String>,
+) {
+    for &i in members {
+        let w = &windows[i];
+        if !on {
+            unpark(w, snoozed, read);
+            continue;
+        }
+        if w.is_waiting() {
+            mark_read(w, read);
+        }
+        snoozed.extend(w.sessions.iter().map(|s| s.id.clone()));
     }
 }
 
@@ -1192,6 +1270,12 @@ pub fn press_button(
     let window = &windows[w];
     if button == CardButton::Unpark {
         unpark(window, snoozed, read);
+        return None;
+    }
+    if button == CardButton::MarkRead {
+        // An old park ends first: the fresh stamp would hold the card parked again (review quick 2026-11-12, Codex).
+        unpark(window, snoozed, read);
+        mark_read(window, read);
         return None;
     }
     let next =

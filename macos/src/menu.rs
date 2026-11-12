@@ -236,6 +236,7 @@ define_class!(
                 Some(Choice::ChangeTeam(role, field, value)) => {
                     with_app(move |a| a.change_team(role, field, &value));
                 }
+                Some(Choice::DissolveCard(card)) => with_app(move |a| a.dissolve_card(&card)),
                 None => {}
             }
         }
